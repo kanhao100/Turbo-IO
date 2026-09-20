@@ -3,6 +3,7 @@ import Security
 import RayNeoCaptions
 
 enum AzureCaptionCredentials {
+    enum StorageError: Error, Equatable { case keychain(Int32) }
     private static let service = "io.turboio.companion.azure-speech.v1"
     private static func query(region: String) -> [String: Any] {
         [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
@@ -27,11 +28,12 @@ enum AzureCaptionCredentials {
         let status = SecItemUpdate(request as CFDictionary, attributes as CFDictionary)
         if status == errSecItemNotFound {
             var item = request; attributes.forEach { item[$0.key] = $0.value }
-            guard SecItemAdd(item as CFDictionary, nil) == errSecSuccess else { throw CaptionFailure.closed }
-        } else if status != errSecSuccess { throw CaptionFailure.closed }
+            let inserted = SecItemAdd(item as CFDictionary, nil)
+            guard inserted == errSecSuccess else { throw StorageError.keychain(inserted) }
+        } else if status != errSecSuccess { throw StorageError.keychain(status) }
     }
     static func remove(region: String) throws {
         let status = SecItemDelete(query(region: region) as CFDictionary)
-        guard status == errSecSuccess || status == errSecItemNotFound else { throw CaptionFailure.closed }
+        guard status == errSecSuccess || status == errSecItemNotFound else { throw StorageError.keychain(status) }
     }
 }
