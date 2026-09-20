@@ -1,7 +1,7 @@
 import SwiftUI
 import RayNeoCaptions
 
-struct AzureCaptionView: View {
+struct RealtimeCaptionView: View {
     @EnvironmentObject private var runtime: CaptionRuntime
     @EnvironmentObject private var voice: CompanionVoiceRuntime
     @Environment(\.dismiss) private var dismiss
@@ -12,31 +12,42 @@ struct AzureCaptionView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("Azure 实时字幕 · V1 实验") {
-                    Text(runtime.status).accessibilityIdentifier("azure-caption-status")
+                Section("实时字幕 · V1 实验") {
+                    Text(runtime.status).accessibilityIdentifier("realtime-caption-status")
                     if runtime.active { Text("本次 \(runtime.elapsed / 60) 分 \(runtime.elapsed % 60) 秒") }
                     Text("只做语音转文字，不调用 DeepSeek。先开启待命，再主动唤醒眼镜；关闭此页面不会结束字幕，请使用停止按钮。")
                         .font(.caption).foregroundStyle(.secondary)
                     Text("锁屏/后台是尽力运行，不保证保活。iOS、蓝牙或眼镜固件可能终止音频；进程被杀后不会自动重新录音。")
                         .font(.caption).foregroundStyle(.orange)
-                    if !runtime.supportsDevice { Text("当前是本地预览构建；不连接 Azure，不采音。") }
+                    if !runtime.supportsDevice { Text("当前是本地预览构建；不连接转写服务，不采音。") }
                 }
-                Section("你的 Azure Speech 资源") {
-                    TextField("Region，例如 eastus", text: $draft.region)
+                Section("转写服务") {
+                    Picker("服务", selection: $draft.service) {
+                        ForEach(CaptionService.allCases, id: \.self) { service in
+                            Text(service.name).tag(service)
+                        }
+                    }.accessibilityIdentifier("caption-service")
+                    LabeledContent("模型", value: draft.service.model)
+                    if draft.service == .azure {
+                        TextField("Region，例如 eastus", text: $draft.region)
+                            .textInputAutocapitalization(.never).autocorrectionDisabled()
+                    }
+                    SecureField("API Key（留空沿用已保存的密钥）", text: $key)
                         .textInputAutocapitalization(.never).autocorrectionDisabled()
-                    SecureField("Speech Key（留空沿用此区域已保存的 Key）", text: $key)
-                        .textInputAutocapitalization(.never).autocorrectionDisabled()
-                    Text(keyStored ? "此区域已有本机 Key" : "此区域尚未保存 Key").font(.caption)
+                    Text(keyStored ? "当前服务已有本机 Key" : "当前服务尚未保存 Key").font(.caption)
                     Picker("识别语言", selection: $draft.language) {
                         Text("English (UK)").tag("en-GB")
                         Text("English (US)").tag("en-US")
                         Text("普通话").tag("zh-CN")
                     }
+                    if draft.service == .elevenLabs {
+                        Text("ElevenLabs 将英式/美式选项统一识别为英语。").font(.caption).foregroundStyle(.secondary)
+                    }
                     Button("保存设置与密钥") { saveSettings() }
-                    Button("移除此区域的本机密钥", role: .destructive) {
-                        runtime.forgetKey(region: draft.region); keyStored = runtime.hasKey(region: draft.region)
+                    Button("移除当前服务的本机密钥", role: .destructive) {
+                        runtime.forgetKey(options: draft); key = ""; refreshKey()
                     }.disabled(!keyStored)
-                    Text("密钥只存在此 iPhone 的钥匙串；重启后需先解锁一次。V1 使用公有 Azure 区域，不支持自定义/私有端点。")
+                    Text("各服务的密钥分别保存在此 iPhone 的钥匙串，Azure 另按 Region 区分。只连接所选服务的官方接口；切换服务不会清除字幕历史。")
                         .font(.caption).foregroundStyle(.secondary)
                 }.disabled(runtime.active || !runtime.supportsDevice)
                 Section("本次会话") {
@@ -80,12 +91,14 @@ struct AzureCaptionView: View {
             .navigationTitle("实时字幕")
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("关闭页面") { dismiss() } } }
             .onAppear {
-                voice.prepare(); draft = runtime.options; draft.recordAudio = false
-                keyStored = runtime.hasKey(region: draft.region)
+                voice.prepare(); draft = runtime.options
+                if !runtime.active { draft.recordAudio = false }
+                keyStored = runtime.hasKey(options: draft)
             }
-            .onChange(of: draft.region) { _ in keyStored = runtime.hasKey(region: draft.region) }
+            .onChange(of: draft.region) { _ in key = ""; refreshKey() }
+            .onChange(of: draft.service) { _ in key = ""; runtime.error = nil; refreshKey() }
             .onChange(of: runtime.active) { active in if !active { draft.recordAudio = false } }
-            .confirmationDialog("唤醒后将眼镜音频上传到你的 Azure Speech 资源，可能计费；本机会保存字幕。请先告知并征得参与者同意。此模式会关闭原有语音助手待命。", isPresented: $confirm, titleVisibility: .visible) {
+            .confirmationDialog("唤醒后将眼镜音频上传到你选择的 \(draft.service.name) 服务，可能计费；本机会保存字幕。请先告知并征得参与者同意。此模式会关闭原有语音助手待命。", isPresented: $confirm, titleVisibility: .visible) {
                 Button(draft.recordAudio ? "同意上传并保存字幕及音频" : "同意上传并仅保存字幕") {
                     let session = draft
                     if saveSettings() { runtime.arm(session) }
@@ -94,9 +107,10 @@ struct AzureCaptionView: View {
             }
         }
     }
+    private func refreshKey() { keyStored = runtime.hasKey(options: draft) }
     @discardableResult private func saveSettings() -> Bool {
         let saved = runtime.save(draft, newKey: key)
-        if saved { key = ""; keyStored = runtime.hasKey(region: draft.region) }
+        if saved { key = ""; keyStored = runtime.hasKey(options: draft) }
         return saved
     }
 }

@@ -61,7 +61,7 @@ public final class CaptionJournal {
     }
     public static func exportText(_ entries: [CaptionEntry]) -> String {
         let format = ISO8601DateFormatter()
-        return "Turbo IO Azure 字幕\n时间为手机收到事件的时间，不是音频采样对齐时间。\n\n" + entries.map {
+        return "Turbo IO 实时字幕\n时间为手机收到事件的时间，不是音频采样对齐时间。\n\n" + entries.map {
             "[\(format.string(from: $0.date))] [\($0.kind.rawValue)] \($0.text)"
         }.joined(separator: "\n\n")
     }

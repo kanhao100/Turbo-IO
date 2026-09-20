@@ -14,8 +14,8 @@ struct ConversationView: View {
     var body: some View {
         Screen(title: "语音会话", eyebrow: "云端断句 · 流式对话") {
             Button { showCaptions = true } label: {
-                Label("Azure 实时字幕 · V1 实验", systemImage: "captions.bubble")
-            }.accessibilityIdentifier("open-azure-captions")
+                Label("实时字幕", systemImage: "captions.bubble")
+            }.accessibilityIdentifier("open-realtime-captions")
             HStack {
                 Label(runtime.phaseLabel, systemImage: runtime.enabled ? "waveform" : "moon")
                     .font(.system(size: 16, weight: .semibold))
@@ -34,7 +34,7 @@ struct ConversationView: View {
                 .background(Palette.ink, in: RoundedRectangle(cornerRadius: 22))
                 .accessibilityIdentifier("live-voice-content")
             if runtime.captionOwnsVoice {
-                Text("Azure 字幕模式占用语音通道；请进入字幕页面查看采音状态或停止。")
+                Text("实时字幕模式占用语音通道；请进入字幕页面查看采音状态或停止。")
                     .font(.caption).foregroundStyle(Palette.amber)
             } else if !runtime.enabled {
                 Text("麦克风未启用 · 没有音频正在传输").font(.caption).foregroundStyle(Palette.muted)
@@ -102,7 +102,7 @@ struct ConversationView: View {
         .sheet(isPresented: $showConfiguration) { ModelConfigurationView() }
         .sheet(isPresented: $showSimulation) { SessionSimulationView() }
         .sheet(isPresented: $showKeys) { LiveVoiceKeysView() }
-        .sheet(isPresented: $showCaptions) { AzureCaptionView() }
+        .sheet(isPresented: $showCaptions) { RealtimeCaptionView() }
         #if COMPANION_DEVICE
         .sheet(isPresented: $showDiagnostics, onDismiss: { runtime.refresh() }) {
             NavigationStack { VoiceDiagnosticsView(runtime: runtime).toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { showDiagnostics = false } } } }

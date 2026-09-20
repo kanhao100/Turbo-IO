@@ -44,9 +44,6 @@ import RayNeoProtocol
             ?? CaptionOptions()
         saved.recordAudio = false // Consent to retain audio is per session, never remembered.
         options = saved
-        #if COMPANION_DEVICE
-        provider = AzureCaptionASR()
-        #endif
         voice.onCaptionEnvelope = { [weak self] in self?.receive(device: $0, type: $1, audio: $2, arrival: $3) }
         voice.onCaptionInputLoss = { [weak self] device in
             guard let self, self.target == device, self.clock != nil else { return }
@@ -59,31 +56,33 @@ import RayNeoProtocol
         timer?.invalidate()
         if let lifecycle { NotificationCenter.default.removeObserver(lifecycle) }
     }
-    func hasKey(region: String) -> Bool {
-        AzureCaptionCredentials.read(region: region.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()) != nil
+    func hasKey(options: CaptionOptions) -> Bool {
+        CaptionCredentials.read(options: options) != nil
     }
     @discardableResult func save(_ draft: CaptionOptions, newKey: String) -> Bool {
         guard !active, supportsDevice else { error = "请在真机中结束字幕后设置。"; return false }
         do {
             var value = try draft.validated()
-            if !newKey.isEmpty { try AzureCaptionCredentials.save(newKey, region: value.region) }
+            if !newKey.isEmpty { try CaptionCredentials.save(newKey, options: value) }
             value.recordAudio = false
             defaults.set(try JSONEncoder().encode(value), forKey: Self.settingsKey); options = value
             error = nil; return true
-        } catch { self.error = "设置未保存。请检查 Region、语言、时长和密钥格式。"; return false }
+        } catch { self.error = "设置未保存。请检查服务、Azure Region、语言、时长和密钥格式。"; return false }
     }
-    func forgetKey(region: String) {
+    func forgetKey(options: CaptionOptions) {
         guard !active else { return }
-        do { try AzureCaptionCredentials.remove(region: region.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()) }
-        catch { self.error = "无法移除此区域的密钥。" }
+        do { try CaptionCredentials.remove(options: options) }
+        catch { self.error = "无法移除此服务的密钥。" }
     }
     func arm(_ draft: CaptionOptions) {
         guard !active else { return }
         voice.prepare()
-        guard supportsDevice, let provider, let device = voice.deviceID,
+        guard supportsDevice, let device = voice.deviceID,
               voice.featureIsBusy?() != true else { error = "需要唯一已认证的眼镜，并结束录音、提词器等占用任务。"; return }
-        guard let value = try? draft.validated(), let secret = AzureCaptionCredentials.read(region: value.region),
-              !secret.isEmpty else { error = "请先保存有效设置和此 Region 对应的 Azure Speech Key。"; return }
+        guard let value = try? draft.validated(), let secret = CaptionCredentials.read(options: value),
+              !secret.isEmpty else { error = "请先保存有效设置和所选服务的 API Key（Azure 还需匹配 Region）。"; return }
+        guard let provider = CaptionASRFactory.make(value.service) else { error = "当前构建不支持云端转写。"; return }
+        self.provider = provider
         error = nil; options = value; key = secret; target = device; phase = .preparing
         recent = []; partial = ""; elapsed = 0; retry = CaptionRetryBudget()
         generation = UUID(); diskGeneration = generation; let token = generation, root = root
@@ -96,10 +95,10 @@ import RayNeoProtocol
         provider.onReady = { [weak self] in
             guard let self, self.generation == token, self.clock != nil,
                   self.phase == .listening else { return }
-            self.cloudDeadline = nil; self.status = "Azure 已连接 · 正在接收眼镜音频"
+            self.cloudDeadline = nil; self.status = "\(self.options.service.name) 已连接 · 正在接收眼镜音频"
         }
-        provider.onFailure = { [weak self] in
-            guard let self, self.generation == token else { return }; self.cloudFailed()
+        provider.onFailure = { [weak self] failure in
+            guard let self, self.generation == token else { return }; self.cloudFailed(failure)
         }
         Task {
             do {
@@ -148,7 +147,7 @@ import RayNeoProtocol
             lastAudio = nil; gapOpen = false; newSentence = true; lastDisplay = 0
             phase = .listening
             sink?.event(CaptionEntry(kind: .started,
-                text: "Azure \(options.region) / \(options.language); 静音退出 \(options.idleSeconds)s; 上限 \(options.maximumSeconds)s; 保存音频 \(options.recordAudio)"))
+                text: "\(options.service.name) / \(options.service.model) / \(options.service == .azure ? options.region : "") / \(options.language); 静音退出 \(options.idleSeconds)s; 上限 \(options.maximumSeconds)s; 保存音频 \(options.recordAudio)"))
             guard send(AssistantRecorderPrototype.control(start: true)) else { return }
             startCloud(); return
         }
@@ -183,22 +182,28 @@ import RayNeoProtocol
     }
     private func startCloud() {
         phase = .listening; retryAt = nil; cloudDeadline = now + 15; unansweredSpeechAt = nil
-        status = "正在连接 Azure；音频仅发送到你配置的 Speech 资源"
+        status = "正在连接 \(options.service.name) · \(options.service.model)"
         provider?.start(options: options, key: key)
     }
-    private func cloudFailed() {
+    private func cloudFailed(_ failure: CaptionConnectionFailure = .connection) {
         guard clock != nil, phase == .listening else { return }
         provider?.stop(); cloudDeadline = nil
         preservePartial(); dirtyDisplay = false; newSentence = true
-        guard let delay = retry.nextDelay() else { stop(reason: "Azure 重连 3 次仍未恢复，请检查网络、区域、密钥和额度"); return }
+        guard failure.canRetry else {
+            let message = "\(options.service.name)：\(failure.message)"
+            error = message; stop(reason: message); return
+        }
+        guard let delay = retry.nextDelay() else {
+            stop(reason: "\(options.service.name) 重连 3 次仍未恢复，请检查网络、密钥和额度"); return
+        }
         phase = .reconnecting; retryAt = now + delay
-        status = "Azure 连接中断 · 重试 \(retry.attempts)/3；这段音频不会补传"
+        status = "\(options.service.name) 连接中断 · 重试 \(retry.attempts)/3；这段音频不会补传"
         sink?.event(CaptionEntry(kind: .gap, text: status))
     }
     private func recognized(_ text: String, final: Bool) {
         guard phase == .listening, clock != nil else { return }
         unansweredSpeechAt = nil
-        guard text.utf8.count <= 32_768 else { stop(reason: "Azure 返回的单句超过保存上限"); return }
+        guard text.utf8.count <= 32_768 else { stop(reason: "转写服务返回的单句超过保存上限"); return }
         if !text.isEmpty { retry.recognized(); cloudDeadline = nil }
         partial = text; dirtyDisplay = true
         if final {
@@ -261,7 +266,7 @@ import RayNeoProtocol
         guard active, phase != .stopping else { return }
         let hadAudio = clock != nil
         phase = .stopping; generation = UUID(); timer?.invalidate(); timer = nil
-        provider?.stop(); key = ""; retryAt = nil; cloudDeadline = nil; dirtyDisplay = false
+        provider?.stop(); provider = nil; key = ""; retryAt = nil; cloudDeadline = nil; dirtyDisplay = false
         preservePartial()
         var note = reason
         if hadAudio, let target {

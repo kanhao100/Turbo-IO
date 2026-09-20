@@ -15,6 +15,7 @@ const result = spawnSync('xcodebuild', [
   '-project', 'apps/RayNeoCompanion/RayNeoCompanion.xcodeproj',
   '-scheme', 'RayNeoCompanion', '-destination', `id=${simulator.udid}`,
   '-only-testing:RayNeoCompanionTests/CaptionBoundaryTests',
+  '-only-testing:RayNeoCompanionTests/CaptionSocketTests',
   '-derivedDataPath', 'apps/RayNeoCompanion/build-captions-simulator',
   'CODE_SIGNING_ALLOWED=NO', 'test'
 ], {cwd: root, stdio: 'inherit'});

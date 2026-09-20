@@ -4,7 +4,7 @@
 
 仅供学习、研究与非商业使用，沿用 [PolyForm Noncommercial 1.0.0](LICENSE)，未经授权不得商用或收费分发。只发布源码与明确列出的依赖，**不提供 IPA / APK / HAP 安装包、预签名 App、签名证书、个人密钥或测试账号**。需要自行配置、编译和签名。
 
-新增实验：[iOS V1 Azure 实时字幕](docs/AZURE_CAPTIONS_V1.md)——独立字幕会话、可配置无人声退出、字幕历史和可选分段录音。**待真机验收；30–120 分钟为策略上限，不保证锁屏/后台持续采音。**
+新增实验：[iOS V1 实时字幕](docs/AZURE_CAPTIONS_V1.md)——统一选择 Azure Speech / Deepgram Nova-3 / ElevenLabs Scribe v2 Realtime，共用字幕历史、无人声退出和可选分段录音；Actions 提供未签名 IPA。**待真机验收；30–120 分钟为策略上限，不保证锁屏/后台持续采音。**
 
 ## 先选开发路线
 

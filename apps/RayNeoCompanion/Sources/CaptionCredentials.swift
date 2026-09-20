@@ -2,27 +2,26 @@ import Foundation
 import Security
 import RayNeoCaptions
 
-enum AzureCaptionCredentials {
+enum CaptionCredentials {
     enum StorageError: Error, Equatable { case keychain(Int32) }
-    private static let service = "io.turboio.companion.azure-speech.v1"
-    private static func query(region: String) -> [String: Any] {
-        [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
-         kSecAttrAccount as String: region]
+    private static func query(options: CaptionOptions) -> [String: Any] {
+        [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: options.service.keychainService,
+         kSecAttrAccount as String: options.credentialAccount]
     }
-    static func read(region: String) -> String? {
-        var request = query(region: region)
+    static func read(options: CaptionOptions) -> String? {
+        var request = query(options: options)
         request[kSecReturnData as String] = true; request[kSecMatchLimit as String] = kSecMatchLimitOne
         var value: CFTypeRef?
         guard SecItemCopyMatching(request as CFDictionary, &value) == errSecSuccess,
               let data = value as? Data else { return nil }
         return String(data: data, encoding: .utf8)
     }
-    static func save(_ key: String, region: String) throws {
-        // Azure keys aren't DashScope sk- keys. No secret in defaults, logs or source.
-        guard (16...512).contains(key.utf8.count), !key.contains(where: { $0.isWhitespace }) else {
+    static func save(_ key: String, options: CaptionOptions) throws {
+        // Each provider has an isolated Keychain namespace; Azure also separates regions.
+        guard CaptionStreamingAPI.validKey(key) else {
             throw CaptionFailure.invalidConfiguration
         }
-        let request = query(region: region)
+        let request = query(options: options)
         let attributes: [String: Any] = [kSecValueData as String: Data(key.utf8),
             kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly]
         let status = SecItemUpdate(request as CFDictionary, attributes as CFDictionary)
@@ -32,8 +31,8 @@ enum AzureCaptionCredentials {
             guard inserted == errSecSuccess else { throw StorageError.keychain(inserted) }
         } else if status != errSecSuccess { throw StorageError.keychain(status) }
     }
-    static func remove(region: String) throws {
-        let status = SecItemDelete(query(region: region) as CFDictionary)
+    static func remove(options: CaptionOptions) throws {
+        let status = SecItemDelete(query(options: options) as CFDictionary)
         guard status == errSecSuccess || status == errSecItemNotFound else { throw StorageError.keychain(status) }
     }
 }

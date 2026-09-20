@@ -281,7 +281,7 @@ final class ProbeController: UIViewController, CBCentralManagerDelegate, StreamD
     }
 
     @objc private func toggleStandby() {
-        guard voiceDiagnosticsAllowed else { log("请先停止 Azure 字幕"); return }
+        guard voiceDiagnosticsAllowed else { log("请先停止 实时字幕"); return }
         if voiceProbe.standby.enabled { disableStandby(); return }
         guard let linked = core?.linkedDevices(), linked.count == 1, let device = linked.first,
               device.isConnected(), device.bleStateByte() == 9 else {
@@ -303,7 +303,7 @@ final class ProbeController: UIViewController, CBCentralManagerDelegate, StreamD
         present(alert, animated:true)
     }
     @objc private func showCloudSettings() {
-        guard voiceDiagnosticsAllowed else { log("请先停止 Azure 字幕"); return }
+        guard voiceDiagnosticsAllowed else { log("请先停止 实时字幕"); return }
         let controller = CloudVoiceSettingsController()
         controller.changed = { [weak self] enabled in
             self?.voiceProbe.setCloudMode(enabled)
@@ -334,7 +334,7 @@ final class ProbeController: UIViewController, CBCentralManagerDelegate, StreamD
 
     private func startStandby(target: String) {
         #if COMPANION_DEVICE
-        guard !companionCaptionOwnsVoice else { log("请先停止 Azure 字幕"); return }
+        guard !companionCaptionOwnsVoice else { log("请先停止 实时字幕"); return }
         #endif
         reconnectPolicy.reset(); standbyWasReady = false; nextWakeInit = 0
         voiceProbe.enableStandby(deviceID:target)
@@ -473,7 +473,7 @@ final class ProbeController: UIViewController, CBCentralManagerDelegate, StreamD
     }
 
     @objc private func confirmVoiceProbe() {
-        guard voiceDiagnosticsAllowed else { log("请先停止 Azure 字幕"); return }
+        guard voiceDiagnosticsAllowed else { log("请先停止 实时字幕"); return }
         guard let core, let linked = core.linkedDevices(), linked.count == 1,
               let device = linked.first, device.isConnected(), device.bleStateByte() == 9 else {
             log("没有唯一已认证连接，未就绪语音测试"); return
@@ -493,7 +493,7 @@ final class ProbeController: UIViewController, CBCentralManagerDelegate, StreamD
     }
 
     @objc private func showDisplayBoundaryTests() {
-        guard voiceDiagnosticsAllowed else { log("请先停止 Azure 字幕"); return }
+        guard voiceDiagnosticsAllowed else { log("请先停止 实时字幕"); return }
         if voiceProbe.standby.enabled {
             let menu = UIAlertController(title:"持续待命显示测试",message:"下一次唤醒发送A1至A4四段合成文字，最后一段带校验码；不请求云服务。无10秒强制关闭，验收眼镜自己的收尾行为。",preferredStyle:.actionSheet)
             menu.addAction(UIAlertAction(title:"下一次唤醒：A1–A4增量测试",style:.default) { [weak self] _ in self?.voiceProbe.armIncrementalFixture() })
@@ -520,7 +520,7 @@ final class ProbeController: UIViewController, CBCentralManagerDelegate, StreamD
     }
 
     private func confirmDisplayFixture(_ fixture: DisplayBoundaryFixture) {
-        guard voiceDiagnosticsAllowed else { log("请先停止 Azure 字幕"); return }
+        guard voiceDiagnosticsAllowed else { log("请先停止 实时字幕"); return }
         guard let core, let linked = core.linkedDevices(), linked.count == 1,
               let device = linked.first, device.isConnected(), device.bleStateByte() == 9 else {
             log("没有唯一已认证连接，不启动显示边界测试"); return

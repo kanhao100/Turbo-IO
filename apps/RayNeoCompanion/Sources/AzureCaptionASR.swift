@@ -1,15 +1,6 @@
 import Foundation
 import RayNeoCaptions
 
-@MainActor protocol CaptionASRProvider: AnyObject {
-    var onText: ((String, Bool) -> Void)? { get set }
-    var onReady: (() -> Void)? { get set }
-    var onFailure: (() -> Void)? { get set }
-    func start(options: CaptionOptions, key: String)
-    func append(_ pcm: Data)
-    func stop()
-}
-
 #if COMPANION_DEVICE
 import MicrosoftCognitiveServicesSpeech
 
@@ -18,7 +9,7 @@ import MicrosoftCognitiveServicesSpeech
 @MainActor final class AzureCaptionASR: CaptionASRProvider {
     var onText: ((String, Bool) -> Void)?
     var onReady: (() -> Void)?
-    var onFailure: (() -> Void)?
+    var onFailure: ((CaptionConnectionFailure) -> Void)?
     private var generation = UUID()
     private let worker = AzureCaptionWorker()
     func start(options: CaptionOptions, key: String) {
@@ -29,12 +20,12 @@ import MicrosoftCognitiveServicesSpeech
         }, text: { [weak self] text, final in
             Task { @MainActor in guard let self, self.generation == token else { return }; self.onText?(text, final) }
         }, failure: { [weak self] in
-            Task { @MainActor in guard let self, self.generation == token else { return }; self.onFailure?() }
+            Task { @MainActor in guard let self, self.generation == token else { return }; self.onFailure?(.connection) }
         })
     }
     func append(_ pcm: Data) {
-        guard !pcm.isEmpty, pcm.count <= 3_840, pcm.count % 2 == 0 else { onFailure?(); return }
-        if !worker.append(pcm) { onFailure?() }
+        guard !pcm.isEmpty, pcm.count <= 3_840, pcm.count % 2 == 0 else { onFailure?(.configuration); return }
+        if !worker.append(pcm) { onFailure?(.backpressure) }
     }
     func stop() { generation = UUID(); worker.stop() }
 }

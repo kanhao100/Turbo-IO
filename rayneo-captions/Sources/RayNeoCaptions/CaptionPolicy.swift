@@ -2,14 +2,51 @@ import Foundation
 
 public enum CaptionFailure: Error { case invalidConfiguration, limit, corruptArchive, closed }
 
-/// No credentials, network, device commands or wall-clock timers in this package.
+public enum CaptionService: String, Codable, CaseIterable {
+    case azure, deepgram
+    case elevenLabs = "elevenlabs"
+
+    public var name: String {
+        switch self { case .azure: return "Azure Speech"; case .deepgram: return "Deepgram"; case .elevenLabs: return "ElevenLabs" }
+    }
+    public var model: String {
+        switch self { case .azure: return "Azure Speech"; case .deepgram: return "Nova-3"; case .elevenLabs: return "Scribe v2 Realtime" }
+    }
+    public var keychainService: String {
+        switch self {
+        // Preserve the original Azure namespace so upgrading does not lose saved keys.
+        case .azure: return "io.turboio.companion.azure-speech.v1"
+        case .deepgram: return "io.turboio.companion.deepgram.v1"
+        case .elevenLabs: return "io.turboio.companion.elevenlabs.v1"
+        }
+    }
+}
+
+/// Persisted settings contain no credentials. No network or device operations here.
 public struct CaptionOptions: Codable, Equatable {
+    public var service: CaptionService = .azure
     public var region = ""
     public var language = "en-GB"
     public var idleSeconds = 900
     public var maximumSeconds = 7200
     public var recordAudio = false
     public init() {}
+
+    private enum CodingKeys: String, CodingKey {
+        case service, region, language, idleSeconds, maximumSeconds, recordAudio
+    }
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        service = try values.decodeIfPresent(CaptionService.self, forKey: .service) ?? .azure
+        region = try values.decode(String.self, forKey: .region)
+        language = try values.decode(String.self, forKey: .language)
+        idleSeconds = try values.decode(Int.self, forKey: .idleSeconds)
+        maximumSeconds = try values.decode(Int.self, forKey: .maximumSeconds)
+        recordAudio = try values.decode(Bool.self, forKey: .recordAudio)
+    }
+    public var credentialAccount: String {
+        service == .azure ? region.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() : "default"
+    }
 
     public static let idleChoices = [0, 60, 300, 900, 1800, 3600]
     public static let durationChoices = [1800, 3600, 7200]
@@ -18,9 +55,12 @@ public struct CaptionOptions: Codable, Equatable {
         var result = self
         result.region = region.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         // A region identifier, never a URL or arbitrary host receiving a secret.
-        guard (3...40).contains(result.region.count), result.region.utf8.allSatisfy({
-            (97...122).contains($0) || (48...57).contains($0)
-        }), Self.languages.contains(language), Self.idleChoices.contains(idleSeconds),
+        if service == .azure {
+            guard (3...40).contains(result.region.count), result.region.utf8.allSatisfy({
+                (97...122).contains($0) || (48...57).contains($0)
+            }) else { throw CaptionFailure.invalidConfiguration }
+        }
+        guard Self.languages.contains(language), Self.idleChoices.contains(idleSeconds),
               Self.durationChoices.contains(maximumSeconds) else { throw CaptionFailure.invalidConfiguration }
         return result
     }

@@ -1,4 +1,4 @@
-name: Azure captions V1
+name: Realtime captions V1
 on:
   pull_request:
     paths:
