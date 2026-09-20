@@ -49,3 +49,23 @@ jobs:
           -scheme RayNeoCompanionDevice -destination 'generic/platform=iOS'
           -derivedDataPath apps/RayNeoCompanion/build-captions-device
           CODE_SIGNING_ALLOWED=NO build
+      - name: Package unsigned IPA
+        if: matrix.mode == 'device'
+        run: |
+          APP="apps/RayNeoCompanion/build-captions-device/Build/Products/Debug-iphoneos/RayNeoCompanion.app"
+          OUTPUT="apps/RayNeoCompanion/ipa"
+
+          test -d "$APP"
+          rm -rf "$OUTPUT"
+          mkdir -p "$OUTPUT/Payload"
+          cp -R "$APP" "$OUTPUT/Payload/"
+
+          /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$OUTPUT/Payload" "$OUTPUT/TurboIO-unsigned.ipa"
+      - name: Upload unsigned IPA
+        if: matrix.mode == 'device'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: TurboIO-unsigned-ipa
+          path: apps/RayNeoCompanion/ipa/TurboIO-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 7
