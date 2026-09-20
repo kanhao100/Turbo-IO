@@ -18,6 +18,18 @@ final class CoreMessageReceiver: RNMessageDelegate {
     var onVoiceEnvelope: ((String, BusinessEnvelopeMetadata, Data?, TimeInterval) -> Void)?
     var onBusinessEnvelope: ((String, UInt8, Data) -> Void)?
     var onBusinessLoss: (() -> Void)?
+    var onVoiceLoss: ((String) -> Void)?
+    private var voiceLossQueued = false
+    private func reportVoiceLoss(_ device: String) {
+        lock.lock()
+        guard !voiceLossQueued else { lock.unlock(); return }
+        voiceLossQueued = true; lock.unlock()
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.lock.lock(); self.voiceLossQueued = false; self.lock.unlock()
+            self.onVoiceLoss?(device)
+        }
+    }
     private let businessSlots = DispatchSemaphore(value: 128)
     private var businessLossQueued = false
     private func reportBusinessLoss() {
@@ -62,7 +74,7 @@ final class CoreMessageReceiver: RNMessageDelegate {
                     defer { if isAudio { slots.signal() } }
                     self?.onVoiceEnvelope?(deviceID, metadata, audio, arrival)
                 }
-            }
+            } else { reportVoiceLoss(deviceID) }
         }
         let key = "business=\(business) type=\(metadata?.messageType.map(String.init) ?? "unknown") bytes=\(payload.count)"
         lock.lock()

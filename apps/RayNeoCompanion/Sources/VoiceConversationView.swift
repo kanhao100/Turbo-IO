@@ -10,8 +10,12 @@ struct ConversationView: View {
     @State private var useCloud = true
     @State private var continuous = true
     @State private var confirmStart = false
+    @State private var showCaptions = false
     var body: some View {
         Screen(title: "语音会话", eyebrow: "云端断句 · 流式对话") {
+            Button { showCaptions = true } label: {
+                Label("Azure 实时字幕 · V1 实验", systemImage: "captions.bubble")
+            }.accessibilityIdentifier("open-azure-captions")
             HStack {
                 Label(runtime.phaseLabel, systemImage: runtime.enabled ? "waveform" : "moon")
                     .font(.system(size: 16, weight: .semibold))
@@ -29,7 +33,10 @@ struct ConversationView: View {
             }.padding(24).frame(maxWidth: .infinity, alignment: .leading)
                 .background(Palette.ink, in: RoundedRectangle(cornerRadius: 22))
                 .accessibilityIdentifier("live-voice-content")
-            if !runtime.enabled {
+            if runtime.captionOwnsVoice {
+                Text("Azure 字幕模式占用语音通道；请进入字幕页面查看采音状态或停止。")
+                    .font(.caption).foregroundStyle(Palette.amber)
+            } else if !runtime.enabled {
                 Text("麦克风未启用 · 没有音频正在传输").font(.caption).foregroundStyle(Palette.muted)
             } else {
                 Text(runtime.phase == "idle" || runtime.phase == "waitingForConnection" ? "服务待命，不是全天录音；等眼镜主动唤醒。" : "本轮音频处理中；关闭待命可停止本轮与后续自动响应。")
@@ -76,7 +83,7 @@ struct ConversationView: View {
                     PrimaryButton(title: "关闭待命", icon: "stop.circle") { runtime.stop() }
                     Button("结束本轮，保留待命") { runtime.endRound() }
                 } else {
-                    PrimaryButton(title: "开启眼镜语音待命", icon: "waveform", enabled: runtime.ready && (!useCloud || runtime.hasCredentials)) { confirmStart = true }
+                    PrimaryButton(title: "开启眼镜语音待命", icon: "waveform", enabled: !runtime.captionOwnsVoice && runtime.ready && (!useCloud || runtime.hasCredentials)) { confirmStart = true }
                 }
                 Button("连接与解绑管理") { showDiagnostics = true }
                 Text(runtime.latestEvent).font(.system(size: 10, design: .monospaced)).foregroundStyle(Palette.muted)
@@ -95,6 +102,7 @@ struct ConversationView: View {
         .sheet(isPresented: $showConfiguration) { ModelConfigurationView() }
         .sheet(isPresented: $showSimulation) { SessionSimulationView() }
         .sheet(isPresented: $showKeys) { LiveVoiceKeysView() }
+        .sheet(isPresented: $showCaptions) { AzureCaptionView() }
         #if COMPANION_DEVICE
         .sheet(isPresented: $showDiagnostics, onDismiss: { runtime.refresh() }) {
             NavigationStack { VoiceDiagnosticsView(runtime: runtime).toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { showDiagnostics = false } } } }

@@ -1,0 +1,51 @@
+name: Azure captions V1
+on:
+  pull_request:
+    paths:
+      - 'rayneo-captions/**'
+      - 'rayneo-protocol/**'
+      - 'apps/RayNeoCompanion/**'
+      - 'core-probe/**'
+      - 'scripts/**'
+      - '.github/workflows/azure-captions.yml'
+  push:
+    branches: ['feat/azure-captions-v1']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: captions-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  policy-tests:
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - run: node --test scripts/check-source.test.mjs
+      - run: node scripts/check-source.mjs
+      - run: swift test --package-path rayneo-captions
+      - run: swift test --package-path rayneo-protocol
+  ios-build:
+    runs-on: macos-15
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [local, device]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - run: brew install xcodegen
+      - run: node scripts/start.mjs --${{ matrix.mode }} --no-open
+      - if: matrix.mode == 'local'
+        run: node scripts/test-caption-boundaries.mjs
+      - if: matrix.mode == 'device'
+        run: >-
+          xcodebuild -project apps/RayNeoCompanion/RayNeoCompanion.xcodeproj
+          -scheme RayNeoCompanionDevice -destination 'generic/platform=iOS'
+          -derivedDataPath apps/RayNeoCompanion/build-captions-device
+          CODE_SIGNING_ALLOWED=NO build

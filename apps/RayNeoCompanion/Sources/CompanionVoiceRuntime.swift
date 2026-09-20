@@ -20,6 +20,23 @@ import Combine
     var onBusiness: ((String, UInt8, Data) -> Void)?
     var onBusinessLoss: (() -> Void)?
     var featureIsBusy: (() -> Bool)?
+    @Published private(set) var captionOwnsVoice = false
+    var onCaptionEnvelope: ((String, UInt32, Data?, TimeInterval) -> Void)?
+    var onCaptionInputLoss: ((String) -> Void)?
+    func ownVoiceForCaptions(_ owns: Bool) {
+        #if COMPANION_DEVICE
+        prepare(); controller.companionOwnVoiceForCaptions(owns)
+        #endif
+        captionOwnsVoice = owns
+        refresh()
+    }
+    func sendCaption(target: String, payload: Data) throws {
+        #if COMPANION_DEVICE
+        try controller.companionSendCaption(target: target, payload: payload)
+        #else
+        throw DeviceFeatureError.disconnected
+        #endif
+    }
     var onConnectionChange: ((String?) -> Void)?
     var onRuntimeRefresh: (() -> Void)?
     private var previousDeviceID: String?
@@ -74,6 +91,8 @@ import Combine
         #if COMPANION_DEVICE
         guard poll == nil else { refresh(); return }
         controller.companionBusiness = { [weak self] in self?.onBusiness?($0,$1,$2) }
+        controller.companionCaptionReceiver = { [weak self] in self?.onCaptionEnvelope?($0,$1,$2,$3) }
+        controller.companionCaptionInputLoss = { [weak self] in self?.onCaptionInputLoss?($0) }
         controller.companionTools = { [weak self] in self?.codex?.toolDefinitions ?? [] }
         controller.companionExecuteTool = { [weak self] name, arguments, id in
             guard let codex = self?.codex else { return "Codex工具未配置，未执行。" }
@@ -139,7 +158,7 @@ import Combine
         #endif
     }
     func start(cloud: Bool, continuous: Bool) {
-        guard featureIsBusy?() != true else { error = "请先结束眼镜录音或提词器任务，再开启语音待命。"; return }
+        guard !captionOwnsVoice, featureIsBusy?() != true else { error = "请先结束字幕、眼镜录音或提词器任务，再开启语音待命。"; return }
         #if COMPANION_DEVICE
         prepare()
         guard controller.companionStart(cloud: cloud, continuous: continuous) else {
@@ -160,7 +179,7 @@ import Combine
     }
     func saveKeys(asr: String, llm: String, host: String, enableDefault: Bool = false) -> Bool {
         #if COMPANION_DEVICE
-        guard !enabled else { error = "请先关闭待命，再修改云端凭据。"; return false }
+        guard !captionOwnsVoice, !enabled else { error = "请先关闭字幕和语音待命，再修改云端凭据。"; return false }
         guard let target = CloudASRHostSettings.normalize(host) else { error = "请填写自己的阿里云 ASR 主机名（aliyuncs.com），不含协议、路径或端口。"; return false }
         let service = CloudASRHostSettings.service(for: target)
         let a = asr.isEmpty ? CloudVoiceKeys.get(service) != nil : CloudVoiceKeys.save(asr, service: service)
