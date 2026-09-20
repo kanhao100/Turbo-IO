@@ -1,4 +1,5 @@
 import XCTest
+import Security
 import RayNeoCaptions
 @testable import RayNeoCompanion
 
@@ -28,9 +29,16 @@ final class CaptionBoundaryTests: XCTestCase {
         XCTAssertEqual(runtime.options.region, "eastus")
     }
     func testAzureKeysAreIsolatedByRegionAndCanBeRemoved() throws {
-        let region = "caption-test-" + UUID().uuidString
+        let region = "ct" + UUID().uuidString.replacingOccurrences(of: "-", with: "")
         defer { try? AzureCaptionCredentials.remove(region: region) }
-        try AzureCaptionCredentials.save("synthetic-test-only", region: region)
+        do {
+            try AzureCaptionCredentials.save("synthetic-test-only", region: region)
+        } catch AzureCaptionCredentials.StorageError.keychain(let status)
+                    where status == errSecMissingEntitlement || status == errSecNotAvailable {
+            // The CI simulator build is deliberately unsigned (CODE_SIGNING_ALLOWED=NO).
+            // Do not replace device Keychain storage with a test-only plaintext fallback.
+            throw XCTSkip("This unsigned simulator runner cannot access Keychain (OSStatus \(status)).")
+        }
         XCTAssertEqual(AzureCaptionCredentials.read(region: region), "synthetic-test-only")
         XCTAssertNil(AzureCaptionCredentials.read(region: region + "-other"))
         try AzureCaptionCredentials.remove(region: region)
