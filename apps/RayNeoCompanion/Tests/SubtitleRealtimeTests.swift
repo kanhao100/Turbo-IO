@@ -214,7 +214,7 @@ final class SubtitleRealtimeTests: XCTestCase {
             defaults=UserDefaults(suiteName:name)!
             let provider=provider
             settings=SubtitleSettingsStore(defaults:defaults,credentials:vault,allowsChanges:true,factory:{_ in provider})
-            var options=CaptionOptions();options.service=service;options.region="eastus";options.aliyunHost="test.aliyuncs.com";options.recordAudio=true
+            var options=CaptionOptions();options.service=service;options.region="eastus";options.aliyunHost="workspace-a.cn-beijing.maas.aliyuncs.com";options.recordAudio=true
             XCTAssertTrue(settings.save(options,key:"synthetic-test-only"))
             archive=SubtitleArchiveStore(root:FileManager.default.temporaryDirectory.appendingPathComponent(name))
             let decoder=decoder,writer=writer,clock=clock
