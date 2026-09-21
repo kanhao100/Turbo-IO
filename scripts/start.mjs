@@ -5,8 +5,9 @@ import {resolve,dirname} from 'node:path';
 import {fileURLToPath} from 'node:url';
 const root=resolve(dirname(fileURLToPath(import.meta.url)),'..');
 const mode=process.argv[2];
-if(!['--local','--device'].includes(mode) || process.argv.length!==3){
-  console.error('Usage: node scripts/start.mjs --local | --device'); process.exit(2);
+const noOpen=process.argv[3]==='--no-open';
+if(!['--local','--device'].includes(mode) || !(process.argv.length===3 || (process.argv.length===4 && noOpen))){
+  console.error('Usage: node scripts/start.mjs --local | --device [--no-open]'); process.exit(2);
 }
 for(const [name,args] of [['xcodebuild',['-version']],['xcodegen',['--version']]]){
   const check=spawnSync(name,args,{cwd:root,stdio:'ignore'});
@@ -30,5 +31,7 @@ if(mode==='--device'){
 const generated=spawnSync('xcodegen',['generate','--spec',spec],{cwd:root,stdio:'inherit'});
 if(generated.status!==0)process.exit(generated.status||1);
 console.log(mode==='--local'?'Select RayNeoCompanion and a simulator; press Run. No glasses transport.':'Select RayNeoCompanionDevice, your signing Team and your own iPhone. No automatic installation.');
-const opened=spawnSync('open',['apps/RayNeoCompanion/RayNeoCompanion.xcodeproj'],{cwd:root,stdio:'inherit'});
-process.exitCode=opened.status||0;
+if(!noOpen){
+  const opened=spawnSync('open',['apps/RayNeoCompanion/RayNeoCompanion.xcodeproj'],{cwd:root,stdio:'inherit'});
+  process.exitCode=opened.status||0;
+}

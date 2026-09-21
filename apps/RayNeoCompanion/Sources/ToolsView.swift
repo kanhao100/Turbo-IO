@@ -28,7 +28,7 @@ struct ToolsView: View {
                 }.buttonStyle(.plain).accessibilityIdentifier("prompter-tool")
             }
             Card {
-                Button { showModel = true } label: { FeatureRow(icon: "gearshape", title: "模型设置", subtitle: "配置本地模型与服务", status: "配置") }.buttonStyle(.plain)
+                Button { showModel = true } label: { FeatureRow(icon: "gearshape", title: "语音服务设置", subtitle: "四家转写服务 · AI 对话模型", status: "配置") }.buttonStyle(.plain)
                 Divider().overlay(Palette.line)
                 Button { showLab = true } label: { FeatureRow(icon: "flask", title: "协议实验室", subtitle: "探索协议与功能实验", status: "本地模拟") }.buttonStyle(.plain).accessibilityIdentifier("protocol-lab")
             }
@@ -55,7 +55,7 @@ struct ToolsView: View {
                 NavigationLink("偏好设置") { SettingsView(embedded: true) }
             }.font(.system(size: 12)).padding(.horizontal, 5)
         }
-        .sheet(isPresented: $showModel) { ModelConfigurationView() }
+        .sheet(isPresented: $showModel) { VoiceServicesView() }
         .sheet(isPresented: $showLab) { SessionSimulationView() }
     }
 
@@ -383,7 +383,7 @@ struct SettingsView: View {
                 Label("不接管官方登录和绑定", systemImage: "lock.shield")
             }.font(.subheadline)
             Section("当前构建") {
-                LabeledContent("版本", value: (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.2.0") + " · 研究版")
+                LabeledContent("版本", value: (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.2.0") + " (" + (Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?") + ") · 研究版")
                 LabeledContent("设备通道", value: store.voice.supportsDevice ? "厂商核心适配 · 待真机复验" : "模拟器禁用")
                 LabeledContent("最低系统", value: "iOS 16")
                 Text("模拟器与编译通过不代表非越狱实机、配对或镜片效果已验证。")
@@ -400,7 +400,7 @@ struct HelpView: View {
         ("哪些还不是正式能力？", "真实蓝牙连接、独立认证、语音采集与识别、模型调用、TTS、镜片显示、反向事件、NAS 自动归档。界面不会将这些显示为成功。"),
         ("我的录音保存在哪里？", "新归档在Turbo IO自己沙盒的 Documents/VerifiedRecordingArchiveV1。旧 ImportedRecordings 保留原位，只有逐条确认才复制进新档。来源不修改，不自动播放、识别或上传。"),
         ("演示会改变眼镜吗？", "不会。演示只是手机侧的可视化与纯逻辑实验；顶部持续显示演示标识。退出应用后默认回到真实未连接状态。"),
-        ("怎么接入自己的模型？", "真机语音页使用已验收的阿里云 ASR 与 DeepSeek Flash，在语音服务密钥页配置后明确开启待命。其他模型设置仍是独立草稿，不会改变实际语音服务。"),
+        ("怎么接入自己的模型？", "在语音服务设置中选择 Azure、Deepgram、ElevenLabs 或阿里云。实时字幕只需转写密钥；AI 对话另需 DeepSeek 密钥。保存后手动开启所需模式。"),
         ("为什么没有重置或升级按钮？", "研究版不会为了界面完整加入危险操作。必须等协议、恢复路径和目标设备被核实后，才会开放有确认步骤的控制。"),
         ("如何判断真正打通？", "代码测试、手机运行、眼镜实际显示与反向操作分别验收。最终还要在使用自有签名的非越狱 iPhone 上完整验证。")
     ]

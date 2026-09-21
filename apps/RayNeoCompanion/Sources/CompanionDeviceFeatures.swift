@@ -31,7 +31,7 @@ import UIKit
     private var finalizationInFlight = false
     private var pendingSettings: [String: Date] = [:]
     private var observers: [NSObjectProtocol] = []
-    var canControl: Bool { voice.ready && !recoveryBusy && store?.alwaysOn.occupied != true && !["recording", "processing", "displaying"].contains(voice.phase) }
+    var canControl: Bool { voice.ready && !voice.captionOwnsVoice && !recoveryBusy && store?.alwaysOn.occupied != true && !["recording", "processing", "displaying"].contains(voice.phase) }
     init(voice: CompanionVoiceRuntime, store: CompanionStore, root: URL) {
         self.voice = voice; self.store = store; inbox = GlassesRecordingInbox(root: root)
         voice.onBusiness = { [weak self] in self?.receive(device: $0, business: $1, data: $2) }

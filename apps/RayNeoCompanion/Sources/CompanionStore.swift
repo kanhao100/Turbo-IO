@@ -109,7 +109,10 @@ final class CompanionStore: ObservableObject {
     let archive: LocalArchiveController
     let books: BookLibrary
     let timeline: ConversationTimeline
+    let speech: SpeechSettingsStore
     let voice: CompanionVoiceRuntime
+    lazy var captions = CaptionRuntime(voice: voice, defaults: defaults,
+        root: customRecordingRoot?.deletingLastPathComponent().appendingPathComponent("AzureCaptionsV1"))
     let codex: CodexCompanion
     lazy var alwaysOn = AlwaysOnLocalProbe(defaults: defaults,
         root: customRecordingRoot?.deletingLastPathComponent().appendingPathComponent("AlwaysOnLocalProbeV1")
@@ -182,7 +185,8 @@ final class CompanionStore: ObservableObject {
         #endif
         self.customRecordingRoot = recordingRoot
         timeline = ConversationTimeline(root: archiveRoot?.deletingLastPathComponent().appendingPathComponent("ConversationTimelineV1"))
-        voice = CompanionVoiceRuntime(timeline: timeline)
+        speech = SpeechSettingsStore(defaults: defaults)
+        voice = CompanionVoiceRuntime(timeline: timeline, speech: speech)
         codex = CodexCompanion(defaults: defaults)
         voice.codex = codex
         books = BookLibrary(root: archiveRoot?.deletingLastPathComponent().appendingPathComponent("ReadingLibraryV1"), allowsTestFixture: allowsBookTestFixture)

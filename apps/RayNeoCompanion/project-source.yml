@@ -10,6 +10,8 @@ settings:
     DEVELOPMENT_TEAM: ""
     CODE_SIGN_STYLE: Automatic
 packages:
+  RayNeoCaptions:
+    path: ../../rayneo-captions
   ZIPFoundation:
     path: ../../third-party/ZIPFoundation
   RayNeoProtocol:
@@ -30,7 +32,16 @@ targets:
       - Sources
       - ../../core-probe/Sources/VoiceToolCallAccumulator.swift
       - ../../core-probe/Sources/CloudASRHostSettings.swift
+      - ../../core-probe/Sources/CloudVoiceSettings.swift
+      - ../../core-probe/Sources/AliyunSpeechSession.swift
+      - ../../core-probe/Sources/VoiceRecognitionPort.swift
+      - ../../core-probe/Sources/SpeechTurnAssembler.swift
+      - ../../core-probe/Sources/CloudVoicePipeline.swift
+      - ../../core-probe/Sources/AnswerDeltaCoalescer.swift
+      - ../../core-probe/Sources/StandbyVoiceSession.swift
+      - ../../core-probe/Sources/SpeechEndpointDetector.swift
     dependencies:
+      - package: RayNeoCaptions
       - package: ZIPFoundation
       - package: RayNeoProtocol
       - package: RayNeoDisplay
@@ -51,10 +62,12 @@ targets:
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
         TARGETED_DEVICE_FAMILY: "1,2"
         MARKETING_VERSION: "0.2.0"
-        CURRENT_PROJECT_VERSION: "2"
+        CURRENT_PROJECT_VERSION: "4"
     info:
       path: Generated/Companion-Info.plist
       properties:
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         NSRemindersUsageDescription: 读取你选择的系统提醒事项并复制为Turbo IO本机待办。不会修改或删除系统提醒事项。
         NSRemindersFullAccessUsageDescription: 读取你选择的系统提醒事项并复制为Turbo IO本机待办。虽然系统授权为完全访问，Turbo IO仅执行读取。
         CFBundleDocumentTypes:

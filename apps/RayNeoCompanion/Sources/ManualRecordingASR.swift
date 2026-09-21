@@ -2,6 +2,7 @@ import Foundation
 import AVFoundation
 import Combine
 import SwiftUI
+import RayNeoCaptions
 
 enum RecordingASRError: LocalizedError {
     case unsupported, limit, credentials, remote, empty
@@ -9,7 +10,7 @@ enum RecordingASRError: LocalizedError {
         switch self {
         case .unsupported: return "此音频无法由 iOS 解码。请使用有效 WAV、M4A、MP3 等系统支持格式；原始眼镜容器可能需要额外转换。"
         case .limit: return "手动转写暂限 10 分钟音频 / 32 MiB 解码 PCM。"
-        case .credentials: return "请先在真机语音页保存阿里云 ASR 密钥。模拟器不调用真实语音服务。"
+        case .credentials: return "录音文件转写当前仅支持阿里云，请在统一语音服务设置中保存阿里云 Host 和 Key。实时字幕和 AI 对话可使用其他服务。"
         case .remote: return "ASR 连接、超时或协议失败，没有保存为成功转写；可重试。"
         case .empty: return "ASR 未返回有效最终文字，没有生成空笔记。"
         }
@@ -262,14 +263,20 @@ final class FileASRDiagnostic {
 struct ManualRecordingASRView: View {
     let id: UUID, title: String
     @EnvironmentObject private var asr: ManualRecordingASR
+    @EnvironmentObject private var speech: SpeechSettingsStore
     @EnvironmentObject private var archive: LocalArchiveController
     @State private var confirmation = false
     @State private var captureDiagnostic = false
     @State private var rightChannelOnly = false
+    @State private var showServices = false
+    private var fileConfiguration: SpeechConfiguration {
+        var value = speech.configuration; value.service = .aliyun; return value
+    }
+    private var configured: Bool { (try? fileConfiguration.validated()) != nil && speech.hasKey(for: fileConfiguration) }
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("录音转文字").font(.headline)
-            Text("只有确认后才把这份本机音频发送给阿里云 ASR。按音频时长流式发送，可能计费；无需 DeepSeek，不自动总结。成功后新增文字修订，不覆盖原音频或旧稿。")
+            Text("录音文件转写目前使用已保存的阿里云配置，不改变实时模式所选服务。只有确认后才上传这份音频。按音频时长流式发送，可能计费；无需 DeepSeek，不自动总结。成功后新增文字修订，不覆盖原音频或旧稿。")
                 .font(.caption).foregroundStyle(Palette.muted)
             Text("转写期间请保持 App 在前台；长时间后台完成尚未验收。").font(.caption2).foregroundStyle(Palette.muted)
             Text("默认合并全部声道，再转为16kHz单声道；保留原始录音，不覆盖音频。").font(.caption2).foregroundStyle(Palette.muted)
@@ -278,13 +285,18 @@ struct ManualRecordingASRView: View {
             if captureDiagnostic {
                 Toggle("诊断：仅本次使用右声道", isOn: $rightChannelOnly).disabled(asr.busy).accessibilityIdentifier("manual-asr-right-channel")
             }
-            Button("手动开始 ASR 转写") { confirmation = true }.disabled(asr.busy || archive.isBusy).accessibilityIdentifier("manual-recording-asr")
+            if !configured {
+                Text("文件转写还需保存阿里云 Host 和 Key；其他实时转写服务不会因此受限。").font(.caption).foregroundStyle(Palette.amber)
+                Button("语音服务设置") { showServices = true }
+            }
+            Button("手动开始 ASR 转写") { confirmation = true }.disabled(asr.busy || archive.isBusy || !configured).accessibilityIdentifier("manual-recording-asr")
             if asr.recordingID == id {
                 Text(asr.status).font(.caption)
                 if asr.busy { ProgressView(value: asr.progress); Button("取消转写") { asr.cancel() } }
                 if !asr.resultText.isEmpty { Text(asr.resultText).font(.caption).textSelection(.enabled).privacySensitive() }
             } else if asr.busy { Text("另一份录音正在转写。完成后再试。").font(.caption) }
-        }.confirmationDialog("将这份录音发送到阿里云 ASR？可能计费，识别结果需要人工核对。", isPresented: $confirmation) {
+        }.sheet(isPresented: $showServices) { VoiceServicesView() }
+        .confirmationDialog("将这份录音发送到阿里云 ASR？可能计费，识别结果需要人工核对。", isPresented: $confirmation) {
             Button("确认上传并转文字") {
                 let capture = captureDiagnostic, right = captureDiagnostic && rightChannelOnly
                 captureDiagnostic = false; rightChannelOnly = false
@@ -293,3 +305,4 @@ struct ManualRecordingASRView: View {
         }
     }
 }
+
