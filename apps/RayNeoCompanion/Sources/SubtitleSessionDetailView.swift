@@ -7,8 +7,15 @@ struct SubtitleSessionDetailView: View {
     @EnvironmentObject private var archive: SubtitleArchiveStore
     @EnvironmentObject private var runtime: SubtitleRealtimeRuntime
     @EnvironmentObject private var playback: SubtitleAudioPlayback
-    @State private var record: SubtitleSessionRecord?, entries: [CaptionEntry] = [], audio: [SubtitleAudioFile] = []
-    @State private var message: String?, exported: URL?, name = "", rename = false, deleting = false, exporting = false
+    @State private var record: SubtitleSessionRecord?
+    @State private var entries: [CaptionEntry] = []
+    @State private var audio: [SubtitleAudioFile] = []
+    @State private var message: String?
+    @State private var exported: URL?
+    @State private var name = ""
+    @State private var rename = false
+    @State private var deleting = false
+    @State private var exporting = false
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {

@@ -8,8 +8,10 @@ struct SubtitleSettingsView: View {
     @EnvironmentObject private var runtime: SubtitleRealtimeRuntime
     @EnvironmentObject private var features: CompanionDeviceFeatures
     @EnvironmentObject private var voice: CompanionVoiceRuntime
-    @State private var draft = CaptionOptions(), key = ""
-    @State private var saved = false, confirmShortcut = false
+    @State private var draft = CaptionOptions()
+    @State private var key = ""
+    @State private var saved = false
+    @State private var confirmShortcut = false
     private var busy: Bool { runtime.active || runtime.saving || voice.enabled || voice.subtitleOwnsDisplay }
     var body: some View {
         NavigationStack {

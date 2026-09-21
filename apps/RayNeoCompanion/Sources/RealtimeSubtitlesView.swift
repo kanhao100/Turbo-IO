@@ -8,7 +8,9 @@ struct RealtimeSubtitlesView: View {
     @EnvironmentObject private var settings: SubtitleSettingsStore
     @EnvironmentObject private var archive: SubtitleArchiveStore
     @State private var page = 0
-    @State private var showSettings = false, showDisplayTest = false, confirmStart = false
+    @State private var showSettings = false
+    @State private var showDisplayTest = false
+    @State private var confirmStart = false
     @State private var search = ""
     var body: some View {
         NavigationStack {
