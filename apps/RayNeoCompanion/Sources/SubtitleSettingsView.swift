@@ -6,6 +6,7 @@ struct SubtitleSettingsView: View {
     @EnvironmentObject private var store: CompanionStore
     @EnvironmentObject private var settings: SubtitleSettingsStore
     @EnvironmentObject private var runtime: SubtitleRealtimeRuntime
+    @EnvironmentObject private var latency: SubtitleLatencyDiagnostics
     @EnvironmentObject private var features: CompanionDeviceFeatures
     @EnvironmentObject private var voice: CompanionVoiceRuntime
     @State private var draft = CaptionOptions()
@@ -62,6 +63,19 @@ struct SubtitleSettingsView: View {
                         .font(.caption).foregroundStyle(.secondary)
                     Button("恢复原来的双击操作") { runtime.setShortcut(false); features.setDoubleTapSubtitles(false) }
                         .disabled(!voice.ready || busy)
+                }
+                Section("实验：延迟诊断") {
+                    Toggle("记录分阶段延迟（永久记住）", isOn: Binding(
+                        get: { latency.enabled },
+                        set: { latency.setEnabled($0) }
+                    )).disabled(runtime.active)
+                        .accessibilityIdentifier("subtitle-latency-enabled")
+                    Text("只记录毫秒、次数和最小/平均/最大值，不记录音频、字幕正文、密钥、原始序号或设备标识。")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Text("由于眼镜包没有可与手机时钟对齐的采集时间戳，只能测启动到首包、包间抖动、App 排队、云端就绪/返回和结果下发；不能伪装成精确的麦克风单向网络延迟。")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Button("清空延迟统计", role: .destructive) { latency.reset() }
+                        .disabled(runtime.active || latency.sessionCount == 0)
                 }
                 if !voice.supportsDevice { Text("本地预览不保存密钥、不连接眼镜或转写服务。").font(.caption) }
                 if voice.enabled { Button("先关闭 AI 对话待命") { voice.stop() } }

@@ -22,6 +22,7 @@ struct RayNeoCompanionApp: App {
                 .environmentObject(store.subtitleSettings)
                 .environmentObject(store.subtitleArchive)
                 .environmentObject(store.subtitlePlayback)
+                .environmentObject(store.realtimeSubtitles.latency)
                 .environmentObject(store.notifications)
                 .environmentObject(store.headControlTest)
                 .environmentObject(store.automaticWeather)

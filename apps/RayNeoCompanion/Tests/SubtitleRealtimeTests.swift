@@ -101,12 +101,27 @@ final class SubtitleRealtimeTests: XCTestCase {
         let secondStarted = expectation(description: "queued shortcut starts after save")
         f.runtime.onShortcutStart = { secondStarted.fulfill() }
         f.feed(1, sid: "second-shortcut")
-        XCTAssertTrue(f.runtime.status.contains("保存完成后自动启动"))
+        XCTAssertTrue(f.runtime.status.contains("完成后自动启动"))
         f.writer.complete()
         await fulfillment(of: [secondStarted], timeout: 3)
         XCTAssertEqual(f.runtime.phase, .openingDisplay)
         XCTAssertEqual(try f.types(), [2,7,2,7])
         f.writer.deferFinish = false
+    }
+    @MainActor func testLatencyExperimentReceivesRealRuntimeBoundaries() async throws {
+        let f = fixture(); f.runtime.latency.setEnabled(true)
+        await f.runtime.start()?.value
+        let sid = try f.sid()
+        f.clock.now += 0.1; f.feed(2, sid: sid, code: 1)
+        f.clock.now += 0.1; f.feed(8, sid: sid, code: 1)
+        f.clock.now += 0.2; f.feed(4, sid: sid, seq: 10, bytes: Data([1]))
+        f.clock.now += 0.4; f.provider.onText?("timing fixture", false)
+
+        XCTAssertEqual(f.runtime.latency.snapshot(.handshakeToFirstAudio).last, 300)
+        XCTAssertEqual(f.runtime.latency.snapshot(.firstAudioToFirstResult).last, 400)
+        XCTAssertEqual(f.runtime.latency.snapshot(.resultToGlassesSubmit).last, 0)
+        XCTAssertTrue(f.runtime.latency.report.contains("Deepgram"))
+        f.runtime.stop()
     }
     @MainActor func testNonUnitSequenceStrideDoesNotSplitRecordingAndDuplicatesAreDropped() async throws {
         let f = fixture(); await f.runtime.start()?.value

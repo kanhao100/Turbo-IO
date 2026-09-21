@@ -66,6 +66,7 @@ private final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
     @Published private(set) var cloudReady = false
     let settings: SubtitleSettingsStore
     let archive: SubtitleArchiveStore
+    let latency: SubtitleLatencyDiagnostics
     var onShortcutStart: (() -> Void)?
     private let device: any SubtitleRealtimeDevice
     private let defaults: UserDefaults
@@ -101,8 +102,9 @@ private final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
     init(voice: any SubtitleRealtimeDevice, settings: SubtitleSettingsStore, archive: SubtitleArchiveStore,
          defaults: UserDefaults = .standard, makeDecoder: (() -> SubtitlePCMDecoder?)? = nil,
          makeWriter: WriterFactory? = nil, uptime: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
-         scheduleTimers: Bool = true) {
+         scheduleTimers: Bool = true, latency: SubtitleLatencyDiagnostics? = nil) {
         device = voice; self.settings = settings; self.archive = archive; self.defaults = defaults
+        self.latency = latency ?? SubtitleLatencyDiagnostics(defaults: defaults)
         self.uptime = uptime; self.scheduleTimers = scheduleTimers
         self.makeDecoder = makeDecoder ?? {
             #if COMPANION_DEVICE
@@ -150,6 +152,7 @@ private final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
         maximumDispatchDelayMilliseconds = 0; maximumArrivalIntervalMilliseconds = 0
         sequenceStepCounts = [:]; otherSequenceSteps = 0
         lastDisplayAt = -.infinity; pendingText = nil; error = nil; acceptedAt = now; began = now
+        latency.sessionStarted(at: now, service: options.service.name)
         device.ownDisplayForSubtitles(true)
         let value = SubtitleSessionRecord(id: id, title: "字幕 · " + Date().formatted(date: .abbreviated, time: .shortened), options: options)
         record = value
@@ -234,13 +237,18 @@ private final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
     private func acceptedStart() {
         guard phase == .startingAudio, let sid else { return }
         phase = .openingDisplay; deadline = now + 10; lastAudioAt = now; cloudDeadline = now + 20
+        latency.audioStartAccepted(at: now)
         status = "收音启动已确认，正在连接转写与字幕显示"
         let token = generation
-        provider?.onReady = { [weak self] in guard let self, self.generation == token, self.cloudStarted else { return }; self.cloudReady = true }
+        provider?.onReady = { [weak self] in
+            guard let self, self.generation == token, self.cloudStarted else { return }
+            self.cloudReady = true; self.latency.cloudReady(at: self.now)
+        }
         provider?.onText = { [weak self] text, final in guard let self, self.generation == token else { return }; self.recognized(text, final: final) }
         provider?.onFailure = { [weak self] failure in guard let self, self.generation == token else { return }; self.fail("\(self.options.service.name)：\(failure.message)") }
         provider?.onEndpoint = nil
         cloudStarted = true
+        latency.cloudStarted(at: now)
         provider?.start(options: options, key: key)
         guard generation == token, phase == .openingDisplay else { return }
         do { _ = send(try SubtitleTranslateWire.display(sid: sid)) } catch { fail("无法编码显示命令。") }
@@ -273,6 +281,7 @@ private final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
         guard let audio = event.audio, let pcm = decoder?.decode(audio), !pcm.isEmpty, pcm.count <= 3840, pcm.count % 2 == 0 else {
             markGap("音频包未通过 Opus 解码校验"); fail("眼镜字幕音频格式未通过解码；请分享诊断记录。") ; return
         }
+        latency.audioArrived(callbackAt: arrival, handledAt: now)
         lastAudioAt = arrival; packets += 1; audioBytes += pcm.count
         record?.receivedPCMBytes = audioBytes
         if gapOpen { writer?.event(CaptionEntry(kind: .gap, text: "音频恢复，缺失部分未补录")); gapOpen = false }
@@ -284,6 +293,7 @@ private final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
     private func recognized(_ value: String, final: Bool) {
         guard cloudStarted, phase == .openingDisplay || phase == .listening else { return }
         guard value.utf8.count <= 32768 else { fail("单句转写超过保存上限。" ); return }
+        latency.resultReceived(at: now)
         cloudReady = true; partial = value
         if final {
             if !value.isEmpty {
@@ -302,7 +312,9 @@ private final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
     private func pumpDisplay() {
         guard phase == .listening, displayReady, now - lastDisplayAt >= 0.5, let text = pendingText, let sid else { return }
         pendingText = nil; lastDisplayAt = now
-        do { _ = send(try SubtitleTranslateWire.text(text, sid: sid)) } catch { fail("无法编码字幕文字。") }
+        do {
+            if send(try SubtitleTranslateWire.text(text, sid: sid)) { latency.resultSubmittedToGlasses(at: now) }
+        } catch { fail("无法编码字幕文字。") }
     }
     private func markGap(_ note: String) {
         guard !gapOpen else { return }; gapOpen = true; gaps += 1; record?.gaps = gaps
@@ -328,6 +340,7 @@ private final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
         let wasPreparing = phase == .preparing
         generation = UUID(); status = reason
         cloudStarted = false; provider?.stop(); provider = nil; key = ""; cloudReady = false; pendingText = nil
+        latency.sessionStopped()
         decoder = nil; audioLevel = 0
         if !partial.isEmpty { writer?.event(CaptionEntry(kind: .unfinished, text: partial)); partial = "" }
         var exitSubmissionFailed = false

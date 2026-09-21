@@ -5,6 +5,7 @@ struct RealtimeSubtitlesView: View {
     @EnvironmentObject private var store: CompanionStore
     @EnvironmentObject private var voice: CompanionVoiceRuntime
     @EnvironmentObject private var runtime: SubtitleRealtimeRuntime
+    @EnvironmentObject private var latency: SubtitleLatencyDiagnostics
     @EnvironmentObject private var settings: SubtitleSettingsStore
     @EnvironmentObject private var archive: SubtitleArchiveStore
     @State private var page = 0
@@ -97,10 +98,32 @@ struct RealtimeSubtitlesView: View {
             }.font(.caption).foregroundStyle(Palette.muted)
             Text("运行时无需打开手机：再次双击眼镜即可停止并保存。锁屏与正常后台会继续使用外设连接；强制结束 App 或断连会结束当前会话。")
                 .font(.caption).foregroundStyle(Palette.muted)
+            if latency.enabled { latencyCard }
             DisclosureGroup("显示测试与诊断") {
                 Button("打开已验证的上屏测试") { showDisplayTest = true }.disabled(runtime.active || runtime.saving)
                 ShareLink("分享脱敏诊断", item: runtime.diagnosticText)
+                ShareLink("分享延迟实验报告", item: latency.report)
             }.font(.subheadline)
+        }
+    }
+    private var latencyCard: some View {
+        Card {
+            HStack {
+                Label("延迟实验", systemImage: "stopwatch")
+                Spacer(); Badge(text: runtime.active ? "\(latency.serviceName) · 记录中" : latency.serviceName, active: runtime.active)
+            }.font(.subheadline.weight(.semibold))
+            ForEach(SubtitleLatencyDiagnostics.Metric.allCases, id: \.rawValue) { metric in
+                let value = latency.snapshot(metric)
+                HStack(alignment: .firstTextBaseline) {
+                    Text(metric.rawValue).foregroundStyle(Palette.muted)
+                    Spacer()
+                    Text(value.count == 0 ? "—" : "\(value.last) ms · 均 \(value.average) ms")
+                        .monospacedDigit().foregroundStyle(Palette.ink)
+                }.font(.caption)
+            }
+            Text("只记时间元数据。眼镜端无同钟采集时间戳，“启动确认 → 首包”用于发现链路等待，不代表绝对单向延迟。")
+                .font(.caption2).foregroundStyle(Palette.muted)
+            Text(latency.assessment).font(.caption).foregroundStyle(Palette.green)
         }
     }
     private func metric(_ value: String, label: String) -> some View {
