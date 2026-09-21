@@ -14,7 +14,7 @@ final class CaptionStreamingTests: XCTestCase {
     func testAllServicesRoundTripAndOnlyAzureNeedsRegion() throws {
         for service in CaptionService.allCases {
             var options = CaptionOptions(); options.service = service
-            if service == .aliyun { options.aliyunHost = "tenant.example.aliyuncs.com" }
+            if service == .aliyun { options.aliyunHost = "workspace-a.cn-beijing.maas.aliyuncs.com" }
             if service == .azure { XCTAssertThrowsError(try options.validated()); options.region = "eastus" }
             XCTAssertNoThrow(try options.validated())
             XCTAssertEqual(try JSONDecoder().decode(CaptionOptions.self, from: JSONEncoder().encode(options)), options)
