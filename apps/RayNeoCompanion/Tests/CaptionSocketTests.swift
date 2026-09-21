@@ -46,6 +46,44 @@ final class CaptionSocketTests: XCTestCase {
         await fulfillment(of: [sent, texts], timeout: 2)
         XCTAssertEqual(received, ["hel", "hello"]); XCTAssertEqual(finals, [false, true])
     }
+    @MainActor func testDeepgramSegmentsReachOneEndpointWithTheWholeUtterance() async {
+        let socket = FakeCaptionSocket()
+        let provider = WebSocketCaptionASR(service: .deepgram, makeSocket: { _ in socket })
+        defer { provider.stop() }
+        var options = CaptionOptions(); options.service = .deepgram
+        var turns = SpeechTurnAssembler(), ended: [String] = []
+        let endpoint = expectation(description: "one completed utterance")
+        provider.onText = { text, final in
+            XCTAssertTrue(ended.isEmpty, "Stable segments must not trigger an endpoint")
+            do { _ = try turns.result(text, final: final) } catch { XCTFail("Assembly failed") }
+        }
+        provider.onEndpoint = {
+            guard case .ended(_, let text)? = turns.endpoint() else { return XCTFail("Missing final utterance") }
+            ended.append(text); endpoint.fulfill()
+        }
+        provider.onFailure = { XCTFail("Unexpected failure: \($0)") }
+        provider.start(options: options, key: "synthetic-test-only")
+        socket.emit(#"{"type":"Results","channel":{"alternatives":[{"transcript":"How do"}]},"is_final":true,"speech_final":false}"#)
+        socket.emit(#"{"type":"Results","channel":{"alternatives":[{"transcript":"I test this?"}]},"is_final":true,"speech_final":false}"#)
+        socket.emit(#"{"type":"Results","channel":{"alternatives":[{"transcript":""}]},"is_final":true,"speech_final":true}"#)
+        await fulfillment(of: [endpoint], timeout: 2)
+        XCTAssertEqual(ended, ["How do I test this?"])
+    }
+    @MainActor func testStoppingDuringTextCallbackSuppressesItsEndpoint() async {
+        let socket = FakeCaptionSocket()
+        let provider = WebSocketCaptionASR(service: .elevenLabs, makeSocket: { _ in socket })
+        defer { provider.stop() }
+        var options = CaptionOptions(); options.service = .elevenLabs
+        let text = expectation(description: "received text"), endpoint = expectation(description: "no endpoint after stop")
+        endpoint.isInverted = true
+        provider.onText = { _, _ in provider.stop(); text.fulfill() }
+        provider.onEndpoint = { endpoint.fulfill() }
+        provider.start(options: options, key: "synthetic-test-only")
+        socket.emit(#"{"message_type":"session_started"}"#)
+        socket.emit(#"{"message_type":"committed_transcript","text":"stop now"}"#)
+        await fulfillment(of: [text, endpoint], timeout: 0.2)
+        XCTAssertTrue(socket.closed)
+    }
     @MainActor func testLateResultFromReplacedSocketCannotUpdateNewSession() async {
         let old = FakeCaptionSocket(), current = FakeCaptionSocket()
         old.holdReceiveOnClose = true

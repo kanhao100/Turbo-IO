@@ -50,7 +50,7 @@ struct RootView: View {
             if !hideTabBar {
             HStack(spacing: 0) {
                 tabButton(0, "设备", "eyeglasses")
-                tabButton(1, "会话", "bubble.left")
+                tabButton(1, "语音", "waveform")
                 tabButton(2, "归档", "folder")
                 tabButton(3, "工具", "case")
             }

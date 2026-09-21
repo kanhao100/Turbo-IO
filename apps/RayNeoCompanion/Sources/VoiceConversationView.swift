@@ -17,7 +17,7 @@ struct ConversationView: View {
                 Text("AI 语音对话").tag("conversation")
             }.pickerStyle(.segmented).padding()
                 .disabled(runtime.enabled || captions.active).accessibilityIdentifier("voice-mode-picker")
-            if mode == "captions" { RealtimeCaptionView(embedded: true) }
+            if mode == "captions" { NavigationStack { RealtimeCaptionView(embedded: true) } }
             else { conversation }
         }
         .navigationTitle("语音")
