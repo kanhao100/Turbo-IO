@@ -24,10 +24,21 @@
 2. 真机工程通过微软官方 [speech-sdk-spm](https://github.com/microsoft/speech-sdk-spm/tree/253f49a30de749996e142ccee573da9a431a034f) 引入 `MicrosoftCognitiveServicesSpeech-iOS`。固定 revision `253f49a30de749996e142ccee573da9a431a034f`（SDK 1.51.2）；没有复制 SDK 二进制到源码。首次解析包需能访问 GitHub 及微软下载域名。本地预览工程不依赖 Azure SDK。
 3. 在统一字幕页选择服务并填写自己的 **API Key**。Azure 另需 **Region**（仅区域 ID，不是 URL），连接公有 Azure Speech；Deepgram 固定连接 `api.deepgram.com/v1/listen`、模型 `nova-3`；ElevenLabs 固定连接 `api.elevenlabs.io/v1/speech-to-text/realtime`、模型 `scribe_v2_realtime`，使用 VAD 自动定稿。支持 en-GB、en-US、zh-CN；ElevenLabs 分别映射为 en、en、zh。当前不提供自定义代理、私有端点或模型地址。
 4. Key 按服务隔离、Azure 再按 Region 隔离，保存在本机 Keychain，`AfterFirstUnlockThisDeviceOnly`；从不写入 UserDefaults、字幕、录音、日志或源码。重启 iPhone 后必须先解锁一次。切换服务会清空尚未保存的输入，避免把一家 Key 保存到另一家。升级保留原 Azure Keychain 名称、设置键及历史目录。Deepgram 使用 Authorization 头，ElevenLabs 使用 xi-api-key 头，Key 不放在 URL 中；连接拒绝 HTTP 重定向。面向多人发布时应另外设计后端短期 token，不要把组织共用 Key 打包进 App。
-5. 确认上传/存储提示（请先取得参与者同意），开启字幕待命，再**主动唤醒眼镜**。5 分钟不唤醒自动退出。切换模式前需先关闭当前待命；结束后不会自动恢复其他模式。
+5. 确认上传/存储提示（请先取得参与者同意），开启字幕待命。App 准备好本地记录后，先向唯一已认证的眼镜提交语音唤醒初始化，再提示**主动唤醒眼镜**。初始化提交失败会退出并报错；提交成功不等于眼镜已唤醒。5 分钟不唤醒自动退出。切换模式前需先关闭当前待命；结束后不会自动恢复其他模式。
 6. 点“停止字幕、上传和本地录音”才是停止；关闭设置页面不是停止。停止时同时提交眼镜停止采音和退出命令。断连时无法确认眼镜是否收到，需查看眼镜指示/手动退出。
 
 开启模式不会假造唤醒、直接调用手机麦克风或不断重发开始采音命令。眼镜 type 8 主动退出后立刻停止本地上传/录音；连接恢复、回到前台、重启 App 都不会自动重新采音。需再次明确开启并唤醒。
+
+## 唤醒与采音握手
+
+字幕和 AI 对话都复用 `ProbeController.submitVoiceWakeup`，发送原有的 `LauncherControlPrototype.enableVoiceWakeup`：
+
+1. 手动开启并完成准备后，通过 **Launcher（business 15）/ type 16** 提交 `set_ai_voice_wakeup`，`mode=1`、`value=0`、`data=""`；此时不请求音频、不连接 ASR。
+2. 等待同一眼镜在本次初始化后产生的 **voiceAssistant（business 13）/ type 1** 真实唤醒。旧轮排队事件、其他设备事件、type 11 和提前到达的音频均不能启动字幕。
+3. 收到有效唤醒后，提交 **business 13 / type 2 / rc=1**，再启动所选 ASR；后续 type 3 音频按原链路解码为 PCM 并转写。
+4. 停止已唤醒的会话时，提交 **type 2 / rc=2** 和 **type 7**，释放字幕占用。未唤醒就取消时不发送采音命令，也不改写眼镜的唤醒开关。
+
+最初的字幕实现接管了 business 13 回调，却遗漏了原待命路径的 Launcher 初始化，可能一直停在“字幕已待命 / 0 分 0 秒”。该缺口在云端 ASR 启动之前，与 Azure Region 校验无关；修复后由本 App 完成初始化，无需先开启官方字幕。字幕发送接口仍只允许 type 2/4/5/7；Launcher 初始化使用独立入口，避免把 type 16 误发到 business 13。
 
 ## 后台能力：不能承诺不被系统杀掉
 
@@ -64,6 +75,7 @@ Fork 若未开启 Actions，需要仓库所有者在 GitHub 开启；请以该 P
 
 真机验收（合并前逐项记录，不预填通过）：
 
+- [ ] 在没有先开启 AI 对话或诊断唤醒的情况下，仅开启字幕即提交 business 15/type 16；确认真实唤醒后才出现 business 13/type 2/rc=1、type 3 和所选 ASR 连接。
 - [ ] 未开启/仅待命时没有音频上传；真实唤醒后收到中间结果和定稿；手机/镜片文本一致。
 - [ ] 旧语音助手、普通录音、提词器与字幕互斥；诊断界面也不能抢发语音通道命令。
 - [ ] 1 分钟静音退出、不按静音退出、有短噪声/持续人声；音频断流 15 秒单独停止。

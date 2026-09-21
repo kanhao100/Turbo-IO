@@ -15,6 +15,7 @@ const result = spawnSync('xcodebuild', [
   '-project', 'apps/RayNeoCompanion/RayNeoCompanion.xcodeproj',
   '-scheme', 'RayNeoCompanion', '-destination', `id=${simulator.udid}`,
   '-only-testing:RayNeoCompanionTests/CaptionBoundaryTests',
+  '-only-testing:RayNeoCompanionTests/CaptionRuntimeTests',
   '-only-testing:RayNeoCompanionTests/CaptionSocketTests',
   '-only-testing:RayNeoCompanionTests/UnifiedSpeechTests',
   '-only-testing:RayNeoCompanionTests/VoicePipelineIntegrationTests',

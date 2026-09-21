@@ -75,6 +75,12 @@ final class ProbeController: UIViewController, CBCentralManagerDelegate, StreamD
             business: .voiceAssistant, messageID: UUID().uuidString))
         DisplayObservation.shared.packet(payload, business: 13, inbound: false)
     }
+    func companionSendCaptionWakeup(target: String) throws {
+        guard companionCaptionOwnsVoice else {
+            throw NSError(domain: "CompanionCaptionConnection", code: 1)
+        }
+        try submitVoiceWakeup(target: target)
+    }
     var companionDeviceID: String? { companionReady ? core?.linkedDevices()?.first?.deviceID() : nil }
     func companionSendFile(_ url: URL, id: String) throws -> String {
         guard companionReady, RNProbeMessageImageMatches(), let device = companionDeviceID,
@@ -367,9 +373,7 @@ final class ProbeController: UIViewController, CBCentralManagerDelegate, StreamD
             if !standbyWasReady && now >= nextWakeInit {
                 nextWakeInit = now + 5
                 do {
-                    let payload = try LauncherControlPrototype.encode(.enableVoiceWakeup)
-                    try core.sendMessage(MessageFactory.make(payload:payload, deviceID:target,
-                        business:.launcher, messageID:UUID().uuidString))
+                    try submitVoiceWakeup(target: target)
                     standbyWasReady = true
                     log("持续服务连接就绪，提交唤醒初始化；眼镜true回传另行核对")
                 } catch { log("持续服务初始化提交失败，5秒后复查") }
@@ -395,6 +399,21 @@ final class ProbeController: UIViewController, CBCentralManagerDelegate, StreamD
         voiceProbe.standby.tick(now:now)
         let labels: [StandbyVoiceSession.Phase:String] = [.disabled:"关闭", .waitingForConnection:"等待连接", .idle:"等待唤醒", .recording:"收音中", .processing:"云端回答中", .displaying:"显示中"]
         standbyButton?.setTitle("9 · 持续待命：\(labels[voiceProbe.standby.phase] ?? "未知")", for:.normal)
+    }
+
+    /// Both voice modes need this initialization; it enables wakeup, not recording.
+    private func submitVoiceWakeup(target: String) throws {
+        guard let core, let linked = core.linkedDevices(), linked.count == 1,
+              let device = linked.first, device.deviceID() == target,
+              device.isConnected(), device.bleStateByte() == 9 else {
+            throw NSError(domain: "VoiceWakeupConnection", code: 1)
+        }
+        let payload = try LauncherControlPrototype.encode(.enableVoiceWakeup)
+        try core.sendMessage(MessageFactory.make(payload: payload, deviceID: target,
+            business: .launcher, messageID: UUID().uuidString))
+        #if COMPANION_DEVICE
+        DisplayObservation.shared.packet(payload, business: 15, inbound: false)
+        #endif
     }
 
     private func log(_ text: String) {

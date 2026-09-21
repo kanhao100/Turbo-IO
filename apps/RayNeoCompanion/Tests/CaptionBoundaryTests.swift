@@ -8,6 +8,7 @@ final class CaptionBoundaryTests: XCTestCase {
         #if !COMPANION_DEVICE
         let voice = CompanionVoiceRuntime()
         let runtime = CaptionRuntime(voice: voice)
+        XCTAssertThrowsError(try voice.sendCaptionWakeup(target: "test-glasses"))
         var options = CaptionOptions(); options.region = "eastus"
         for service in CaptionService.allCases {
             options.service = service

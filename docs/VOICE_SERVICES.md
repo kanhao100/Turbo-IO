@@ -32,6 +32,7 @@
 - `SpeechTurnAssembler`：组装语音轮次。片段定稿与整句结束分开；Deepgram 累积 `is_final` 片段，等 `speech_final` 后才调用模型。Azure recognized、ElevenLabs committed_transcript、阿里云 sentence_end 则结束当前句。空事件不打断，未定稿文字不作为最终模型输入。
 - `CloudVoicePipeline`：统一的 DeepSeek 流式响应、对话历史和取消逻辑。有效新句取消旧回答；会话 ID 和回答 ID 拦截停止/替换后的旧回调。
 - `StandbyVoiceSession`：眼镜采音、等待识别、生成、显示、退出的状态机。转写供应商不决定眼镜控制协议。
+- `ProbeController.submitVoiceWakeup`：字幕和对话共享原 Launcher/type 16 唤醒初始化；`CaptionRuntime` 在准备完成、提交成功后才进入待命，真实 type 1 唤醒后才请求音频并启动 ASR。完整握手见 [字幕说明](AZURE_CAPTIONS_V1.md#唤醒与采音握手)。
 
 实时字幕沿用历史/分段 WAV/静音退出策略；AI 对话沿用 120 秒会话保护和回答发完后 10 秒无新句退出。二者不共用这些不同的会话策略，也不能同时占用眼镜语音通道。目前没有 TTS，回复显示为文字。
 
@@ -45,13 +46,14 @@ Azure 仍使用 `io.turboio.companion.azure-speech.v1` + Region；Deepgram/Eleve
 
 ## 验证
 
-CI 执行纯策略/协议测试，以及模拟器的 `CaptionBoundaryTests`、`CaptionSocketTests`、`UnifiedSpeechTests`、`VoicePipelineIntegrationTests`、`CloudASRConfigurationTests`。新增回归检查覆盖：
+CI 执行纯策略/协议测试，以及模拟器的 `CaptionBoundaryTests`、`CaptionRuntimeTests`、`CaptionSocketTests`、`UnifiedSpeechTests`、`VoicePipelineIntegrationTests`、`CloudASRConfigurationTests`。新增回归检查覆盖：
 
 - 四家各自只有自己的 ASR Key 时的模式依赖，另加模型 Key 后对话配置就绪；不要求别家密钥。
 - 旧配置迁移、跨服务不混用密钥、配置保存不启动、运行中禁止改配置。
 - 选中适配器 → PCM → 分段定稿 → 整句结束 → 模拟 DeepSeek SSE → 眼镜会话状态完成的完整链路。
 - 空句、撤回、连续片段、插话打断、旧会话回调、停止和恢复待命。
 - 阿里云 task ID、sentence ID、心跳和重复定稿过滤。
+- 字幕运行时的唤醒初始化 → 真实唤醒 → 请求音频 → 四家所选 ASR → 字幕显示；初始化失败、准备时取消/断连、过期/旧轮唤醒、开始采音失败及眼镜退出。使用注入的设备边界和音频解码器；生产版仍使用原生 Opus/WebRTC 解码器，本地预览仍不能连接设备或云端。
 
 测试使用假识别器、URLProtocol 和合成文本，不上传用户音频、不使用真实服务 Key。未签名模拟器的 Keychain 往返测试可能按明确的系统错误跳过。设备编译成功后上传 build 4 的未签名 IPA；Windows 用户按原方式用 Sideloadly 签名安装。
 
