@@ -1,6 +1,6 @@
-# 实时字幕 V1：Azure / Deepgram / ElevenLabs（实验，待真机验收）
+# 实时字幕 V1：Azure / Deepgram / ElevenLabs / 阿里云（实验，待真机验收）
 
-入口：**会话 → 实时字幕 → 转写服务**。Azure Speech、Deepgram、ElevenLabs 共用一个入口，字幕历史、静音退出、时长上限和录音设置共用。每次会话只连接所选服务，不跨服务自动回退。原有阿里云 + DeepSeek 语音助手保留，与字幕模式不能同时占用语音通道。
+入口：**语音 → 实时字幕 → 语音服务设置**。Azure Speech、Deepgram、ElevenLabs、阿里云流式 ASR 共用一个配置入口，字幕历史、静音退出、时长上限和录音设置共用。每次会话只连接所选服务，不跨服务自动回退。AI 语音对话使用同一所选转写服务，另需 DeepSeek Key；与字幕模式不能同时占用语音通道。完整架构与迁移说明见 [统一语音服务](VOICE_SERVICES.md)。
 
 ## V1 范围
 
@@ -18,11 +18,13 @@
 
 ## 使用与凭据
 
+服务配置已统一到“语音服务设置”；不再在字幕页单独存一份。阿里云填写 Host + Key，其原有钥匙串命名保持不变。保存配置、重启 App 都不会自动开启语音模式。
+
 1. **Windows + iPhone**：在本分支成功的 GitHub Actions run 底部下载 `TurboIO-unsigned-ipa` Artifact，解压获得 `TurboIO-unsigned.ipa`，再使用 Windows Sideloadly 和自己的 Apple ID 签名安装。未签名 IPA 不能直接在 iPhone 打开安装。Apple ID 不进入仓库或 CI。若有 Mac，也可安装 Xcode、XcodeGen，执行 `node scripts/start.mjs --device`，选择 `RayNeoCompanionDevice`、自己的 Team 和 iPhone。
 2. 真机工程通过微软官方 [speech-sdk-spm](https://github.com/microsoft/speech-sdk-spm/tree/253f49a30de749996e142ccee573da9a431a034f) 引入 `MicrosoftCognitiveServicesSpeech-iOS`。固定 revision `253f49a30de749996e142ccee573da9a431a034f`（SDK 1.51.2）；没有复制 SDK 二进制到源码。首次解析包需能访问 GitHub 及微软下载域名。本地预览工程不依赖 Azure SDK。
 3. 在统一字幕页选择服务并填写自己的 **API Key**。Azure 另需 **Region**（仅区域 ID，不是 URL），连接公有 Azure Speech；Deepgram 固定连接 `api.deepgram.com/v1/listen`、模型 `nova-3`；ElevenLabs 固定连接 `api.elevenlabs.io/v1/speech-to-text/realtime`、模型 `scribe_v2_realtime`，使用 VAD 自动定稿。支持 en-GB、en-US、zh-CN；ElevenLabs 分别映射为 en、en、zh。当前不提供自定义代理、私有端点或模型地址。
 4. Key 按服务隔离、Azure 再按 Region 隔离，保存在本机 Keychain，`AfterFirstUnlockThisDeviceOnly`；从不写入 UserDefaults、字幕、录音、日志或源码。重启 iPhone 后必须先解锁一次。切换服务会清空尚未保存的输入，避免把一家 Key 保存到另一家。升级保留原 Azure Keychain 名称、设置键及历史目录。Deepgram 使用 Authorization 头，ElevenLabs 使用 xi-api-key 头，Key 不放在 URL 中；连接拒绝 HTTP 重定向。面向多人发布时应另外设计后端短期 token，不要把组织共用 Key 打包进 App。
-5. 确认上传/存储提示（请先取得参与者同意），开启字幕待命，再**主动唤醒眼镜**。5 分钟不唤醒自动退出。切入模式会关闭旧助手自动待命，结束后也不会擅自恢复。
+5. 确认上传/存储提示（请先取得参与者同意），开启字幕待命，再**主动唤醒眼镜**。5 分钟不唤醒自动退出。切换模式前需先关闭当前待命；结束后不会自动恢复其他模式。
 6. 点“停止字幕、上传和本地录音”才是停止；关闭设置页面不是停止。停止时同时提交眼镜停止采音和退出命令。断连时无法确认眼镜是否收到，需查看眼镜指示/手动退出。
 
 开启模式不会假造唤醒、直接调用手机麦克风或不断重发开始采音命令。眼镜 type 8 主动退出后立刻停止本地上传/录音；连接恢复、回到前台、重启 App 都不会自动重新采音。需再次明确开启并唤醒。

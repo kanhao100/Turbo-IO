@@ -26,7 +26,7 @@ final class CaptionBoundaryTests: XCTestCase {
         defer { defaults.removePersistentDomain(forName: suite) }
         var options = CaptionOptions(); options.region = "eastus"; options.service = .elevenLabs; options.recordAudio = true
         defaults.set(try JSONEncoder().encode(options), forKey: "companion.azureCaptions.options.v1")
-        let voice = CompanionVoiceRuntime()
+        let voice = CompanionVoiceRuntime(speech: SpeechSettingsStore(defaults: defaults))
         let runtime = CaptionRuntime(voice: voice, defaults: defaults)
         XCTAssertFalse(runtime.options.recordAudio)
         XCTAssertFalse(runtime.active); XCTAssertFalse(voice.captionOwnsVoice)

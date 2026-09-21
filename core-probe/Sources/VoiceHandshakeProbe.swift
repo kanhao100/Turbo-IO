@@ -12,6 +12,8 @@ final class VoiceHandshakeProbe {
     var onArchiveTranscript: ((UUID,String,Bool) -> Void)?
     let standby = StandbyVoiceSession()
     private let cloud = CloudVoicePipeline()
+    var makeRecognition: (() -> VoiceRecognitionPort?)? { didSet { cloud.makeRecognition = makeRecognition } }
+    var onCloudFailure: ((String) -> Void)? { didSet { cloud.onFailureReason = onCloudFailure } }
     var cloudTools: (() -> [[String: Any]])? { didSet { cloud.toolDefinitions = cloudTools } }
     var executeCloudTool: ((String, String, UUID) async -> String)? { didSet { cloud.executeTool = executeCloudTool } }
     private var incrementalFixtureUntil: TimeInterval?
@@ -297,7 +299,7 @@ final class VoiceHandshakeProbe {
         cloud.cancel(clearHistory:true)
         standby.cloudEnabled = enabled
         standby.continuousASREnabled = false; cloud.continuousASR = false
-        log?(enabled ? "云模式已开启：音频→用户阿里云，文字→DeepSeek；云端句末，不用本地900ms截断" : "云模式关闭：回到本地VAD随机文字，不上传")
+        log?(enabled ? "云模式已开启：音频→所选转写服务，文字→DeepSeek；云端句末，不用本地900ms截断" : "云模式关闭：回到本地VAD随机文字，不上传")
     }
     func setContinuousASR(_ enabled: Bool) {
         guard !enabled || (standby.enabled && standby.cloudEnabled) else {

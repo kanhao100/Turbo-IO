@@ -30,7 +30,7 @@ public enum CaptionConnectionFailure: Error, Equatable {
 }
 
 public enum CaptionStreamEvent: Equatable {
-    case ready, text(String, final: Bool), failure(CaptionConnectionFailure), ignored
+    case ready, text(String, final: Bool, utteranceEnd: Bool), failure(CaptionConnectionFailure), ignored
 }
 
 /// Pure wire format adapter. Only the app's explicitly armed device session opens sockets.
@@ -58,7 +58,7 @@ public enum CaptionStreamingAPI {
                 "commit_strategy": "vad", "include_timestamps": "false",
                 "include_language_detection": "false"].sorted { $0.key < $1.key }.map { URLQueryItem(name: $0.key, value: $0.value) }
             headers = ["xi-api-key": key]
-        case .azure: throw CaptionConnectionFailure.configuration
+        case .azure, .aliyun: throw CaptionConnectionFailure.configuration
         }
         var request = URLRequest(url: url.url!)
         request.timeoutInterval = 15
@@ -85,14 +85,14 @@ public enum CaptionStreamingAPI {
                   let text = alternatives.first?["transcript"] as? String,
                   let final = object["is_final"] as? Bool else { throw CaptionConnectionFailure.invalidResponse }
             // is_final seals a segment even before speech_final ends the utterance.
-            return try transcript(text, final: final)
+            return try transcript(text, final: final, utteranceEnd: object["speech_final"] as? Bool == true)
         case .elevenLabs:
             guard let type = object["message_type"] as? String else { throw CaptionConnectionFailure.invalidResponse }
             switch type {
             case "session_started": return .ready
             case "partial_transcript", "committed_transcript":
                 guard let text = object["text"] as? String else { throw CaptionConnectionFailure.invalidResponse }
-                return try transcript(text, final: type == "committed_transcript")
+                return try transcript(text, final: type == "committed_transcript", utteranceEnd: type == "committed_transcript")
             // This is an additional delayed copy of the same commit, never a second subtitle.
             case "committed_transcript_with_timestamps", "committed_transcript_entities", "warning": return .ignored
             case "auth_error": return .failure(.authentication)
@@ -102,12 +102,12 @@ public enum CaptionStreamingAPI {
             case "error", "unaccepted_terms", "input_error", "invalid_request", "chunk_size_exceeded": return .failure(.rejected)
             default: return object["error"] == nil ? .ignored : .failure(.rejected)
             }
-        case .azure: throw CaptionConnectionFailure.configuration
+        case .azure, .aliyun: throw CaptionConnectionFailure.configuration
         }
     }
-    private static func transcript(_ text: String, final: Bool) throws -> CaptionStreamEvent {
+    private static func transcript(_ text: String, final: Bool, utteranceEnd: Bool) throws -> CaptionStreamEvent {
         guard text.utf8.count <= 32_768 else { throw CaptionConnectionFailure.invalidResponse }
-        return .text(text, final: final)
+        return .text(text, final: final, utteranceEnd: utteranceEnd)
     }
 }
 

@@ -34,6 +34,14 @@ targets:
       - Sources
       - ../../core-probe/Sources/VoiceToolCallAccumulator.swift
       - ../../core-probe/Sources/CloudASRHostSettings.swift
+      - ../../core-probe/Sources/CloudVoiceSettings.swift
+      - ../../core-probe/Sources/AliyunSpeechSession.swift
+      - ../../core-probe/Sources/VoiceRecognitionPort.swift
+      - ../../core-probe/Sources/SpeechTurnAssembler.swift
+      - ../../core-probe/Sources/CloudVoicePipeline.swift
+      - ../../core-probe/Sources/AnswerDeltaCoalescer.swift
+      - ../../core-probe/Sources/StandbyVoiceSession.swift
+      - ../../core-probe/Sources/SpeechEndpointDetector.swift
     dependencies:
       - package: RayNeoCaptions
       - package: ZIPFoundation
@@ -56,7 +64,7 @@ targets:
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
         TARGETED_DEVICE_FAMILY: "1,2"
         MARKETING_VERSION: "0.2.0"
-        CURRENT_PROJECT_VERSION: "3"
+        CURRENT_PROJECT_VERSION: "4"
     info:
       path: Generated/Companion-Info.plist
       properties:
@@ -143,7 +151,7 @@ targets:
         LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/Frameworks"
         TARGETED_DEVICE_FAMILY: "1"
         MARKETING_VERSION: "0.2.0"
-        CURRENT_PROJECT_VERSION: "3"
+        CURRENT_PROJECT_VERSION: "4"
     info:
       path: Generated/CompanionDevice-Info.plist
       properties:

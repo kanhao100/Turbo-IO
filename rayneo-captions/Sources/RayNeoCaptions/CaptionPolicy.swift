@@ -3,14 +3,14 @@ import Foundation
 public enum CaptionFailure: Error { case invalidConfiguration, limit, corruptArchive, closed }
 
 public enum CaptionService: String, Codable, CaseIterable {
-    case azure, deepgram
+    case azure, deepgram, aliyun
     case elevenLabs = "elevenlabs"
 
     public var name: String {
-        switch self { case .azure: return "Azure Speech"; case .deepgram: return "Deepgram"; case .elevenLabs: return "ElevenLabs" }
+        switch self { case .azure: return "Azure Speech"; case .deepgram: return "Deepgram"; case .elevenLabs: return "ElevenLabs"; case .aliyun: return "阿里云流式 ASR" }
     }
     public var model: String {
-        switch self { case .azure: return "Azure Speech"; case .deepgram: return "Nova-3"; case .elevenLabs: return "Scribe v2 Realtime" }
+        switch self { case .azure: return "Azure Speech"; case .deepgram: return "Nova-3"; case .elevenLabs: return "Scribe v2 Realtime"; case .aliyun: return "qwen-audio-3.0-asr-flash-streaming" }
     }
     public var keychainService: String {
         switch self {
@@ -18,6 +18,7 @@ public enum CaptionService: String, Codable, CaseIterable {
         case .azure: return "io.turboio.companion.azure-speech.v1"
         case .deepgram: return "io.turboio.companion.deepgram.v1"
         case .elevenLabs: return "io.turboio.companion.elevenlabs.v1"
+        case .aliyun: return "RayNeo.CloudASR.https."
         }
     }
 }
@@ -26,6 +27,7 @@ public enum CaptionService: String, Codable, CaseIterable {
 public struct CaptionOptions: Codable, Equatable {
     public var service: CaptionService = .azure
     public var region = ""
+    public var aliyunHost = ""
     public var language = "en-GB"
     public var idleSeconds = 900
     public var maximumSeconds = 7200
@@ -33,19 +35,27 @@ public struct CaptionOptions: Codable, Equatable {
     public init() {}
 
     private enum CodingKeys: String, CodingKey {
-        case service, region, language, idleSeconds, maximumSeconds, recordAudio
+        case service, region, aliyunHost, language, idleSeconds, maximumSeconds, recordAudio
     }
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         service = try values.decodeIfPresent(CaptionService.self, forKey: .service) ?? .azure
         region = try values.decode(String.self, forKey: .region)
+        aliyunHost = try values.decodeIfPresent(String.self, forKey: .aliyunHost) ?? ""
         language = try values.decode(String.self, forKey: .language)
         idleSeconds = try values.decode(Int.self, forKey: .idleSeconds)
         maximumSeconds = try values.decode(Int.self, forKey: .maximumSeconds)
         recordAudio = try values.decode(Bool.self, forKey: .recordAudio)
     }
     public var credentialAccount: String {
-        service == .azure ? region.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() : "default"
+        switch service {
+        case .azure: return region.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        case .aliyun: return "user-api-key"
+        default: return "default"
+        }
+    }
+    public var credentialService: String {
+        service.keychainService + (service == .aliyun ? aliyunHost.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() : "")
     }
 
     public static let idleChoices = [0, 60, 300, 900, 1800, 3600]
@@ -54,6 +64,10 @@ public struct CaptionOptions: Codable, Equatable {
     public func validated() throws -> Self {
         var result = self
         result.region = region.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if service == .aliyun {
+            guard let host = SpeechConfiguration.aliyunHost(aliyunHost) else { throw CaptionFailure.invalidConfiguration }
+            result.aliyunHost = host
+        }
         // A region identifier, never a URL or arbitrary host receiving a secret.
         if service == .azure {
             guard (3...40).contains(result.region.count), result.region.utf8.allSatisfy({

@@ -16,6 +16,11 @@ enum CloudVoiceKeys {
         return String(data:data,encoding:.utf8)
     }
     static var ready: Bool { CloudASRHostSettings.normalize(asrHost) != nil && Self.get(asrService) != nil && Self.get(llmService) != nil }
+    static func remove(_ service: String) throws {
+        let status = SecItemDelete([kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service, kSecAttrAccount as String: "user-api-key"] as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else { throw NSError(domain: "VoiceKeychain", code: Int(status)) }
+    }
     static func save(_ value: String, service: String) -> Bool {
         let key = value.trimmingCharacters(in:.whitespacesAndNewlines)
         guard key.hasPrefix("sk-"), key.utf8.count <= 512,

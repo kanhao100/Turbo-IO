@@ -8,6 +8,7 @@ import MicrosoftCognitiveServicesSpeech
 /// Callbacks carry a generation so stopped/replaced recognizers cannot update a new session.
 @MainActor final class AzureCaptionASR: CaptionASRProvider {
     var onText: ((String, Bool) -> Void)?
+    var onEndpoint: (() -> Void)?
     var onReady: (() -> Void)?
     var onFailure: ((CaptionConnectionFailure) -> Void)?
     private var generation = UUID()
@@ -18,7 +19,7 @@ import MicrosoftCognitiveServicesSpeech
         worker.start(options: options, key: key, ready: { [weak self] in
             Task { @MainActor in guard let self, self.generation == token else { return }; self.onReady?() }
         }, text: { [weak self] text, final in
-            Task { @MainActor in guard let self, self.generation == token else { return }; self.onText?(text, final) }
+            Task { @MainActor in guard let self, self.generation == token else { return }; self.onText?(text, final); if final, self.generation == token { self.onEndpoint?() } }
         }, failure: { [weak self] in
             Task { @MainActor in guard let self, self.generation == token else { return }; self.onFailure?(.connection) }
         })

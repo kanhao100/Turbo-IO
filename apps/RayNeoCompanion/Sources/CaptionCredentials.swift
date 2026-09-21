@@ -5,7 +5,7 @@ import RayNeoCaptions
 enum CaptionCredentials {
     enum StorageError: Error, Equatable { case keychain(Int32) }
     private static func query(options: CaptionOptions) -> [String: Any] {
-        [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: options.service.keychainService,
+        [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: options.credentialService,
          kSecAttrAccount as String: options.credentialAccount]
     }
     static func read(options: CaptionOptions) -> String? {

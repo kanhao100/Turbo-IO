@@ -148,6 +148,11 @@ final class ProbeController: UIViewController, CBCentralManagerDelegate, StreamD
         let linked = core?.linkedDevices() ?? []
         return linked.count == 1 && linked[0].isConnected() && linked[0].bleStateByte() == 9
     }
+    var companionASRFactory: (() -> VoiceRecognitionPort?)? { didSet { voiceProbe.makeRecognition = companionASRFactory } }
+    var companionCloudReady: (() -> Bool)?
+    var companionASRName: (() -> String)?
+    var companionVoiceError: ((String) -> Void)? { didSet { voiceProbe.onCloudFailure = companionVoiceError } }
+    var companionShowSpeechSettings: (() -> Void)?
     var companionPhase: String { voiceProbe.standby.phase.rawValue }
     var companionEnabled: Bool { voiceProbe.standby.enabled }
     var companionContinuous: Bool { voiceProbe.standby.continuousASREnabled }
@@ -156,12 +161,10 @@ final class ProbeController: UIViewController, CBCentralManagerDelegate, StreamD
         loadViewIfNeeded()
         guard !companionCaptionOwnsVoice else { return false }
         guard companionReady, let device = core?.linkedDevices()?.first,
-              !cloud || CloudVoiceKeys.ready else { return false }
-        UserDefaults.standard.set(true, forKey: "companion.autoVoice.v1")
+              !cloud || (companionASRFactory != nil && companionCloudReady?() == true) else { return false }
         voiceProbe.setCloudMode(cloud)
         UserDefaults.standard.set(cloud, forKey: CloudVoiceKeys.enabledKey)
         UserDefaults.standard.set(continuous && cloud, forKey: "companion.continuousASR.v1")
-        UserDefaults.standard.set(device.deviceID(), forKey: standbyPreferenceKey)
         startStandby(target: device.deviceID())
         if cloud && continuous { voiceProbe.setContinuousASR(true) }
         return true
@@ -169,29 +172,6 @@ final class ProbeController: UIViewController, CBCentralManagerDelegate, StreamD
     func companionStop() {
         UserDefaults.standard.set(false, forKey: "companion.autoVoice.v1")
         disableStandby()
-    }
-    func companionEnableDefaultCloudVoice() {
-        guard CloudVoiceKeys.ready else { return }
-        UserDefaults.standard.set(true, forKey: "companion.autoVoice.v1")
-        UserDefaults.standard.set(true, forKey: CloudVoiceKeys.enabledKey)
-        UserDefaults.standard.set(true, forKey: "companion.continuousASR.v1")
-        companionRestoreAutomaticVoice()
-    }
-    private func companionRestoreAutomaticVoice() {
-        guard !companionCaptionOwnsVoice, !voiceProbe.standby.enabled, CloudVoiceKeys.ready,
-              UserDefaults.standard.bool(forKey: "companion.autoVoice.v1") else { return }
-        loadCore()
-        guard let bonded = core?.bondedDevices(), bonded.count == 1 else {
-            log("自动语音已允许；等待唯一已绑定眼镜，不自动配对或抢绑"); return
-        }
-        let target = bonded[0].deviceID()
-        voiceProbe.setCloudMode(UserDefaults.standard.bool(forKey: CloudVoiceKeys.enabledKey))
-        UserDefaults.standard.set(target, forKey: standbyPreferenceKey)
-        startStandby(target: target)
-        if voiceProbe.standby.cloudEnabled {
-            voiceProbe.setContinuousASR(UserDefaults.standard.bool(forKey: "companion.continuousASR.v1"))
-        }
-        log("恢复用户默认语音待命；仅唤醒后采音，已绑定目标自动重连")
     }
     func companionEndRound() { voiceProbe.standby.cancelCurrentRound() }
     #endif
@@ -238,7 +218,11 @@ final class ProbeController: UIViewController, CBCentralManagerDelegate, StreamD
             return await execute(name, args, id)
         }
         #endif
+        #if COMPANION_DEVICE
+        voiceProbe.setCloudMode(false) // Launch never arms a voice mode based on old credential-save flags.
+        #else
         voiceProbe.setCloudMode(UserDefaults.standard.bool(forKey:CloudVoiceKeys.enabledKey) && CloudVoiceKeys.ready)
+        #endif
         voiceProbe.send = { [weak self] deviceID, payload in
             #if COMPANION_DEVICE
             guard self?.companionCaptionOwnsVoice != true else {
@@ -281,42 +265,53 @@ final class ProbeController: UIViewController, CBCentralManagerDelegate, StreamD
     }
 
     @objc private func toggleStandby() {
-        guard voiceDiagnosticsAllowed else { log("请先停止 实时字幕"); return }
+        guard voiceDiagnosticsAllowed else { log("请先停止实时字幕"); return }
         if voiceProbe.standby.enabled { disableStandby(); return }
+        #if COMPANION_DEVICE
+        guard companionCloudReady?() == true else { companionShowSpeechSettings?(); return }
+        voiceProbe.setCloudMode(true)
+        #endif
         guard let linked = core?.linkedDevices(), linked.count == 1, let device = linked.first,
               device.isConnected(), device.bleStateByte() == 9 else {
             log("持续待命开启需要唯一已认证设备，请先连接"); return
         }
         let target = device.deviceID()
         let message = voiceProbe.standby.cloudEnabled
-            ? "当前是云对话：唤醒后音频发往已指定阿里云空间，识别文字发给DeepSeek Flash（关闭思考/流式）。云端判断句末；本地5秒无语音/20秒收音/30秒处理保护。无TTS、无工具执行。日志不记正文，服务可能计费。重开App恢复开关，按钮9关闭。"
-            : "每次真实唤醒后，本机解码并检测语音；连续约0.9秒无语音即回复随机文字，显示10秒后待命。5秒无语音退出，最长收音8秒。不是识别或模型回答，不保存/上传音频。允许后台处理但系统可能挂起。仅对已绑定眼镜有限重连，不自动配对或重置。重开App恢复开关，按钮9关闭。"
+            ? "当前是云对话：唤醒后音频发往所选转写服务，识别文字发给DeepSeek Flash（关闭思考/流式）。云端判断句末；本地5秒无语音/20秒收音/30秒处理保护。无TTS、无工具执行。日志不记正文，服务可能计费。关闭待命后停止响应。"
+            : "每次真实唤醒后，本机解码并检测语音；连续约0.9秒无语音即回复随机文字，显示10秒后待命。5秒无语音退出，最长收音8秒。不是识别或模型回答，不保存/上传音频。允许后台处理但系统可能挂起。仅对已绑定眼镜有限重连，不自动配对或重置。关闭待命后停止响应。"
         let alert = UIAlertController(title:"开启持续待命？", message:message, preferredStyle:.alert)
         alert.addAction(UIAlertAction(title:"取消", style:.cancel))
         alert.addAction(UIAlertAction(title:"开启持续待命", style:.default) { [weak self] _ in
             guard let self, let linked = self.core?.linkedDevices(), linked.count == 1,
                   let current = linked.first, current.deviceID() == target,
                   current.isConnected(), current.bleStateByte() == 9 else { return }
+            #if COMPANION_DEVICE
+            _ = self.companionStart(cloud: true, continuous: true)
+            #else
             UserDefaults.standard.set(target, forKey:self.standbyPreferenceKey)
             self.startStandby(target:target)
+            #endif
         })
         present(alert, animated:true)
     }
     @objc private func showCloudSettings() {
-        guard voiceDiagnosticsAllowed else { log("请先停止 实时字幕"); return }
+        guard voiceDiagnosticsAllowed else { log("请先停止实时字幕"); return }
+        #if COMPANION_DEVICE
+        companionShowSpeechSettings?()
+        #else
         let controller = CloudVoiceSettingsController()
         controller.changed = { [weak self] enabled in
             self?.voiceProbe.setCloudMode(enabled)
             self?.standbyTick()
         }
         present(controller,animated:true)
+        #endif
     }
 
     private func restoreStandbyIfRequested() {
         #if COMPANION_DEVICE
-        companionRestoreAutomaticVoice()
-        if voiceProbe.standby.enabled { return }
-        #endif
+        return // Explicit mode/start action is required after launch, independent of saved keys.
+        #else
         guard let target = UserDefaults.standard.string(forKey:standbyPreferenceKey) else { return }
         loadCore()
         guard let matches = core?.bondedDevices()?.filter({ $0.deviceID() == target }), matches.count == 1 else {
@@ -325,16 +320,12 @@ final class ProbeController: UIViewController, CBCentralManagerDelegate, StreamD
         }
         log("按已保存的用户开关恢复持续服务；不代表系统能自动拉起App")
         startStandby(target:target)
-        #if COMPANION_DEVICE
-        if voiceProbe.standby.cloudEnabled, UserDefaults.standard.bool(forKey: "companion.continuousASR.v1") {
-            voiceProbe.setContinuousASR(true)
-        }
         #endif
     }
 
     private func startStandby(target: String) {
         #if COMPANION_DEVICE
-        guard !companionCaptionOwnsVoice else { log("请先停止 实时字幕"); return }
+        guard !companionCaptionOwnsVoice else { log("请先停止实时字幕"); return }
         #endif
         reconnectPolicy.reset(); standbyWasReady = false; nextWakeInit = 0
         voiceProbe.enableStandby(deviceID:target)
@@ -473,7 +464,7 @@ final class ProbeController: UIViewController, CBCentralManagerDelegate, StreamD
     }
 
     @objc private func confirmVoiceProbe() {
-        guard voiceDiagnosticsAllowed else { log("请先停止 实时字幕"); return }
+        guard voiceDiagnosticsAllowed else { log("请先停止实时字幕"); return }
         guard let core, let linked = core.linkedDevices(), linked.count == 1,
               let device = linked.first, device.isConnected(), device.bleStateByte() == 9 else {
             log("没有唯一已认证连接，未就绪语音测试"); return
@@ -493,7 +484,7 @@ final class ProbeController: UIViewController, CBCentralManagerDelegate, StreamD
     }
 
     @objc private func showDisplayBoundaryTests() {
-        guard voiceDiagnosticsAllowed else { log("请先停止 实时字幕"); return }
+        guard voiceDiagnosticsAllowed else { log("请先停止实时字幕"); return }
         if voiceProbe.standby.enabled {
             let menu = UIAlertController(title:"持续待命显示测试",message:"下一次唤醒发送A1至A4四段合成文字，最后一段带校验码；不请求云服务。无10秒强制关闭，验收眼镜自己的收尾行为。",preferredStyle:.actionSheet)
             menu.addAction(UIAlertAction(title:"下一次唤醒：A1–A4增量测试",style:.default) { [weak self] _ in self?.voiceProbe.armIncrementalFixture() })
@@ -520,7 +511,7 @@ final class ProbeController: UIViewController, CBCentralManagerDelegate, StreamD
     }
 
     private func confirmDisplayFixture(_ fixture: DisplayBoundaryFixture) {
-        guard voiceDiagnosticsAllowed else { log("请先停止 实时字幕"); return }
+        guard voiceDiagnosticsAllowed else { log("请先停止实时字幕"); return }
         guard let core, let linked = core.linkedDevices(), linked.count == 1,
               let device = linked.first, device.isConnected(), device.bleStateByte() == 9 else {
             log("没有唯一已认证连接，不启动显示边界测试"); return

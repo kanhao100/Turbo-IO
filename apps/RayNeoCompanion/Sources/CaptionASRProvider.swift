@@ -3,6 +3,7 @@ import RayNeoCaptions
 
 @MainActor protocol CaptionASRProvider: AnyObject {
     var onText: ((String, Bool) -> Void)? { get set }
+    var onEndpoint: (() -> Void)? { get set }
     var onReady: (() -> Void)? { get set }
     var onFailure: ((CaptionConnectionFailure) -> Void)? { get set }
     func start(options: CaptionOptions, key: String)
@@ -15,6 +16,7 @@ import RayNeoCaptions
         #if COMPANION_DEVICE
         switch service {
         case .azure: return AzureCaptionASR()
+        case .aliyun: return AliyunCaptionASR()
         case .deepgram, .elevenLabs: return WebSocketCaptionASR(service: service)
         }
         #else

@@ -1,5 +1,6 @@
 import SwiftUI
 import Combine
+import RayNeoCaptions
 
 @MainActor final class CompanionVoiceRuntime: ObservableObject {
     @Published private(set) var ready = false
@@ -14,6 +15,7 @@ import Combine
     @Published private(set) var cloud = false
     @Published private(set) var latestEvent = "尚未加载设备通信核心"
     @Published var error: String?
+    let speech: SpeechSettingsStore
     private let timeline: ConversationTimeline?
     weak var codex: CodexCompanion?
     private var activeTurn: UUID?
@@ -66,7 +68,10 @@ import Combine
         controller.companionCancelFile(task)
         #endif
     }
-    init(timeline: ConversationTimeline? = nil) { self.timeline = timeline }
+    init(timeline: ConversationTimeline? = nil, speech: SpeechSettingsStore? = nil) {
+        self.timeline = timeline; self.speech = speech ?? SpeechSettingsStore()
+        self.speech.isBusy = { [weak self] in self?.enabled == true || self?.captionOwnsVoice == true }
+    }
     deinit {
         #if COMPANION_DEVICE
         poll?.invalidate()
@@ -90,6 +95,18 @@ import Combine
     func prepare() {
         #if COMPANION_DEVICE
         guard poll == nil else { refresh(); return }
+        controller.companionASRFactory = { [weak self] in self?.speech.makeConversationRecognition() }
+        controller.companionCloudReady = { [weak self] in
+            guard let self else { return false }; self.speech.refresh()
+            return self.speech.conversationRequirements.isEmpty
+        }
+        controller.companionASRName = { [weak self] in self?.speech.configuration.service.name ?? "所选服务" }
+        controller.companionVoiceError = { [weak self] in self?.error = $0 }
+        controller.companionShowSpeechSettings = { [weak self] in
+            guard let self else { return }
+            let view = VoiceServicesView().environmentObject(self).environmentObject(self.speech)
+            self.controller.present(UIHostingController(rootView: view), animated: true)
+        }
         controller.companionBusiness = { [weak self] in self?.onBusiness?($0,$1,$2) }
         controller.companionCaptionReceiver = { [weak self] in self?.onCaptionEnvelope?($0,$1,$2,$3) }
         controller.companionCaptionInputLoss = { [weak self] in self?.onCaptionInputLoss?($0) }
@@ -131,9 +148,10 @@ import Combine
         #endif
     }
     func refresh() {
+        speech.refresh(); hasCredentials = speech.conversationRequirements.isEmpty
         #if COMPANION_DEVICE
         ready = controller.companionReady; enabled = controller.companionEnabled
-        phase = controller.companionPhase; hasCredentials = CloudVoiceKeys.ready
+        phase = controller.companionPhase
         DisplayObservation.shared.connection(ready, phase:phase)
         if ["disabled", "waitingForConnection", "idle"].contains(phase) { finishTimelineTurn() }
         continuous = controller.companionContinuous; cloud = controller.companionCloud
@@ -159,12 +177,17 @@ import Combine
     }
     func start(cloud: Bool, continuous: Bool) {
         guard !captionOwnsVoice, featureIsBusy?() != true else { error = "请先结束字幕、眼镜录音或提词器任务，再开启语音待命。"; return }
+        guard supportsDevice else { error = "本地预览不启动语音服务。"; return }
+        speech.refresh()
+        if cloud, !speech.conversationRequirements.isEmpty {
+            error = "还需配置：" + speech.conversationRequirements.joined(separator: "、"); return
+        }
         #if COMPANION_DEVICE
         prepare()
         guard controller.companionStart(cloud: cloud, continuous: continuous) else {
-            error = "需要唯一已认证的眼镜；云对话还需要本 App 的两项密钥。"; refresh(); return
+            error = "请连接唯一已认证的眼镜后重试。"; refresh(); return
         }
-        refresh()
+        error = nil; refresh()
         #endif
     }
     func stop() {
@@ -175,24 +198,6 @@ import Combine
     func endRound() {
         #if COMPANION_DEVICE
         controller.companionEndRound(); refresh()
-        #endif
-    }
-    func saveKeys(asr: String, llm: String, host: String, enableDefault: Bool = false) -> Bool {
-        #if COMPANION_DEVICE
-        guard !captionOwnsVoice, !enabled else { error = "请先关闭字幕和语音待命，再修改云端凭据。"; return false }
-        guard let target = CloudASRHostSettings.normalize(host) else { error = "请填写自己的阿里云 ASR 主机名（aliyuncs.com），不含协议、路径或端口。"; return false }
-        let service = CloudASRHostSettings.service(for: target)
-        let a = asr.isEmpty ? CloudVoiceKeys.get(service) != nil : CloudVoiceKeys.save(asr, service: service)
-        let b = llm.isEmpty ? CloudVoiceKeys.get(CloudVoiceKeys.llmService) != nil : CloudVoiceKeys.save(llm, service: CloudVoiceKeys.llmService)
-        if a && b {
-            CloudASRHostSettings.save(target)
-            if enableDefault { controller.companionEnableDefaultCloudVoice() }
-        }
-        refresh()
-        if !a || !b { error = "密钥未完整保存；没有启用云上传。" }
-        return a && b
-        #else
-        error = "模拟器不保存真机语音凭据。"; return false
         #endif
     }
     func clearText() { transcript = ""; answer = ""; transcriptFinal = false; modelComplete = false }

@@ -39,6 +39,7 @@ private final class CaptionSocketDelegate: NSObject, URLSessionTaskDelegate {
 /// asynchronous result is gated by generation so a stopped socket cannot leak into a new session.
 @MainActor final class WebSocketCaptionASR: CaptionASRProvider {
     var onText: ((String, Bool) -> Void)?
+    var onEndpoint: (() -> Void)?
     var onReady: (() -> Void)?
     var onFailure: ((CaptionConnectionFailure) -> Void)?
     private let service: CaptionService
@@ -101,7 +102,10 @@ private final class CaptionSocketDelegate: NSObject, URLSessionTaskDelegate {
     private func accept(_ event: CaptionStreamEvent) {
         switch event {
         case .ready: markReady(); pump()
-        case .text(let text, let final): onText?(text, final)
+        case .text(let text, let final, let end):
+            let token = generation
+            onText?(text, final)
+            if end, generation == token { onEndpoint?() }
         case .failure(let failure): fail(failure)
         case .ignored: break
         }

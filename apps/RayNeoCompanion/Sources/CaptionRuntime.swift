@@ -43,7 +43,7 @@ import RayNeoProtocol
         var saved = defaults.data(forKey: Self.settingsKey).flatMap { try? JSONDecoder().decode(CaptionOptions.self, from: $0) }
             ?? CaptionOptions()
         saved.recordAudio = false // Consent to retain audio is per session, never remembered.
-        options = saved
+        options = voice.speech.configuration.applying(to: saved)
         voice.onCaptionEnvelope = { [weak self] in self?.receive(device: $0, type: $1, audio: $2, arrival: $3) }
         voice.onCaptionInputLoss = { [weak self] device in
             guard let self, self.target == device, self.clock != nil else { return }
@@ -56,31 +56,27 @@ import RayNeoProtocol
         timer?.invalidate()
         if let lifecycle { NotificationCenter.default.removeObserver(lifecycle) }
     }
-    func hasKey(options: CaptionOptions) -> Bool {
-        CaptionCredentials.read(options: options) != nil
-    }
-    @discardableResult func save(_ draft: CaptionOptions, newKey: String) -> Bool {
-        guard !active, supportsDevice else { error = "请在真机中结束字幕后设置。"; return false }
+    @discardableResult func save(_ draft: CaptionOptions, newKey: String = "") -> Bool {
+        guard !active, !voice.enabled, supportsDevice else { error = "请在真机中结束字幕和语音待命后设置。"; return false }
         do {
-            var value = try draft.validated()
-            if !newKey.isEmpty { try CaptionCredentials.save(newKey, options: value) }
+            var value = try voice.speech.configuration.applying(to: draft).validated()
+            if !newKey.isEmpty, !voice.speech.save(voice.speech.configuration, asrKey: newKey) {
+                error = voice.speech.error; return false
+            }
             value.recordAudio = false
             defaults.set(try JSONEncoder().encode(value), forKey: Self.settingsKey); options = value
             error = nil; return true
-        } catch { self.error = "设置未保存。请检查服务、Azure Region、语言、时长和密钥格式。"; return false }
-    }
-    func forgetKey(options: CaptionOptions) {
-        guard !active else { return }
-        do { try CaptionCredentials.remove(options: options) }
-        catch { self.error = "无法移除此服务的密钥。" }
+        } catch { self.error = "设置未保存，请检查转写服务、语言和会话时长。"; return false }
     }
     func arm(_ draft: CaptionOptions) {
         guard !active else { return }
-        voice.prepare()
+        voice.prepare(); voice.speech.refresh()
+        guard !voice.enabled else { error = "请先关闭 AI 对话待命，再开启实时字幕。"; return }
         guard supportsDevice, let device = voice.deviceID,
               voice.featureIsBusy?() != true else { error = "需要唯一已认证的眼镜，并结束录音、提词器等占用任务。"; return }
-        guard let value = try? draft.validated(), let secret = CaptionCredentials.read(options: value),
-              !secret.isEmpty else { error = "请先保存有效设置和所选服务的 API Key（Azure 还需匹配 Region）。"; return }
+        guard let value = try? voice.speech.configuration.applying(to: draft).validated(),
+              let secret = voice.speech.key(for: voice.speech.configuration),
+              !secret.isEmpty else { error = "还需配置：" + voice.speech.captionRequirements.joined(separator: "、"); return }
         guard let provider = CaptionASRFactory.make(value.service) else { error = "当前构建不支持云端转写。"; return }
         self.provider = provider
         error = nil; options = value; key = secret; target = device; phase = .preparing

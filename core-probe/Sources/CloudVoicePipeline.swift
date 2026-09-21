@@ -1,179 +1,117 @@
 import Foundation
 
-/// Main-queue owned, one round at a time. Credentials/audio/text never logged.
-/// ASR/LLM use fixed origins. Optional tools are provided by the consented host;
-/// there is no arbitrary URL, shell, or approval tool. No redirects.
+/// Main-queue conversation orchestrator. ASR is injected independently of the
+/// language model; all providers share turn assembly, cancellation and history.
 final class CloudVoicePipeline {
     var log: ((String) -> Void)?
     var onEndpoint: ((UUID) -> Void)?
-    var onTranscript: ((UUID,String,Bool) -> Void)?
-    var onArchiveTranscript: ((UUID,String,Bool) -> Void)?
-    var onText: ((UUID,String,Bool) -> Void)?
+    var onTranscript: ((UUID, String, Bool) -> Void)?
+    var onArchiveTranscript: ((UUID, String, Bool) -> Void)?
+    var onText: ((UUID, String, Bool) -> Void)?
     var onError: ((UUID) -> Void)?
-    var onUtteranceBegan: ((UUID,UUID) -> Void)?
+    var onFailureReason: ((String) -> Void)?
+    var onUtteranceBegan: ((UUID, UUID) -> Void)?
     var onEmptyUtterance: ((UUID) -> Void)?
-    var continuousASR = false // Set only while stopped; experimental opt-in.
+    var continuousASR = false
+    var makeRecognition: (() -> VoiceRecognitionPort?)?
     var toolDefinitions: (() -> [[String: Any]])?
     var executeTool: ((String, String, UUID) async -> String)?
     private(set) var id: UUID?
+    private var recognition: VoiceRecognitionPort?
     private var session: URLSession?
-    private var socket: URLSessionWebSocketTask?
-    private var receiver: Task<Void,Never>?, sender: Task<Void,Never>?, modelTask: Task<Void,Never>?
-    private var queue: [Data] = [], queueBytes = 0, totalBytes = 0
-    private var ready = false, finishing = false, asrDone = false
-    private var parts: [Int:String] = [:]
-    private var history: [[String:String]] = []
-    private var lastTranscript = ""
-    private var lastTranscriptUpdate = 0.0
-    private var turns = StreamingASRTurns()
+    private var modelTask: Task<Void, Never>?
     private var modelID: UUID?
-    private let noRedirect = NoCloudRedirect()
+    private var turns = SpeechTurnAssembler()
+    private var singleTurnComplete = false
+    private var lastTranscriptAt = -Double.infinity
+    private var history: [[String: String]] = []
+    private let modelKey: () -> String?
+    private let makeModelSession: () -> URLSession
 
+    init(modelKey: @escaping () -> String? = { CloudVoiceKeys.get(CloudVoiceKeys.llmService) },
+         makeModelSession: (() -> URLSession)? = nil) {
+        self.modelKey = modelKey
+        self.makeModelSession = makeModelSession ?? {
+            let config = URLSessionConfiguration.ephemeral
+            config.timeoutIntervalForRequest = 20; config.timeoutIntervalForResource = 135
+            config.urlCache = nil; config.httpCookieStorage = nil; config.urlCredentialStorage = nil
+            return URLSession(configuration: config, delegate: NoCloudRedirect(), delegateQueue: nil)
+        }
+    }
     func start(id: UUID) {
         precondition(Thread.isMainThread)
-        cancel()
-        self.id = id
-        guard let key = CloudVoiceKeys.get(CloudVoiceKeys.asrService), CloudVoiceKeys.get(CloudVoiceKeys.llmService) != nil else { fail(id,"缺少Keychain凭证"); return }
-        let config = URLSessionConfiguration.ephemeral
-        config.timeoutIntervalForRequest = 12
-        config.timeoutIntervalForResource = continuousASR ? 135 : 35
-        config.urlCache = nil; config.httpCookieStorage = nil
-        let session = URLSession(configuration:config,delegate:noRedirect,delegateQueue:nil)
-        self.session = session
-        var request = URLRequest(url:URL(string:"wss://\(CloudVoiceKeys.asrHost)/api-ws/v1/inference")!)
-        request.setValue("bearer " + key,forHTTPHeaderField:"Authorization")
-        let ws = session.webSocketTask(with:request); ws.maximumMessageSize = 32768
-        socket = ws; ws.resume()
-        let taskID = id.uuidString.replacingOccurrences(of:"-",with:"").lowercased()
-        let command: [String:Any] = ["header":["action":"run-task","task_id":taskID,"streaming":"duplex"],
-            "payload":["task_group":"audio","task":"asr","function":"recognition",
-                       "model":"qwen-audio-3.0-asr-flash-streaming",
-                       "parameters":["format":"pcm","sample_rate":16000],"input":[:]]]
-        receiver = Task { @MainActor [weak self] in
-            guard let self else { return }
-            do {
-                try await ws.send(.dataJSON(command))
-                guard self.id == id else { return }
-                self.log?("云ASR run-task已发；PCM16/16k/mono；服务默认VAD")
-                var events = 0
-                while !Task.isCancelled, self.id == id {
-                    let message = try await ws.receive()
-                    guard self.id == id else { return }
-                    let data: Data
-                    switch message { case .data(let d): data = d; case .string(let s): data = Data(s.utf8); @unknown default: throw CloudError.invalid }
-                    guard data.count <= 32768, let object = try JSONSerialization.jsonObject(with:data) as? [String:Any],
-                          let header = object["header"] as? [String:Any], header["task_id"] as? String == taskID else { throw CloudError.invalid }
-                    events += 1; guard events <= (self.continuousASR ? 10000 : 2000) else { throw CloudError.limit }
-                    switch header["event"] as? String {
-                    case "task-started":
-                        self.ready = true; self.log?("云ASR task-started，开始发送内存音频")
-                        self.drain(id)
-                    case "result-generated":
-                        let payload = object["payload"] as? [String:Any]
-                        let output = payload?["output"] as? [String:Any]
-                        if let sentence = output?["sentence"] as? [String:Any],
-                           let text = sentence["text"] as? String {
-                            guard text.utf8.count <= 8192 else { throw CloudError.limit }
-                            let final = sentence["sentence_end"] as? Bool == true
-                            if self.continuousASR {
-                                if sentence["heartbeat"] as? Bool == true { continue }
-                                guard let number = sentence["sentence_id"] as? NSNumber,
-                                      number.doubleValue == Double(number.intValue) else { throw CloudError.invalid }
-                                self.log?("持续ASR事件 sentence=\(number.intValue) characters=\(text.count) begin=\(sentence["sentence_begin"] as? Bool ?? false) end=\(final)；正文不入日志")
-                                let turnEvents = try self.turns.accept(sentenceID:number.intValue,text:text,
-                                    begin:sentence["sentence_begin"] as? Bool ?? false,end:final,
-                                    heartbeat:false,now:ProcessInfo.processInfo.systemUptime)
-                                for event in turnEvents {
-                                    guard self.id == id else { return }
-                                    switch event {
-                                    case .began(let turn):
-                                        self.modelID = nil; self.modelTask?.cancel(); self.modelTask = nil
-                                        self.log?("持续ASR有效文字新句，取消旧模型发送代际；忽略空BOS，非本地VAD")
-                                        self.onUtteranceBegan?(turn,id)
-                                    case .transcript(let turn, let transcript, let isFinal):
-                                        self.onArchiveTranscript?(turn,transcript,isFinal)
-                                        self.onTranscript?(turn,Self.lensText(transcript),isFinal)
-                                    case .ended(let turn, let transcript):
-                                        if transcript.isEmpty { self.onEmptyUtterance?(turn); continue }
-                                        self.onEndpoint?(turn)
-                                        guard self.id == id else { return }
-                                        self.log?("持续ASR分句完成 characters=\(transcript.count)；不发finish-task，并行启动模型")
-                                        self.startModel(id,transcript:transcript,turnID:turn)
-                                    }
-                                }
-                                continue
-                            }
-                            self.log?("云ASR文字事件 characters=\(text.count) sentenceEnd=\(final)")
-                            let visible = Self.lensText(text)
-                            self.onArchiveTranscript?(id,text,final)
-                            let now = ProcessInfo.processInfo.systemUptime
-                            if !self.finishing, !visible.isEmpty,
-                               final || (visible != self.lastTranscript && now - self.lastTranscriptUpdate >= 0.5) {
-                                self.onTranscript?(id,visible,final)
-                                guard self.id == id else { return }
-                                self.lastTranscript = visible; self.lastTranscriptUpdate = now
-                            }
-                            if final, !text.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty {
-                                let index = (sentence["sentence_id"] as? NSNumber)?.intValue ?? 0
-                                guard self.parts.count < 16 || self.parts[index] != nil else { throw CloudError.limit }
-                                self.parts[index] = text
-                                if !self.finishing {
-                                    self.finishing = true
-                                    self.log?("云ASR自然句末已到；非本地900ms截断")
-                                    self.onEndpoint?(id)
-                                    guard self.id == id else { return }
-                                    self.drain(id)
-                                }
-                            }
-                        }
-                    case "task-finished":
-                        if self.continuousASR { throw CloudError.remote }
-                        self.asrDone = true
-                        let transcript = self.parts.keys.sorted().compactMap { self.parts[$0] }.joined()
-                        guard self.finishing, !transcript.isEmpty, transcript.utf8.count <= 8192 else { throw CloudError.invalid }
-                        ws.cancel(with:.normalClosure,reason:nil)
-                        self.log?("云ASR task-finished characters=\(transcript.count)；转交DeepSeek，仅文字")
-                        self.startModel(id,transcript:transcript)
-                        return
-                    case "task-failed": throw CloudError.remote
-                    default: break
-                    }
-                }
-            } catch { if self.id == id && !Task.isCancelled { self.fail(id,"ASR连接或协议失败") } }
+        cancel(); self.id = id
+        guard modelKey() != nil else { fail(id, "缺少 DeepSeek API Key，转写配置仍可用于实时字幕"); return }
+        let recognizer: VoiceRecognitionPort?
+        if let makeRecognition {
+            recognizer = makeRecognition() // Never fall back to Alibaba if the selected provider is unavailable.
+        } else {
+            #if COMPANION_DEVICE
+            fail(id, "转写服务尚未连接到语音流程，请重新进入语音页面"); return
+            #else
+            // The standalone diagnostic host retains its existing Alibaba configuration.
+            guard let key = CloudVoiceKeys.get(CloudVoiceKeys.asrService),
+                  let host = CloudASRHostSettings.normalize(CloudVoiceKeys.asrHost) else {
+                fail(id, "缺少转写服务配置"); return
+            }
+            let driver = AliyunSpeechSession()
+            recognizer = VoiceRecognitionPort(start: { text, endpoint, failure in
+                driver.onText = text; driver.onEndpoint = endpoint; driver.onFailure = { failure($0.message) }
+                driver.start(host: host, key: key, language: "zh-CN")
+            }, append: { driver.append($0) }, stop: { driver.stop() })
+            #endif
         }
+        guard let recognizer else { fail(id, "所选转写服务配置或密钥未就绪"); return }
+        session = makeModelSession(); recognition = recognizer
+        recognizer.start({ [weak self] text, final in self?.recognized(text, final: final, session: id) },
+                         { [weak self] in self?.endpoint(session: id) },
+                         { [weak self] message in self?.fail(id, message) })
     }
     func appendPCM(_ data: Data) {
         precondition(Thread.isMainThread)
-        guard let id, !finishing, !data.isEmpty else { return }
-        guard data.count <= 3840, data.count % 2 == 0, queueBytes + data.count <= 96000,
-              totalBytes + data.count <= (continuousASR ? 3_900_000 : 704000) else { fail(id,"音频队列/总量超限"); return }
-        queue.append(data); queueBytes += data.count; totalBytes += data.count
-        drain(id)
+        guard id != nil, !singleTurnComplete else { return }
+        recognition?.append(data)
     }
-    private func drain(_ current: UUID) {
-        guard id == current, ready, sender == nil, !asrDone, let ws = socket else { return }
-        sender = Task { @MainActor [weak self] in
-            guard let self else { return }
-            defer { if self.id == current { self.sender = nil } }
-            do {
-                while self.id == current && !Task.isCancelled {
-                    if !self.queue.isEmpty {
-                        let data = self.queue.removeFirst(); self.queueBytes -= data.count
-                        try await ws.send(.data(data))
-                    } else {
-                        if self.finishing {
-                            let taskID = current.uuidString.replacingOccurrences(of:"-",with:"").lowercased()
-                            try await ws.send(.dataJSON(["header":["action":"finish-task","task_id":taskID,"streaming":"duplex"],"payload":["input":[:]]]))
-                            if self.id == current { self.ready = false; self.log?("云ASR finish-task已发，等待最终完成") }
-                        }
-                        return
-                    }
+    private func recognized(_ text: String, final: Bool, session current: UUID) {
+        guard id == current, !singleTurnComplete else { return }
+        do {
+            for event in try turns.result(text, final: final) {
+                guard id == current else { return }
+                switch event {
+                case .began(let turn):
+                    modelID = nil; modelTask?.cancel(); modelTask = nil
+                    lastTranscriptAt = -Double.infinity
+                    if continuousASR { onUtteranceBegan?(turn, current) }
+                case .transcript(let turn, let value):
+                    let responseID = continuousASR ? turn : current
+                    onArchiveTranscript?(responseID, value, false)
+                    let now = ProcessInfo.processInfo.systemUptime
+                    if now - lastTranscriptAt >= 0.25 { onTranscript?(responseID, Self.lensText(value), false); lastTranscriptAt = now }
+                default: break
                 }
-            } catch { if self.id == current && !self.asrDone && !Task.isCancelled { self.fail(current,"ASR音频发送失败") } }
+            }
+        } catch { fail(current, "识别文字或轮次超过会话上限") }
+    }
+    private func endpoint(session current: UUID) {
+        guard id == current, !singleTurnComplete, let event = turns.endpoint() else { return }
+        switch event {
+        case .ended(let turn, let transcript):
+            let responseID = continuousASR ? turn : current
+            onArchiveTranscript?(responseID, transcript, true)
+            onTranscript?(responseID, Self.lensText(transcript), true)
+            guard id == current else { return }
+            if !continuousASR { singleTurnComplete = true; recognition?.stop(); recognition = nil }
+            onEndpoint?(responseID)
+            guard id == current else { return }
+            startModel(current, transcript: transcript, turnID: responseID)
+        case .retracted(let turn):
+            if continuousASR { onEmptyUtterance?(turn) }
+            else { fail(current, "本轮识别已撤回，没有定稿文字") }
+        default: break
         }
     }
     private func startModel(_ current: UUID, transcript: String, turnID: UUID? = nil) {
-        guard id == current, let session, let key = CloudVoiceKeys.get(CloudVoiceKeys.llmService) else { fail(current,"缺少模型凭证"); return }
+        guard id == current, let session, let key = modelKey() else { fail(current,"缺少模型凭证"); return }
         let responseID = turnID ?? current
         modelTask?.cancel(); modelID = responseID
         var request = URLRequest(url:URL(string:"https://api.deepseek.com/chat/completions")!)
@@ -253,7 +191,7 @@ final class CloudVoicePipeline {
         }
     }
     static func lensText(_ source: String) -> String {
-        let text = source.trimmingCharacters(in:.whitespacesAndNewlines)
+        let text = source.trimmingCharacters(in: .whitespacesAndNewlines)
         var result = ""
         for char in text {
             let item = String(char)
@@ -264,30 +202,21 @@ final class CloudVoicePipeline {
     }
     func cancel(clearHistory: Bool = false) {
         precondition(Thread.isMainThread)
-        id = nil
-        modelID = nil; turns = StreamingASRTurns()
-        receiver?.cancel(); sender?.cancel(); modelTask?.cancel()
-        receiver = nil; sender = nil; modelTask = nil
-        socket?.cancel(with:.goingAway,reason:nil); socket = nil
+        id = nil; modelID = nil
+        recognition?.stop(); recognition = nil
+        modelTask?.cancel(); modelTask = nil
         session?.invalidateAndCancel(); session = nil
-        queue.removeAll(); queueBytes = 0; totalBytes = 0; parts.removeAll()
-        ready = false; finishing = false; asrDone = false
-        lastTranscript = ""; lastTranscriptUpdate = 0
+        turns = SpeechTurnAssembler(); singleTurnComplete = false; lastTranscriptAt = -Double.infinity
         if clearHistory { history.removeAll() }
     }
     private func fail(_ current: UUID, _ reason: String) {
         guard id == current else { return }
         log?("云链路失败：\(reason)；未记录服务端错误正文")
-        cancel(); onError?(current)
+        cancel(); onFailureReason?(reason); onError?(current)
     }
     private enum CloudError: Error { case invalid, remote, limit }
 }
 private final class NoCloudRedirect: NSObject, URLSessionTaskDelegate {
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
                     newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) { completionHandler(nil) }
-}
-private extension URLSessionWebSocketTask.Message {
-    static func dataJSON(_ object: [String:Any]) throws -> Self {
-        .string(String(decoding:try JSONSerialization.data(withJSONObject:object),as:UTF8.self))
-    }
 }

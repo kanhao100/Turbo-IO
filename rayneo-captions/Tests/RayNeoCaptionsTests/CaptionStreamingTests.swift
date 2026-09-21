@@ -14,6 +14,7 @@ final class CaptionStreamingTests: XCTestCase {
     func testAllServicesRoundTripAndOnlyAzureNeedsRegion() throws {
         for service in CaptionService.allCases {
             var options = CaptionOptions(); options.service = service
+            if service == .aliyun { options.aliyunHost = "tenant.example.aliyuncs.com" }
             if service == .azure { XCTAssertThrowsError(try options.validated()); options.region = "eastus" }
             XCTAssertNoThrow(try options.validated())
             XCTAssertEqual(try JSONDecoder().decode(CaptionOptions.self, from: JSONEncoder().encode(options)), options)
@@ -22,7 +23,7 @@ final class CaptionStreamingTests: XCTestCase {
         }
     }
     func testCredentialScopesAreSeparateAndAzureScopeIsStable() {
-        XCTAssertEqual(Set(CaptionService.allCases.map(\.keychainService)).count, 3)
+        XCTAssertEqual(Set(CaptionService.allCases.map(\.keychainService)).count, 4)
         var options = CaptionOptions(); options.region = " EastUS\n"
         XCTAssertEqual(options.credentialAccount, "eastus")
         options.service = .deepgram; XCTAssertEqual(options.credentialAccount, "default")
@@ -68,17 +69,17 @@ final class CaptionStreamingTests: XCTestCase {
         let interim = #"{"type":"Results","channel":{"alternatives":[{"transcript":"Good"}]},"is_final":false,"speech_final":false}"#
         let segment = #"{"type":"Results","channel":{"alternatives":[{"transcript":"Good morning."}]},"is_final":true,"speech_final":false}"#
         let ending = #"{"type":"Results","channel":{"alternatives":[{"transcript":"Welcome."}]},"is_final":true,"speech_final":true}"#
-        XCTAssertEqual(try event(interim, .deepgram), .text("Good", final: false))
-        XCTAssertEqual(try event(segment, .deepgram), .text("Good morning.", final: true))
-        XCTAssertEqual(try event(ending, .deepgram), .text("Welcome.", final: true))
+        XCTAssertEqual(try event(interim, .deepgram), .text("Good", final: false, utteranceEnd: false))
+        XCTAssertEqual(try event(segment, .deepgram), .text("Good morning.", final: true, utteranceEnd: false))
+        XCTAssertEqual(try event(ending, .deepgram), .text("Welcome.", final: true, utteranceEnd: true))
         XCTAssertEqual(try event(#"{"type":"UtteranceEnd","last_word_end":2.3}"#, .deepgram), .ignored)
     }
     func testElevenLabsCommitIsNotDuplicatedByDelayedTimestamps() throws {
         XCTAssertEqual(try event(#"{"message_type":"session_started"}"#, .elevenLabs), .ready)
-        XCTAssertEqual(try event(#"{"message_type":"partial_transcript","text":"早"}"#, .elevenLabs), .text("早", final: false))
-        XCTAssertEqual(try event(#"{"message_type":"committed_transcript","text":"早安"}"#, .elevenLabs), .text("早安", final: true))
+        XCTAssertEqual(try event(#"{"message_type":"partial_transcript","text":"早"}"#, .elevenLabs), .text("早", final: false, utteranceEnd: false))
+        XCTAssertEqual(try event(#"{"message_type":"committed_transcript","text":"早安"}"#, .elevenLabs), .text("早安", final: true, utteranceEnd: true))
         XCTAssertEqual(try event(#"{"message_type":"committed_transcript_with_timestamps","text":"早安","words":[]}"#, .elevenLabs), .ignored)
-        XCTAssertEqual(try event(#"{"message_type":"committed_transcript","text":""}"#, .elevenLabs), .text("", final: true))
+        XCTAssertEqual(try event(#"{"message_type":"committed_transcript","text":""}"#, .elevenLabs), .text("", final: true, utteranceEnd: true))
     }
     func testServiceErrorsAreSanitizedAndPermanentErrorsDoNotRetry() throws {
         for (type, expected) in [("auth_error", CaptionConnectionFailure.authentication), ("quota_exceeded", .quota),
