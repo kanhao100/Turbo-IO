@@ -42,9 +42,11 @@ private final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
 #endif
 
 /// Caption start/result/audio/text/stop all use business 19 and ONE protocol SID.
-/// Stops upload and disk input immediately; remote exit uncertainty retains ownership.
+/// Stops upload and disk input immediately. Glasses-originated stop is authoritative;
+/// phone-originated stop releases local ownership after the command is submitted so a
+/// missing acknowledgement can never force the user back to the phone.
 @MainActor final class SubtitleRealtimeRuntime: ObservableObject {
-    enum Phase: String { case idle, preparing, startingAudio, openingDisplay, listening, stopping, uncertain }
+    enum Phase: String { case idle, preparing, startingAudio, openingDisplay, listening }
     typealias WriterFactory = (URL, SubtitleSessionRecord, @escaping () -> Void) async throws -> SubtitleSessionWriting
     @Published private(set) var phase: Phase = .idle
     @Published private(set) var status = "让眼镜听见的声音，变成看得见的字幕"
@@ -60,7 +62,7 @@ private final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
     @Published private(set) var error: String?
     @Published private(set) var lastEvent = "尚未开始"
     @Published private(set) var saving = false
-    @Published private(set) var shortcutEnabled = false // Explicit opt-in each app launch.
+    @Published private(set) var shortcutEnabled = false
     @Published private(set) var cloudReady = false
     let settings: SubtitleSettingsStore
     let archive: SubtitleArchiveStore
@@ -72,6 +74,7 @@ private final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
     private let makeWriter: WriterFactory
     private let scheduleTimers: Bool
     private static let pendingKey = "companion.realtimeSubtitles.exitPending.v1"
+    private static let shortcutKey = "companion.realtimeSubtitles.shortcutEnabled.v1"
     private var timer: Timer?, lifecycle: NSObjectProtocol?
     private var provider: CaptionASRProvider?, decoder: SubtitlePCMDecoder?, writer: SubtitleSessionWriting?
     private var record: SubtitleSessionRecord?, options = CaptionOptions(), key = ""
@@ -87,12 +90,12 @@ private final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
     private var otherSequenceSteps = 0
     private var pendingText: String?, lastDisplayAt: TimeInterval = -.infinity
     private var acceptedAt: TimeInterval = 0, cloudDeadline: TimeInterval = 0
+    private var queuedShortcut: (device: String, sid: String)?
     private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
     private var now: TimeInterval { uptime() }
     var active: Bool { phase != .idle }
     var canStart: Bool { !active && !saving && device.supportsDevice && device.deviceID != nil && !device.subtitleOwnsDisplay && device.featureIsBusy?() != true }
     var canStop: Bool { [.preparing, .startingAudio, .openingDisplay, .listening].contains(phase) }
-    var canRetryExit: Bool { phase == .uncertain && target != nil && device.deviceID == target }
     var audioSeconds: TimeInterval { Double(audioBytes) / 32_000 }
 
     init(voice: any SubtitleRealtimeDevice, settings: SubtitleSettingsStore, archive: SubtitleArchiveStore,
@@ -115,8 +118,10 @@ private final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
         }
         settings.isBusy = { [weak self] in self?.active == true || self?.saving == true }
         archive.isActive = { [weak self] id in self?.sessionID == id && (self?.active == true || self?.saving == true) }
+        shortcutEnabled = defaults.bool(forKey: Self.shortcutKey)
         if defaults.bool(forKey: Self.pendingKey) {
-            phase = .uncertain; status = "上次字幕退出未确认，请先在眼镜退出字幕再确认。"
+            defaults.removeObject(forKey: Self.pendingKey)
+            status = "上次字幕会话异常中断，已自动清理；可直接再次双击启动。"
         }
         lifecycle = NotificationCenter.default.addObserver(forName: UIApplication.didBecomeActiveNotification,
             object: nil, queue: .main) { [weak self] _ in Task { @MainActor in self?.tick() } }
@@ -124,11 +129,10 @@ private final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
     deinit { timer?.invalidate(); if let lifecycle { NotificationCenter.default.removeObserver(lifecycle) } }
     func prepare() {
         device.prepare(); settings.refresh()
-        if active, phase == .uncertain, target == nil, !device.subtitleOwnsDisplay { device.ownDisplayForSubtitles(true) }
     }
-    @discardableResult func start(consented: Bool) -> Task<Void, Never>? {
+    @discardableResult func start() -> Task<Void, Never>? {
         prepare()
-        guard consented, canStart else { error = "请先连接眼镜、结束其他任务，并确认上传与保存提示。"; return nil }
+        guard canStart else { error = "请先连接眼镜并结束其他眼镜任务。"; return nil }
         return begin(deviceID: device.deviceID!, incomingSID: nil)
     }
     @discardableResult private func begin(deviceID: String, incomingSID: String?) -> Task<Void, Never>? {
@@ -177,11 +181,14 @@ private final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
             } catch { guard generation == token else { return }; fail("字幕准备失败，未完成启动。") }
         }
     }
-    func setShortcut(_ enabled: Bool, consented: Bool) {
-        guard !active, !saving, !enabled || consented else { return }
+    func setShortcut(_ enabled: Bool) {
+        guard !active, !saving else { return }
         settings.refresh()
         guard !enabled || settings.requirements.isEmpty else { error = "请先保存转写配置与密钥。"; return }
         shortcutEnabled = enabled
+        defaults.set(enabled, forKey: Self.shortcutKey)
+        if !enabled { queuedShortcut = nil }
+        error = nil
     }
     func receive(device source: String, packet: Data, arrival: TimeInterval) {
         // `arrival` is captured in the native callback. A bounded main-queue delay must not
@@ -191,7 +198,13 @@ private final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
             if active, source == target { fail("字幕消息格式或音频长度不匹配，已停止本次会话。") }; return
         }
         if phase == .idle, event.type == 1 {
-            guard shortcutEnabled, canStart else { return }
+            guard shortcutEnabled else { return }
+            if saving {
+                queuedShortcut = (source, event.sid)
+                status = "上一段正在保存；完成后自动启动新字幕"
+                return
+            }
+            guard canStart else { return }
             _ = begin(deviceID: source, incomingSID: event.sid); return
         }
         guard active, source == target, event.sid == sid, arrival >= acceptedAt else { return }
@@ -200,8 +213,10 @@ private final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
             return
         }
         if event.type == 3 {
-            // Could be pause or stop. End local capture immediately; physical exit is explicit.
-            stop(reason: "眼镜发出字幕控制事件（\(event.reason.map(String.init) ?? "未知")）", interrupted: false)
+            // The matching glasses control event is the authoritative exit signal. A second
+            // double-tap therefore stops, saves and immediately makes the next tap available.
+            stop(reason: "眼镜已停止字幕（\(event.reason.map(String.init) ?? "未提供原因")）",
+                 interrupted: false, notifyGlasses: false)
             return
         }
         guard canStop, phase != .preparing else { return }
@@ -296,13 +311,11 @@ private final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
     func inputLost() { if cloudStarted { markGap("手机接收队列丢包") } }
     func connectionChanged() {
         guard active, let target, device.deviceID != target else { return }
-        stop(reason: "连接中断，本次字幕已停止；请确认原眼镜退出。", interrupted: true)
-        phase = .uncertain
+        stop(reason: "连接中断，本次字幕已停止并保存", interrupted: true, notifyGlasses: false)
     }
     func transportFailed(device source: String, packet: Data, code: Int) {
         guard source == target, let event = try? SubtitleTranslateWire.event(packet), event.sid == sid else { return }
-        if event.type == 3 { phase = .uncertain; status = "退出发送失败，请在眼镜上退出后确认。" }
-        else { fail("字幕命令异步发送失败，code=\(code)") }
+        if event.type != 3 { fail("字幕命令异步发送失败，code=\(code)") }
     }
     private func send(_ packet: Data) -> Bool {
         guard let target, device.deviceID == target else { fail("眼镜连接已变化。" ); return false }
@@ -310,20 +323,25 @@ private final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
         catch { fail("字幕命令未能提交，请确认眼镜状态。" ); return false }
     }
     private func fail(_ reason: String) { error = reason; stop(reason: reason, interrupted: true) }
-    func stop(reason: String = "用户停止", interrupted: Bool = false) {
+    func stop(reason: String = "用户停止", interrupted: Bool = false, notifyGlasses: Bool = true) {
         guard canStop else { return }
         let wasPreparing = phase == .preparing
-        generation = UUID(); phase = .stopping; deadline = now + 8; status = reason
+        generation = UUID(); status = reason
         cloudStarted = false; provider?.stop(); provider = nil; key = ""; cloudReady = false; pendingText = nil
         decoder = nil; audioLevel = 0
         if !partial.isEmpty { writer?.event(CaptionEntry(kind: .unfinished, text: partial)); partial = "" }
-        if !wasPreparing, let sid, let target, device.deviceID == target {
+        var exitSubmissionFailed = false
+        if notifyGlasses, !wasPreparing, let sid, let target, device.deviceID == target {
             do { try device.sendRealtimeSubtitle(target: target, payload: SubtitleTranslateWire.stop(sid: sid)) }
-            catch { phase = .uncertain; status += "；退出提交失败" }
+            catch { exitSubmissionFailed = true }
         }
         finishStorage(reason: reason, interrupted: interrupted)
-        if wasPreparing { defaults.removeObject(forKey: Self.pendingKey); release() }
-        else { status += "；请确认眼镜已退出"; installTimer() }
+        defaults.removeObject(forKey: Self.pendingKey)
+        release()
+        if exitSubmissionFailed {
+            error = "眼镜退出命令未送达；本机已停止并保存，可在眼镜再次双击退出后重试。"
+        }
+        status = saving ? "字幕已停止，正在完成本机保存" : "字幕已结束，历史保存在此 App"
     }
     private func finishStorage(reason: String, interrupted: Bool) {
         guard let writer, var value = record else { return }
@@ -338,19 +356,17 @@ private final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
             if self.phase == .idle { self.sessionID = nil }
             if !success { self.error = "存储收尾未完整完成；已收到的原文件保留。" }
             self.endBackgroundTask(); Task { await self.archive.load() }
+            self.resumeQueuedShortcut()
         }
     }
-    func confirmExited() {
-        guard phase == .stopping || phase == .uncertain else { return }
-        defaults.removeObject(forKey: Self.pendingKey); release()
-        status = saving ? "正在完成本机保存" : "字幕已结束，历史保存在此 App"
-    }
-    func retryExit() {
-        guard canRetryExit, let target, let sid else { return }
-        phase = .stopping; deadline = now + 8
-        do { try device.sendRealtimeSubtitle(target: target, payload: SubtitleTranslateWire.stop(sid: sid)); status = "已重试退出，请核对镜片。" }
-        catch { phase = .uncertain; status = "退出仍未提交，请在眼镜手动退出。" }
-        installTimer()
+    private func resumeQueuedShortcut() {
+        guard let queuedShortcut else { return }
+        self.queuedShortcut = nil
+        guard shortcutEnabled, device.deviceID == queuedShortcut.device, canStart else {
+            status = "上一段已保存；眼镜当前不可用，请再次双击重试"
+            return
+        }
+        _ = begin(deviceID: queuedShortcut.device, incomingSID: queuedShortcut.sid)
     }
     private func release() {
         timer?.invalidate(); timer = nil; phase = .idle; target = nil; sid = nil
@@ -360,10 +376,6 @@ private final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
     func tick() {
         guard active else { return }
         if let target, device.deviceID != target { connectionChanged(); return }
-        if phase == .stopping {
-            if now >= deadline { phase = .uncertain; status = "本机已停止上传和保存输入；眼镜退出未确认。"; timer?.invalidate(); timer = nil }
-            return
-        }
         guard canStop, phase != .preparing else { return }
         elapsed = max(0, Int(now - began))
         if phase == .startingAudio || phase == .openingDisplay, now >= deadline { fail("10 秒未收到匹配的字幕启动或显示回执。" ); return }

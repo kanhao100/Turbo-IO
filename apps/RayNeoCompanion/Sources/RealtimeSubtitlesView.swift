@@ -10,7 +10,6 @@ struct RealtimeSubtitlesView: View {
     @State private var page = 0
     @State private var showSettings = false
     @State private var showDisplayTest = false
-    @State private var confirmStart = false
     @State private var search = ""
     var body: some View {
         NavigationStack {
@@ -34,14 +33,6 @@ struct RealtimeSubtitlesView: View {
                 .toolbar(.hidden, for: .navigationBar)
                 .sheet(isPresented: $showSettings) { SubtitleSettingsView() }
                 .sheet(isPresented: $showDisplayTest) { SubtitleDisplayTestView() }
-                .confirmationDialog("开始实时字幕？", isPresented: $confirmStart, titleVisibility: .visible) {
-                    Button(settings.options.recordAudio ? "同意上传，并保存文本和音频" : "同意上传，并仅保存文本") {
-                        store.subtitlePlayback.stop(); _ = runtime.start(consented: true)
-                    }
-                    Button("取消", role: .cancel) {}
-                } message: {
-                    Text("眼镜音频将发送给 \(settings.options.service.name)，可能计费。\(settings.options.recordAudio ? "本 App 同时保存文本与处理后的 WAV 音频。" : "本 App 只保存文本。")请取得在场人员同意，先结束眼镜上的其他任务。")
-                }
                 .task { store.features.prepare(); runtime.prepare(); await archive.load() }
         }
     }
@@ -85,18 +76,12 @@ struct RealtimeSubtitlesView: View {
             }
             if runtime.canStop {
                 PrimaryButton(title: "停止并保存", icon: "stop.fill") { runtime.stop() }.accessibilityIdentifier("realtime-stop")
-            } else if runtime.active {
-                Card {
-                    Label("本机已停止，确认眼镜退出", systemImage: "checkmark.shield").font(.headline)
-                    Text("若镜片仍在字幕页，请先在眼镜退出。已收到的音频与文本保留，退出未确认前不能开启另一会话。")
-                        .font(.subheadline).foregroundStyle(Palette.muted)
-                    if runtime.canRetryExit { Button("重试退出命令") { runtime.retryExit() } }
-                    Button("我确认眼镜已退出") { runtime.confirmExited() }.accessibilityIdentifier("realtime-confirm-exit")
-                }
             } else if !settings.requirements.isEmpty {
                 PrimaryButton(title: "配置转写服务", icon: "key") { showSettings = true }.accessibilityIdentifier("realtime-configure")
             } else {
-                PrimaryButton(title: "开始实时字幕", icon: "mic.fill", enabled: runtime.canStart) { confirmStart = true }
+                PrimaryButton(title: "开始实时字幕", icon: "mic.fill", enabled: runtime.canStart) {
+                    store.subtitlePlayback.stop(); _ = runtime.start()
+                }
                     .accessibilityIdentifier("realtime-start")
             }
             if runtime.saving { ProgressView("正在完成音频与文本保存…") }
@@ -107,10 +92,10 @@ struct RealtimeSubtitlesView: View {
                 }.buttonStyle(.plain)
             }
             HStack {
-                Label(runtime.shortcutEnabled ? "眼镜发起字幕：已允许" : "双击字幕可在设置中启用", systemImage: "hand.tap")
+                Label(runtime.shortcutEnabled ? "双击：开始 / 停止并保存（永久）" : "双击字幕可在设置中启用", systemImage: "hand.tap")
                 Spacer(); Button("设置") { showSettings = true }
             }.font(.caption).foregroundStyle(Palette.muted)
-            Text("离开此页面不会停止字幕。锁屏与后台受 iOS 和配件连接限制；断连后不自动恢复录音。")
+            Text("运行时无需打开手机：再次双击眼镜即可停止并保存。锁屏与正常后台会继续使用外设连接；强制结束 App 或断连会结束当前会话。")
                 .font(.caption).foregroundStyle(Palette.muted)
             DisclosureGroup("显示测试与诊断") {
                 Button("打开已验证的上屏测试") { showDisplayTest = true }.disabled(runtime.active || runtime.saving)

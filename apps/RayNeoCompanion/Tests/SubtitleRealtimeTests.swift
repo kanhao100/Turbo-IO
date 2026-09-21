@@ -7,7 +7,7 @@ final class SubtitleRealtimeTests: XCTestCase {
     @MainActor func testFourProvidersReceiveOnlyMatchingNativeCaptionAudioAndPersistFinal() async throws {
         for service in CaptionService.allCases {
             let f = fixture(service)
-            await f.runtime.start(consented: true)?.value
+            await f.runtime.start()?.value
             XCTAssertEqual(try f.types(), [1]); XCTAssertEqual(f.provider.starts, 0)
             let sid = try f.sid()
             f.feed(4, sid: sid, seq: 1, bytes: Data([1])) // No audio before accepted start.
@@ -32,49 +32,84 @@ final class SubtitleRealtimeTests: XCTestCase {
             XCTAssertEqual(f.runtime.packets, 1); XCTAssertEqual(f.runtime.recent.count, 1)
             XCTAssertEqual(f.writer.finished?.finalSentences, 1)
             XCTAssertEqual(f.writer.finished?.receivedPCMBytes, 640)
-            XCTAssertTrue(f.device.subtitleOwnsDisplay)
+            XCTAssertFalse(f.device.subtitleOwnsDisplay)
             XCTAssertEqual(try f.types().last, 3)
-            f.runtime.confirmExited(); XCTAssertFalse(f.device.subtitleOwnsDisplay)
+            XCTAssertEqual(f.runtime.phase, .idle)
         }
     }
     @MainActor func testRejectedAndMissingStartCannotStartCloudOrLeaveUploadRunning() async throws {
         for timeout in [true, false] {
             let f = fixture()
-            await f.runtime.start(consented: true)?.value
+            await f.runtime.start()?.value
             if timeout { f.clock.now += 11; f.runtime.tick() }
             else { f.feed(2, sid: try f.sid(), code: 9) }
             XCTAssertEqual(f.provider.starts, 0); XCTAssertNotNil(f.runtime.error)
             XCTAssertEqual(f.writer.finished?.state, .interrupted)
-            f.clock.now += 9; f.runtime.tick(); XCTAssertEqual(f.runtime.phase, .uncertain)
-            f.runtime.confirmExited()
+            XCTAssertEqual(f.runtime.phase, .idle)
+            XCTAssertFalse(f.device.subtitleOwnsDisplay)
         }
     }
     @MainActor func testLateACKBeforeTimerFiresIsRejected() async throws {
-        let f = fixture(); await f.runtime.start(consented: true)?.value
+        let f = fixture(); await f.runtime.start()?.value
         f.clock.now += 11
         f.feed(2, sid: try f.sid(), code: 1)
         XCTAssertEqual(f.provider.starts, 0)
-        XCTAssertEqual(f.runtime.phase, .stopping)
-        f.runtime.confirmExited()
+        XCTAssertEqual(f.runtime.phase, .idle)
+        XCTAssertFalse(f.device.subtitleOwnsDisplay)
     }
-    @MainActor func testShortcutRequiresOptInAndUsesIncomingSIDWithoutAIWake() async throws {
+    @MainActor func testShortcutPersistsAndSecondGlassesControlStopsWithoutPhoneConfirmation() async throws {
         let f = fixture()
         f.feed(1, sid: "glasses-shortcut")
         XCTAssertTrue(f.device.sent.isEmpty)
-        f.runtime.setShortcut(true, consented: true)
-        f.feed(1, sid: "glasses-shortcut")
+        f.runtime.setShortcut(true)
         let started = expectation(description: "shortcut accepts")
         f.runtime.onShortcutStart = { started.fulfill() }
+        f.feed(1, sid: "glasses-shortcut")
         await fulfillment(of: [started], timeout: 3)
         XCTAssertEqual(try f.types(), [2,7])
         XCTAssertEqual(try f.sid(), "glasses-shortcut")
         XCTAssertEqual(f.provider.starts, 1)
-        f.runtime.stop(); f.runtime.confirmExited()
+        f.feed(3, sid: "glasses-shortcut")
+        XCTAssertEqual(f.runtime.phase, .idle)
+        XCTAssertFalse(f.device.subtitleOwnsDisplay)
+        XCTAssertEqual(f.writer.finished?.state, .completed)
+        XCTAssertEqual(try f.types(), [2,7]) // A glasses stop is not echoed back.
         let fresh = SubtitleRealtimeRuntime(voice: f.device, settings: f.settings, archive: f.archive, defaults: f.defaults, scheduleTimers: false)
-        XCTAssertFalse(fresh.shortcutEnabled)
+        XCTAssertTrue(fresh.shortcutEnabled)
+        fresh.setShortcut(false)
+        let disabled = SubtitleRealtimeRuntime(voice: f.device, settings: f.settings, archive: f.archive, defaults: f.defaults, scheduleTimers: false)
+        XCTAssertFalse(disabled.shortcutEnabled)
+    }
+    @MainActor func testCrashMarkerNeverBlocksRestartOrRequiresManualExitConfirmation() {
+        let f = fixture()
+        f.defaults.set(true, forKey: "companion.realtimeSubtitles.exitPending.v1")
+        let fresh = SubtitleRealtimeRuntime(voice: f.device, settings: f.settings, archive: f.archive, defaults: f.defaults, scheduleTimers: false)
+        XCTAssertEqual(fresh.phase, .idle)
+        XCTAssertTrue(fresh.canStart)
+        XCTAssertFalse(f.defaults.bool(forKey: "companion.realtimeSubtitles.exitPending.v1"))
+        XCTAssertTrue(fresh.status.contains("自动清理"))
+    }
+    @MainActor func testGlassesStartDuringPreviousSaveQueuesWithoutOpeningPhone() async throws {
+        let f = fixture(); f.writer.deferFinish = true; f.runtime.setShortcut(true)
+        let firstStarted = expectation(description: "first shortcut starts")
+        f.runtime.onShortcutStart = { firstStarted.fulfill() }
+        f.feed(1, sid: "first-shortcut")
+        await fulfillment(of: [firstStarted], timeout: 3)
+        f.feed(3, sid: "first-shortcut")
+        XCTAssertEqual(f.runtime.phase, .idle); XCTAssertTrue(f.runtime.saving)
+
+        let secondStarted = expectation(description: "queued shortcut starts after save")
+        f.runtime.onShortcutStart = { secondStarted.fulfill() }
+        f.feed(1, sid: "second-shortcut")
+        XCTAssertTrue(f.runtime.status.contains("保存完成后自动启动"))
+        f.writer.complete()
+        await fulfillment(of: [secondStarted], timeout: 3)
+        XCTAssertEqual(f.runtime.phase, .openingDisplay)
+        XCTAssertEqual(try f.types(), [2,7,2,7])
+        f.writer.deferFinish = false
     }
     @MainActor func testNonUnitSequenceStrideDoesNotSplitRecordingAndDuplicatesAreDropped() async throws {
-        let f = fixture(); await f.runtime.start(consented: true)?.value
+        let f = fixture(); await f.runtime.start()?.value
         let sid = try f.sid(); f.feed(2,sid:sid,code:1); f.feed(8,sid:sid,code:2)
         for index in 0..<600 { f.feed(4,sid:sid,seq:index * 10,bytes:Data([1])) }
         f.feed(4,sid:sid,seq:5_990,bytes:Data([2]))
@@ -85,10 +120,10 @@ final class SubtitleRealtimeTests: XCTestCase {
         XCTAssertEqual(f.decoder.resets, 0); XCTAssertEqual(f.writer.gaps, 0)
         XCTAssertTrue(f.runtime.diagnosticText.contains("seqStrideChanges=599"))
         XCTAssertTrue(f.runtime.diagnosticText.contains("seqSteps=10:599"))
-        f.runtime.stop(); XCTAssertEqual(f.writer.finished?.state, .completed); f.runtime.confirmExited()
+        f.runtime.stop(); XCTAssertEqual(f.writer.finished?.state, .completed); XCTAssertEqual(f.runtime.phase, .idle)
     }
     @MainActor func testConfirmedQueueAndArrivalLossSplitOnceAndStalePacketsAreDropped() async throws {
-        let f = fixture(); await f.runtime.start(consented: true)?.value
+        let f = fixture(); await f.runtime.start()?.value
         let sid = try f.sid(); f.feed(2,sid:sid,code:1); f.feed(8,sid:sid,code:2)
         f.clock.now += 1 // Startup latency before the first packet is not a recording gap.
         f.feed(4,sid:sid,seq:100,bytes:Data([1]))
@@ -100,10 +135,10 @@ final class SubtitleRealtimeTests: XCTestCase {
         XCTAssertEqual(f.runtime.packets, 3); XCTAssertEqual(f.runtime.gaps, 2)
         XCTAssertEqual(f.runtime.discardedSequencePackets, 1)
         XCTAssertEqual(f.decoder.resets, 2); XCTAssertEqual(f.writer.gaps, 2)
-        f.runtime.stop(); XCTAssertEqual(f.writer.finished?.state, .interrupted); f.runtime.confirmExited()
+        f.runtime.stop(); XCTAssertEqual(f.writer.finished?.state, .interrupted); XCTAssertEqual(f.runtime.phase, .idle)
     }
     @MainActor func testMainQueueDelayKeepsChronologicalAudioAndDuplicateEndStillStops() async throws {
-        let f = fixture(); await f.runtime.start(consented: true)?.value
+        let f = fixture(); await f.runtime.start()?.value
         let sid = try f.sid(); f.feed(2,sid:sid,code:1); f.feed(8,sid:sid,code:2)
         f.feed(4,sid:sid,seq:100,bytes:Data([1]))
         f.clock.now += 2
@@ -113,26 +148,26 @@ final class SubtitleRealtimeTests: XCTestCase {
         XCTAssertLessThan(f.runtime.maximumArrivalIntervalMilliseconds, 750)
         let end = try DeviceBusinessWire.encode(type: 4, json: ["sid":sid,"seq":120,"end":true])
         f.runtime.receive(device: "glasses", packet: end, arrival: f.clock.now - 1.8)
-        XCTAssertEqual(f.runtime.phase, .stopping); XCTAssertEqual(f.writer.finished?.state, .completed)
-        f.runtime.confirmExited()
+        XCTAssertEqual(f.runtime.phase, .idle); XCTAssertEqual(f.writer.finished?.state, .completed)
+        XCTAssertFalse(f.device.subtitleOwnsDisplay)
     }
     @MainActor func testDisconnectStopsCloudAndNeverSendsCleanupToReplacement() async throws {
-        let f = fixture(); await f.runtime.start(consented: true)?.value
+        let f = fixture(); await f.runtime.start()?.value
         f.feed(2,sid:try f.sid(),code:1)
         let sent = f.device.sent.count
         f.device.deviceID = "replacement"; f.runtime.connectionChanged()
-        XCTAssertEqual(f.runtime.phase, .uncertain); XCTAssertEqual(f.provider.stops, 1)
+        XCTAssertEqual(f.runtime.phase, .idle); XCTAssertEqual(f.provider.stops, 1)
         XCTAssertEqual(f.device.sent.count, sent); XCTAssertEqual(f.writer.finished?.state, .interrupted)
-        f.runtime.confirmExited()
+        XCTAssertFalse(f.device.subtitleOwnsDisplay)
     }
     @MainActor func testCancelPreparationAndStorageFailureNeverStartMicrophone() async throws {
         let f = fixture()
-        let task = f.runtime.start(consented: true)
+        let task = f.runtime.start()
         f.runtime.stop(); await task?.value
         XCTAssertTrue(f.device.sent.isEmpty); XCTAssertEqual(f.runtime.phase, .idle)
         let broken = SubtitleRealtimeRuntime(voice:f.device,settings:f.settings,archive:f.archive,defaults:f.defaults,
             makeDecoder:{ f.decoder },makeWriter:{ _,_,_ in throw CaptionFailure.limit },scheduleTimers:false)
-        await broken.start(consented:true)?.value
+        await broken.start()?.value
         XCTAssertEqual(broken.phase,.idle); XCTAssertNotNil(broken.error)
         XCTAssertFalse(f.device.subtitleOwnsDisplay)
     }
@@ -153,7 +188,7 @@ final class SubtitleRealtimeTests: XCTestCase {
         addTeardownBlock { await self.cleanup(f) }; return f
     }
     @MainActor private func cleanup(_ f:Fixture) {
-        f.runtime.stop(); f.runtime.confirmExited(); f.defaults.removePersistentDomain(forName:f.name)
+        f.runtime.stop(); f.defaults.removePersistentDomain(forName:f.name)
     }
     @MainActor private final class Fixture {
         let name="subtitle-rt-tests-"+UUID().uuidString
@@ -185,12 +220,17 @@ final class SubtitleRealtimeTests: XCTestCase {
         func reset(){resets+=1}
     }
     private final class Writer:SubtitleSessionWriting {
-        var entries:[CaptionEntry]=[],pcmBytes=0,gaps=0
+        var entries:[CaptionEntry]=[],pcmBytes=0,gaps=0,deferFinish=false
         var finished:SubtitleSessionRecord?
+        var finishCompletion:((Bool)->Void)?
         func event(_ entry:CaptionEntry){entries.append(entry)}
         func pcm(_ data:Data){pcmBytes+=data.count}
         func gap(){gaps+=1}
-        func finish(_ record:SubtitleSessionRecord,completion:@escaping(Bool)->Void){finished=record;completion(true)}
+        func finish(_ record:SubtitleSessionRecord,completion:@escaping(Bool)->Void){
+            finished=record
+            if deferFinish { finishCompletion=completion } else { completion(true) }
+        }
+        func complete(){let completion=finishCompletion;finishCompletion=nil;completion?(true)}
     }
     private final class Vault:SubtitleCredentialStorage {
         var keys:[String:String]=[:]

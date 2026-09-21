@@ -66,6 +66,16 @@ import CryptoKit
                 self.teleprompterPrepared = false
                 self.teleprompterStatus = "提词连接中断；停止自动操作，请恢复连接后退出并重新准备"
             }
+            if device != nil, self.store?.realtimeSubtitles.shortcutEnabled == true {
+                self.subtitleShortcutStatus = "永久双击字幕已开启，正在核对眼镜快捷键"
+                // Wait for the authenticated connection callback to unwind before asking for
+                // the complete settings object. Never reconstruct or overwrite unknown fields.
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, self.voice.deviceID == device,
+                          self.store?.realtimeSubtitles.shortcutEnabled == true else { return }
+                    self.refreshSettings()
+                }
+            }
         }
         for (name, foreground) in [(UIApplication.didEnterBackgroundNotification,false),(UIApplication.didBecomeActiveNotification,true)] {
             observers.append(NotificationCenter.default.addObserver(forName:name,object:nil,queue:.main) { [weak self] _ in
@@ -399,7 +409,13 @@ import CryptoKit
         }
         if wire.type == 4 {
             settings = j["generalSettings"] as? [String:Any] ?? j; status = "眼镜通用设置已收到"
-            crownReadAt = Date(); subtitleShortcutStatus = doubleTapIsSubtitle ? "眼镜回读：双击已设置为字幕" : "眼镜回读：双击当前不是字幕"
+            crownReadAt = Date()
+            if store?.realtimeSubtitles.shortcutEnabled == true, !doubleTapIsSubtitle {
+                subtitleShortcutStatus = "检测到双击映射丢失，正在自动恢复字幕"
+                setDoubleTapSubtitles(true)
+            } else {
+                subtitleShortcutStatus = doubleTapIsSubtitle ? "眼镜回读：双击已设置为字幕（永久）" : "眼镜回读：双击当前不是字幕"
+            }
         }
         guard let cmd = j["cmd"] as? String, let p = j["payload"] as? [String:Any] else { return }
         if wire.type == 3, cmd == "brightness_change", let n = DeviceBusinessWire.integer(p,"value") { brightness = Int(n) }
@@ -408,6 +424,9 @@ import CryptoKit
                let config = try? JSONSerialization.jsonObject(with:bytes) as? [String:Any],
                let key = ["display_config":"displayConfig","crown_config":"crownConfig","privacy_config":"privacyConfig"][cmd] {
                 settings[key] = config
+                if cmd == "crown_config" {
+                    subtitleShortcutStatus = doubleTapIsSubtitle ? "眼镜已确认：双击永久设为字幕" : "眼镜回报：双击不是字幕"
+                }
             }
             pendingSettings.removeValue(forKey:cmd)
             status = "眼镜回报 \(cmd.prefix(45))：\(DeviceBusinessWire.integer(p,"value") ?? -1)（未验证镜片效果）"

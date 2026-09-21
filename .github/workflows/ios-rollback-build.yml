@@ -95,8 +95,8 @@ jobs:
           test "$IPA_PLATFORM" = "iPhoneOS"
           IPA_VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Info.plist")
           IPA_BUILD=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Info.plist")
-          test "$IPA_VERSION" = "0.3.1"
-          test "$IPA_BUILD" = "7"
+          test "$IPA_VERSION" = "0.3.2"
+          test "$IPA_BUILD" = "8"
 
           rm -rf "$OUTPUT"
           mkdir -p "$OUTPUT/Payload"

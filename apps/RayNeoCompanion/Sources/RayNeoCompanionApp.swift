@@ -91,6 +91,10 @@ struct RootView: View {
         .onAppear {
             guard !didApplyLaunchArguments else { return }
             didApplyLaunchArguments = true
+            // Install device callbacks and reconnection maintenance at launch. Persistent
+            // glasses shortcuts must not depend on the user first opening the subtitles tab.
+            store.features.prepare()
+            store.realtimeSubtitles.prepare()
             let arguments = ProcessInfo.processInfo.arguments
             if let index = arguments.firstIndex(of: "--ui-tab"), arguments.indices.contains(index + 1) {
                 store.selectedTab = Int(arguments[index + 1]) ?? 0
