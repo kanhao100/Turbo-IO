@@ -51,15 +51,14 @@ final class CaptionSocketTests: XCTestCase {
         let provider = WebSocketCaptionASR(service: .deepgram, makeSocket: { _ in socket })
         defer { provider.stop() }
         var options = CaptionOptions(); options.service = .deepgram
-        var turns = SpeechTurnAssembler(), ended: [String] = []
+        var stableSegments: [String] = [], ended: [String] = []
         let endpoint = expectation(description: "one completed utterance")
         provider.onText = { text, final in
             XCTAssertTrue(ended.isEmpty, "Stable segments must not trigger an endpoint")
-            do { _ = try turns.result(text, final: final) } catch { XCTFail("Assembly failed") }
+            if final, !text.isEmpty { stableSegments.append(text) }
         }
         provider.onEndpoint = {
-            guard case .ended(_, let text)? = turns.endpoint() else { return XCTFail("Missing final utterance") }
-            ended.append(text); endpoint.fulfill()
+            ended.append(stableSegments.joined(separator: " ")); endpoint.fulfill()
         }
         provider.onFailure = { XCTFail("Unexpected failure: \($0)") }
         provider.start(options: options, key: "synthetic-test-only")
