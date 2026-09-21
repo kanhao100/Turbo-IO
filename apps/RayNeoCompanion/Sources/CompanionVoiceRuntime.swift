@@ -2,7 +2,7 @@ import SwiftUI
 import Combine
 import RayNeoCaptions
 
-@MainActor final class CompanionVoiceRuntime: ObservableObject {
+@MainActor final class CompanionVoiceRuntime: ObservableObject, CaptionDeviceTransport {
     @Published private(set) var ready = false
     @Published private(set) var enabled = false
     @Published private(set) var phase = "disabled"
@@ -35,6 +35,13 @@ import RayNeoCaptions
     func sendCaption(target: String, payload: Data) throws {
         #if COMPANION_DEVICE
         try controller.companionSendCaption(target: target, payload: payload)
+        #else
+        throw DeviceFeatureError.disconnected
+        #endif
+    }
+    func sendCaptionWakeup(target: String) throws {
+        #if COMPANION_DEVICE
+        try controller.companionSendCaptionWakeup(target: target)
         #else
         throw DeviceFeatureError.disconnected
         #endif

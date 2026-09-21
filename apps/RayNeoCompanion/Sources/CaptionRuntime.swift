@@ -15,8 +15,12 @@ import RayNeoProtocol
     @Published private(set) var options: CaptionOptions
     @Published var error: String?
     let root: URL
-    let voice: CompanionVoiceRuntime
+    let voice: any CaptionDeviceTransport
     private let defaults: UserDefaults
+    private let makeProvider: (CaptionService) -> CaptionASRProvider?
+    private let makeDecoder: () -> CaptionAudioDecoder?
+    private let uptime: () -> TimeInterval
+    private let scheduleTimers: Bool
     private static let settingsKey = "companion.azureCaptions.options.v1"
     private var provider: CaptionASRProvider?
     private var sink: CaptionDiskSink?
@@ -29,15 +33,27 @@ import RayNeoProtocol
     private var gapOpen = false
     private var unansweredSpeechAt: TimeInterval?
     private var flushTask: UIBackgroundTaskIdentifier = .invalid
-    #if COMPANION_DEVICE
-    private var decoder: OpaquePointer?
-    #endif
+    private var decoder: CaptionAudioDecoder?
+    private var receivedWake = false
     var active: Bool { phase != .idle }
     var supportsDevice: Bool { voice.supportsDevice }
-    private var now: TimeInterval { ProcessInfo.processInfo.systemUptime }
+    private var now: TimeInterval { uptime() }
 
-    init(voice: CompanionVoiceRuntime, defaults: UserDefaults = .standard, root: URL? = nil) {
+    init(voice: any CaptionDeviceTransport, defaults: UserDefaults = .standard, root: URL? = nil,
+         makeProvider: ((CaptionService) -> CaptionASRProvider?)? = nil,
+         makeDecoder: (() -> CaptionAudioDecoder?)? = nil,
+         uptime: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
+         scheduleTimers: Bool = true) {
         self.voice = voice; self.defaults = defaults
+        self.makeProvider = makeProvider ?? { CaptionASRFactory.make($0) }
+        self.makeDecoder = makeDecoder ?? {
+            #if COMPANION_DEVICE
+            return NativeCaptionAudioDecoder()
+            #else
+            return nil
+            #endif
+        }
+        self.uptime = uptime; self.scheduleTimers = scheduleTimers
         self.root = root ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("AzureCaptionsV1", isDirectory: true)
         var saved = defaults.data(forKey: Self.settingsKey).flatMap { try? JSONDecoder().decode(CaptionOptions.self, from: $0) }
@@ -68,16 +84,16 @@ import RayNeoProtocol
             error = nil; return true
         } catch { self.error = "设置未保存，请检查转写服务、语言和会话时长。"; return false }
     }
-    func arm(_ draft: CaptionOptions) {
-        guard !active else { return }
+    @discardableResult func arm(_ draft: CaptionOptions) -> Task<Void, Never>? {
+        guard !active else { return nil }
         voice.prepare(); voice.speech.refresh()
-        guard !voice.enabled else { error = "请先关闭 AI 对话待命，再开启实时字幕。"; return }
+        guard !voice.enabled else { error = "请先关闭 AI 对话待命，再开启实时字幕。"; return nil }
         guard supportsDevice, let device = voice.deviceID,
-              voice.featureIsBusy?() != true else { error = "需要唯一已认证的眼镜，并结束录音、提词器等占用任务。"; return }
+              voice.featureIsBusy?() != true else { error = "需要唯一已认证的眼镜，并结束录音、提词器等占用任务。"; return nil }
         guard let value = try? voice.speech.configuration.applying(to: draft).validated(),
               let secret = voice.speech.key(for: voice.speech.configuration),
-              !secret.isEmpty else { error = "还需配置：" + voice.speech.captionRequirements.joined(separator: "、"); return }
-        guard let provider = CaptionASRFactory.make(value.service) else { error = "当前构建不支持云端转写。"; return }
+              !secret.isEmpty else { error = "还需配置：" + voice.speech.captionRequirements.joined(separator: "、"); return nil }
+        guard let provider = makeProvider(value.service) else { error = "当前构建不支持云端转写。"; return nil }
         self.provider = provider
         error = nil; options = value; key = secret; target = device; phase = .preparing
         recent = []; partial = ""; elapsed = 0; retry = CaptionRetryBudget()
@@ -96,7 +112,7 @@ import RayNeoProtocol
         provider.onFailure = { [weak self] failure in
             guard let self, self.generation == token else { return }; self.cloudFailed(failure)
         }
-        Task {
+        return Task {
             do {
                 let output = try await Task.detached(priority: .utility) { [weak self] in
                     try CaptionDiskSink(root: root, id: token, recordAudio: value.recordAudio) {
@@ -109,12 +125,29 @@ import RayNeoProtocol
                 }.value
                 guard generation == token, phase == .preparing else {
                     output.event(CaptionEntry(kind: .stopped, text: "准备阶段已取消，未开启采音"))
-                    output.close {}; return
+                    await withCheckedContinuation { continuation in
+                        output.close { continuation.resume() }
+                    }
+                    return
                 }
                 sink = output
                 guard voice.deviceID == device else { stop(reason: "准备时眼镜已断开"); return }
-                phase = .armed; armedAt = now
-                status = "字幕已待命：请主动唤醒眼镜（5 分钟内）"
+                armedAt = now
+                do {
+                    // Caption ownership bypasses the legacy standby path, so it
+                    // must explicitly enable the glasses' real wakeup source
+                    // before waiting for the type=1 wake event.
+                    try voice.sendCaptionWakeup(target: device)
+                } catch {
+                    guard generation == token, phase == .preparing else { return }
+                    self.error = "无法提交眼镜语音唤醒初始化；字幕尚未开始。"
+                    stop(reason: "眼镜语音唤醒初始化提交失败")
+                    return
+                }
+                guard generation == token, phase == .preparing else { return }
+                phase = .armed
+                status = "字幕已待命：已提交语音唤醒初始化，请主动唤醒眼镜（5 分钟内）"
+                guard scheduleTimers else { return }
                 let timer = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in
                     Task { @MainActor in self?.tick() }
                 }
@@ -127,24 +160,26 @@ import RayNeoProtocol
         }
     }
     private func receive(device: String, type: UInt32, audio: Data?, arrival: TimeInterval) {
-        guard target == device, voice.deviceID == device, active, phase != .stopping else { return }
+        guard target == device, voice.deviceID == device, active,
+              phase != .preparing, phase != .stopping, arrival >= armedAt else { return }
         guard arrival <= now, now - arrival <= 0.5 else {
             if type == 3, clock != nil { markInputGap() }; return
         }
         if type == 8 { stop(reason: "眼镜主动结束会话"); return }
         if type == 1, phase == .armed {
-            #if COMPANION_DEVICE
-            guard let handle = RNVoiceVADCreate() else { stop(reason: "无法创建音频解码器"); return }
-            decoder = handle
-            #else
-            return
-            #endif
+            tick() // A delayed timer must not let an expired arm start recording.
+            guard phase == .armed else { return }
+            receivedWake = true
+            guard let decoder = makeDecoder() else { stop(reason: "无法创建音频解码器"); return }
+            self.decoder = decoder
+            let token = generation
             clock = CaptionClock(options: options, now: now); activity = CaptionVoiceActivity()
             lastAudio = nil; gapOpen = false; newSentence = true; lastDisplay = 0
             phase = .listening
             sink?.event(CaptionEntry(kind: .started,
                 text: "\(options.service.name) / \(options.service.model) / \(options.service == .azure ? options.region : "") / \(options.language); 静音退出 \(options.idleSeconds)s; 上限 \(options.maximumSeconds)s; 保存音频 \(options.recordAudio)"))
-            guard send(AssistantRecorderPrototype.control(start: true)) else { return }
+            guard send(AssistantRecorderPrototype.control(start: true)),
+                  generation == token, phase == .listening else { return }
             startCloud(); return
         }
         guard type == 3, let startedAt = clock?.startedAt, arrival >= startedAt else { return }
@@ -154,26 +189,15 @@ import RayNeoProtocol
             if arrival - lastAudio > 0.2 { markInputGap() }
         }
         self.lastAudio = arrival
-        #if COMPANION_DEVICE
-        guard let decoder else { return }
-        var samples = [Int16](repeating: 0, count: 1_920), mask: UInt32 = 0
-        let frames = audio.withUnsafeBytes { bytes in
-            samples.withUnsafeMutableBufferPointer { buffer in
-                RNVoiceVADProcessPCM(decoder, bytes.bindMemory(to: UInt8.self).baseAddress,
-                                     bytes.count, &mask, buffer.baseAddress, buffer.count)
-            }
-        }
-        guard frames > 0, frames <= 12 else { markInputGap(); return }
+        guard let decoded = decoder?.decode(audio) else { markInputGap(); return }
         clock?.audio(now: arrival)
-        for frame in 0..<Int(frames) where activity.accept(mask & (UInt32(1) << frame) != 0) {
+        for frame in 0..<decoded.frames where activity.accept(decoded.voicedMask & (UInt32(1) << frame) != 0) {
             clock?.speech(now: arrival)
             if unansweredSpeechAt == nil, phase == .listening { unansweredSpeechAt = now }
         }
-        let pcm = samples.withUnsafeBytes { Data($0.prefix(Int(frames) * 160 * 2)) }
         if gapOpen { sink?.event(CaptionEntry(kind: .gap, text: "眼镜音频恢复；缺失部分未补录")); gapOpen = false }
-        sink?.pcm(pcm)
-        if phase == .listening { provider?.append(pcm) }
-        #endif
+        sink?.pcm(decoded.pcm)
+        if phase == .listening { provider?.append(decoded.pcm) }
         tick()
     }
     private func startCloud() {
@@ -225,11 +249,9 @@ import RayNeoProtocol
         guard !gapOpen else { return }; gapOpen = true
         activity = CaptionVoiceActivity(); sink?.gap()
         sink?.event(CaptionEntry(kind: .gap, text: "眼镜音频缺口/解码失败；不补静音、不伪造连续录音"))
-        #if COMPANION_DEVICE
-        if let decoder { _ = RNVoiceVADReset(decoder) }
-        #endif
+        decoder?.reset()
     }
-    private func tick() {
+    func tick() {
         guard phase == .armed || phase == .listening || phase == .reconnecting else { return }
         guard voice.deviceID == target else { stop(reason: "眼镜连接中断；不会自动重新采音，请检查眼镜录音指示"); return }
         if phase == .armed {
@@ -260,21 +282,19 @@ import RayNeoProtocol
     }
     func stop(reason: String = "用户停止") {
         guard active, phase != .stopping else { return }
-        let hadAudio = clock != nil
+        let needsRemoteStop = receivedWake
         phase = .stopping; generation = UUID(); timer?.invalidate(); timer = nil
         provider?.stop(); provider = nil; key = ""; retryAt = nil; cloudDeadline = nil; dirtyDisplay = false
         preservePartial()
         var note = reason
-        if hadAudio, let target {
+        if needsRemoteStop, let target {
             // Both commands are best effort; local recording/upload always stops.
             do { try voice.sendCaption(target: target, payload: AssistantRecorderPrototype.control(start: false)) }
             catch { note += "；无法确认眼镜停止采音" }
             do { try voice.sendCaption(target: target, payload: AssistantExitPrototype.normalExit()) }
             catch { note += "；无法确认眼镜退出" }
         }
-        #if COMPANION_DEVICE
-        if let decoder { RNVoiceVADDestroy(decoder); self.decoder = nil }
-        #endif
+        decoder = nil; receivedWake = false
         clock = nil; target = nil; voice.ownVoiceForCaptions(false)
         status = note
         // A finite background task protects only a final flush, NOT continuous recording.
