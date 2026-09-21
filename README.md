@@ -17,8 +17,6 @@
 - SHA-256：`39d12aff8f2b312dc3b40ce784a444e52c536e61378434005255177548df966a`
 - 普通 App Store 加密 IPA 仍不能直接合并；未知版本必须通过兼容性检查。项目不提供代砸壳或代签名服务。
 
-新增实验：[统一语音服务与实时字幕](docs/VOICE_SERVICES.md)——Azure / Deepgram / ElevenLabs / 阿里云共用转写配置，可用于实时字幕和 AI 对话；对话另需 DeepSeek Key。Actions 提供未签名 IPA。锁屏、后台和真实眼镜效果仍需设备验收。
-
 ## 先选开发路线
 
 | 路线 | 适合什么需求 | 使用文档 |
