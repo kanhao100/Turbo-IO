@@ -383,7 +383,7 @@ struct SettingsView: View {
                 Label("不接管官方登录和绑定", systemImage: "lock.shield")
             }.font(.subheadline)
             Section("当前构建") {
-                LabeledContent("版本", value: (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.2.0") + " · 研究版")
+                LabeledContent("版本", value: (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.2.0") + " (" + (Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?") + ") · 研究版")
                 LabeledContent("设备通道", value: store.voice.supportsDevice ? "厂商核心适配 · 待真机复验" : "模拟器禁用")
                 LabeledContent("最低系统", value: "iOS 16")
                 Text("模拟器与编译通过不代表非越狱实机、配对或镜片效果已验证。")
@@ -418,4 +418,3 @@ struct HelpView: View {
             .preference(key: CompanionTabBarHiddenPreference.self, value: true)
     }
 }
-

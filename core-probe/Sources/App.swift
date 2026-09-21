@@ -277,7 +277,7 @@ final class ProbeController: UIViewController, CBCentralManagerDelegate, StreamD
         }
         let target = device.deviceID()
         let message = voiceProbe.standby.cloudEnabled
-            ? "当前是云对话：唤醒后音频发往所选转写服务，识别文字发给DeepSeek Flash（关闭思考/流式）。云端判断句末；本地5秒无语音/20秒收音/30秒处理保护。无TTS、无工具执行。日志不记正文，服务可能计费。关闭待命后停止响应。"
+            ? "当前是云对话：唤醒后音频发往所选转写服务，定稿文字发给DeepSeek Flash。云端判断句末，超时只取消、不生成回答；具体上限由当前对话模式决定。无TTS，Codex工具仅在已配置且你明确提出请求时调用。日志不记正文，服务可能计费。关闭待命后停止响应。"
             : "每次真实唤醒后，本机解码并检测语音；连续约0.9秒无语音即回复随机文字，显示10秒后待命。5秒无语音退出，最长收音8秒。不是识别或模型回答，不保存/上传音频。允许后台处理但系统可能挂起。仅对已绑定眼镜有限重连，不自动配对或重置。关闭待命后停止响应。"
         let alert = UIAlertController(title:"开启持续待命？", message:message, preferredStyle:.alert)
         alert.addAction(UIAlertAction(title:"取消", style:.cancel))

@@ -56,6 +56,12 @@ jobs:
           OUTPUT="apps/RayNeoCompanion/ipa"
 
           test -d "$APP"
+          test -f "$APP/RayNeoCompanion"
+          IPA_PLATFORM=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleSupportedPlatforms:0' "$APP/Info.plist")
+          test "$IPA_PLATFORM" = "iPhoneOS"
+          IPA_VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Info.plist")
+          IPA_BUILD=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Info.plist")
+          echo "Unsigned iPhoneOS IPA: version $IPA_VERSION, build $IPA_BUILD" >> "$GITHUB_STEP_SUMMARY"
           rm -rf "$OUTPUT"
           mkdir -p "$OUTPUT/Payload"
           cp -R "$APP" "$OUTPUT/Payload/"

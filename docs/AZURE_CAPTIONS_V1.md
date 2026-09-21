@@ -6,7 +6,7 @@
 
 | 功能 | 实现与边界 |
 | --- | --- |
-| 实时识别 | 眼镜语音 Opus → 本机 16 kHz/16-bit/mono PCM → 所选服务（Azure SDK / Deepgram WebSocket / ElevenLabs WebSocket）。没有手机麦克风回退、LLM 或 TTS。 |
+| 实时识别 | 眼镜语音 Opus → 本机 16 kHz/16-bit/mono PCM → 所选服务（Azure SDK / Deepgram WebSocket / ElevenLabs WebSocket / 阿里云 WebSocket）。字幕模式没有手机麦克风回退、LLM 或 TTS。 |
 | 流式显示 | 各服务的中间结果更新当前句，定稿写入同一份历史；空定稿不把旧草稿当定稿。Deepgram 按 `is_final` 保存片段（不等待 `speech_final`）；ElevenLabs 按 `committed_transcript` 保存，忽略延迟时间戳副本以免重复。手机显示历史，镜片提交最新不超过 480 UTF-8 bytes 的完整字素窗口。部分结果最多 4 次/秒；定稿立即提交。不是逐 token 显示，也不保证镜片行数或渲染回执。 |
 | 长时会话 | 可选 30 / 60 / 120 分钟保护上限；独立于旧助手的 120 秒限制。120 分钟是策略上限，不是已通过的持续采音实测。 |
 | 无人声退出 | 1 / 5 / 15（默认）/ 30 / 60 分钟，或不按静音退出。本地 WebRTC VAD 在 200 ms 窗口内有 120 ms 人声才更新计时；不以包到达或字幕到达判定人声，不据此切句。噪音可能误触发。 |
@@ -60,7 +60,7 @@ xcodebuild -project apps/RayNeoCompanion/RayNeoCompanion.xcodeproj \
   -derivedDataPath apps/RayNeoCompanion/build-captions-device CODE_SIGNING_ALLOWED=NO build
 ```
 
-Fork 若未开启 Actions，需要仓库所有者在 GitHub 开启；请以该 PR 的实际检查结果为准。Swift 单测覆盖静音/缺音区别、2 小时策略、VAD 抑制短噪音、重试预算、Unicode 截断、JSONL 恢复、WAV 分段/头部/字节限额。协议单测还覆盖旧设置迁移、三家凭据隔离、请求鉴权头、语言映射、音频编码、定稿语义、错误清洗和缓冲上限。模拟器使用假 socket 检查握手前不上传、替换连接后的迟到回调隔离、鉴权失败停止；另覆盖本地预览不能开启任一服务和不恢复录音同意。Keychain 往返测试仅在未签名模拟器报告缺失 entitlement/不可用时跳过，设备仍使用真实 Keychain。没有实际服务 Key 和眼镜，因此这些测试不能替代三家服务各自的真机端到端测试。
+Fork 若未开启 Actions，需要仓库所有者在 GitHub 开启；请以该 PR 的实际检查结果为准。Swift 单测覆盖静音/缺音区别、2 小时策略、VAD 抑制短噪音、重试预算、Unicode 截断、JSONL 恢复、WAV 分段/头部/字节限额。协议单测还覆盖旧设置迁移、四家凭据隔离、请求鉴权头、语言映射、音频编码、定稿语义、错误清洗和缓冲上限。模拟器使用假 socket 检查握手前不上传、替换连接后的迟到回调隔离、鉴权失败停止；另覆盖本地预览不能开启任一服务和不恢复录音同意，以及共享配置、完整 AI 对话链路与阿里云事件边界（见统一语音服务文档）。Keychain 往返测试仅在未签名模拟器报告缺失 entitlement/不可用时跳过，设备仍使用真实 Keychain。没有实际服务 Key 和眼镜，因此这些测试不能替代四家服务各自的真机端到端测试。
 
 真机验收（合并前逐项记录，不预填通过）：
 
@@ -69,7 +69,7 @@ Fork 若未开启 Actions，需要仓库所有者在 GitHub 开启；请以该 P
 - [ ] 1 分钟静音退出、不按静音退出、有短噪声/持续人声；音频断流 15 秒单独停止。
 - [ ] 前台 10 分钟 → 30 分钟 → 120 分钟，监控延迟、内存、温度、电量和所选服务实际用量。
 - [ ] 锁屏和切后台各测试同样时长；电话/音频中断、低电量、网络切换、眼镜断连/退出。
-- [ ] 分别验证三家服务的错误 Key/Region/额度与断网重试；停止后迟到回调不更新字幕、不重开录。
+- [ ] 分别验证四家服务的错误 Key/Region/Host/额度与断网重试；停止后迟到回调不更新字幕、不重开录。
 - [ ] 音频开关默认关闭、每次需再确认；播放分段 WAV、导出全文、模拟磁盘满与强杀后恢复。
 
 API 依据：[音频流格式](https://learn.microsoft.com/en-us/azure/ai-services/speech-service/how-to-use-audio-input-streams)、[PushAudioInputStream](https://learn.microsoft.com/en-us/objectivec/cognitive-services/speech/spxpushaudioinputstream)、[AudioConfiguration](https://learn.microsoft.com/en-us/objectivec/cognitive-services/speech/spxaudioconfiguration)。另参考 [Deepgram 实时转写](https://developers.deepgram.com/reference/speech-to-text/listen-streaming)、[Nova-3 语言](https://developers.deepgram.com/docs/models-languages-overview)、[ElevenLabs Realtime](https://elevenlabs.io/docs/api-reference/speech-to-text/v-1-speech-to-text-realtime)。未更改各供应商的服务端日志、保留或训练策略；云端数据管理取决于所选服务与账户条款。
