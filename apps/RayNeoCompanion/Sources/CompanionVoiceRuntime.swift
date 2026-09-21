@@ -19,6 +19,21 @@ import Combine
     private var activeTurn: UUID?
     var onBusiness: ((String, UInt8, Data) -> Void)?
     var onBusinessLoss: (() -> Void)?
+    var onSubtitleSendError: ((String, Data, Int) -> Void)?
+    @Published private(set) var subtitleOwnsDisplay = false
+    func ownDisplayForSubtitles(_ owns: Bool) {
+        #if COMPANION_DEVICE
+        prepare(); controller.companionOwnDisplayForSubtitles(owns)
+        #endif
+        subtitleOwnsDisplay = owns; refresh()
+    }
+    func sendSubtitle(target: String, payload: Data) throws {
+        #if COMPANION_DEVICE
+        try controller.companionSendSubtitle(target: target, payload: payload)
+        #else
+        throw DeviceFeatureError.disconnected
+        #endif
+    }
     var featureIsBusy: (() -> Bool)?
     var onConnectionChange: ((String?) -> Void)?
     var onRuntimeRefresh: (() -> Void)?
@@ -80,6 +95,7 @@ import Combine
             return await codex.executeTool(name: name, arguments: arguments, requestID: id)
         }
         controller.companionBusinessLoss = { [weak self] in self?.onBusinessLoss?() }
+        controller.companionSubtitleSendError = { [weak self] in self?.onSubtitleSendError?($0, $1, $2) }
         controller.companionLog = { [weak self] line in self?.latestEvent = String(line.prefix(200)) }
         controller.companionTranscript = { [weak self] id, text, final in
             guard let self, !text.isEmpty else { return }
@@ -139,7 +155,7 @@ import Combine
         #endif
     }
     func start(cloud: Bool, continuous: Bool) {
-        guard featureIsBusy?() != true else { error = "请先结束眼镜录音或提词器任务，再开启语音待命。"; return }
+        guard !subtitleOwnsDisplay, featureIsBusy?() != true else { error = "请先结束字幕显示、眼镜录音或提词器任务，再开启语音待命。"; return }
         #if COMPANION_DEVICE
         prepare()
         guard controller.companionStart(cloud: cloud, continuous: continuous) else {

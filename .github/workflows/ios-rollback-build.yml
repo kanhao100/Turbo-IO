@@ -1,4 +1,4 @@
-name: iOS original rollback build
+name: iOS subtitle display test
 
 on:
   pull_request:
@@ -14,13 +14,13 @@ permissions:
   contents: read
 
 concurrency:
-  group: ios-original-${{ github.workflow }}-${{ github.ref }}
+  group: ios-subtitle-display-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   verify-and-package:
     runs-on: macos-15
-    timeout-minutes: 30
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -36,6 +36,26 @@ jobs:
 
       - name: Install XcodeGen
         run: brew install xcodegen
+
+      - name: Test subtitle display runtime and tab in simulator
+        run: node scripts/test-subtitle-display.mjs
+
+      - name: Export simulator screenshots
+        if: always()
+        continue-on-error: true
+        run: >-
+          xcrun xcresulttool export attachments
+          --path apps/RayNeoCompanion/build-subtitle-simulator/Tests.xcresult
+          --output-path apps/RayNeoCompanion/build-subtitle-simulator/screenshots
+
+      - name: Upload simulator test evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: TurboIO-subtitle-display-tests
+          path: apps/RayNeoCompanion/build-subtitle-simulator/screenshots
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Generate device project
         run: |
@@ -57,14 +77,14 @@ jobs:
           xcodebuild -project apps/RayNeoCompanion/RayNeoCompanion.xcodeproj
           -scheme RayNeoCompanionDevice
           -destination 'generic/platform=iOS'
-          -derivedDataPath apps/RayNeoCompanion/build-original-device
+          -derivedDataPath apps/RayNeoCompanion/build-subtitle-device
           CODE_SIGNING_ALLOWED=NO
           build
 
       - name: Package unsigned IPA
         run: |
-          APP="apps/RayNeoCompanion/build-original-device/Build/Products/Debug-iphoneos/RayNeoCompanion.app"
-          OUTPUT="apps/RayNeoCompanion/ipa-original"
+          APP="apps/RayNeoCompanion/build-subtitle-device/Build/Products/Debug-iphoneos/RayNeoCompanion.app"
+          OUTPUT="apps/RayNeoCompanion/ipa-subtitle-display"
 
           test -d "$APP"
           test -f "$APP/RayNeoCompanion"
@@ -72,13 +92,15 @@ jobs:
           test "$IPA_PLATFORM" = "iPhoneOS"
           IPA_VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Info.plist")
           IPA_BUILD=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Info.plist")
+          test "$IPA_VERSION" = "0.2.1"
+          test "$IPA_BUILD" = "5"
 
           rm -rf "$OUTPUT"
           mkdir -p "$OUTPUT/Payload"
           cp -R "$APP" "$OUTPUT/Payload/"
           /usr/bin/ditto -c -k --sequesterRsrc --keepParent \
-            "$OUTPUT/Payload" "$OUTPUT/TurboIO-original-unsigned.ipa"
-          shasum -a 256 "$OUTPUT/TurboIO-original-unsigned.ipa" | tee "$OUTPUT/SHA256SUMS.txt"
+            "$OUTPUT/Payload" "$OUTPUT/TurboIO-subtitle-display-unsigned.ipa"
+          shasum -a 256 "$OUTPUT/TurboIO-subtitle-display-unsigned.ipa" | tee "$OUTPUT/SHA256SUMS.txt"
 
           {
             echo "Unsigned iPhoneOS IPA"
@@ -89,9 +111,9 @@ jobs:
       - name: Upload unsigned IPA
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: TurboIO-original-unsigned-ipa
+          name: TurboIO-subtitle-display-unsigned-ipa
           path: |
-            apps/RayNeoCompanion/ipa-original/TurboIO-original-unsigned.ipa
-            apps/RayNeoCompanion/ipa-original/SHA256SUMS.txt
+            apps/RayNeoCompanion/ipa-subtitle-display/TurboIO-subtitle-display-unsigned.ipa
+            apps/RayNeoCompanion/ipa-subtitle-display/SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 7

@@ -29,19 +29,26 @@ public struct BusinessEnvelopeMetadata: Equatable {
     /// The caller must independently gate business ID, authenticated target and
     /// active round; this parser does not authenticate a device.
     public static func assistantAudio(_ packet: Data) throws -> Data? {
-        let (metadata, range) = try parse(packet)
+        let (metadata, range, _) = try parse(packet)
         guard metadata.messageType == 3, let range, !range.isEmpty,
               range.count <= 4096 else { return nil }
         return Data(packet).subdata(in:range)
     }
 
-    private static func parse(_ packet: Data) throws -> (Self, Range<Int>?) {
+    /// Bounded business JSON extraction; callers still validate the business and schema.
+    public static func messageJSON(_ packet: Data) throws -> Data? {
+        guard let range = try parse(packet).2, !range.isEmpty else { return nil }
+        return Data(packet).subdata(in: range)
+    }
+
+    private static func parse(_ packet: Data) throws -> (Self, Range<Int>?, Range<Int>?) {
         guard packet.count <= 1_048_576 else { throw DecodeError.packetTooLarge }
         return try packet.withUnsafeBytes { (bytes: UnsafeRawBufferPointer) in
             var offset = 0, fields = 0, unknown = 0
             var seen = Set<UInt64>()
             var version: UInt32?, type: UInt32?, messageLength: Int?, dataLength: Int?
             var audioRange: Range<Int>?
+            var jsonRange: Range<Int>?
             func varint() throws -> UInt64 {
                 var result: UInt64 = 0
                 for index in 0..<10 {
@@ -76,6 +83,7 @@ public struct BusinessEnvelopeMetadata: Equatable {
                         let count = try skip(length)
                         if field == 3 { messageLength = count } else { dataLength = count }
                         if field == 4 { audioRange = start..<offset }
+                        if field == 3 { jsonRange = start..<offset }
                     }
                 } else {
                     unknown += 1
@@ -89,7 +97,7 @@ public struct BusinessEnvelopeMetadata: Equatable {
                 }
             }
             return (Self(version: version, messageType: type, messageBytes: messageLength,
-                        dataBytes: dataLength, unknownFieldCount: unknown), audioRange)
+                        dataBytes: dataLength, unknownFieldCount: unknown), audioRange, jsonRange)
         }
     }
 }

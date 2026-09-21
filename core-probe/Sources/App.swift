@@ -40,6 +40,13 @@ final class ProbeController: UIViewController, CBCentralManagerDelegate, StreamD
     private var nextWakeInit: TimeInterval = 0
     private var standbyLifecycle: NSObjectProtocol?
     private let standbyPreferenceKey = "syntheticStandbyTarget.v1"
+    private var voiceDiagnosticsAllowed: Bool {
+        #if COMPANION_DEVICE
+        return !companionSubtitleOwnsDisplay
+        #else
+        return true
+        #endif
+    }
 
     #if COMPANION_DEVICE
     private var deviceConnectionTimer: Timer?
@@ -50,9 +57,24 @@ final class ProbeController: UIViewController, CBCentralManagerDelegate, StreamD
     var companionLog: ((String) -> Void)?
     var companionBusiness: ((String, UInt8, Data) -> Void)?
     var companionBusinessLoss: (() -> Void)?
+    var companionSubtitleSendError: ((String, Data, Int) -> Void)?
+    private(set) var companionSubtitleOwnsDisplay = false
+    func companionOwnDisplayForSubtitles(_ owns: Bool) {
+        if owns { companionStop(); voiceProbe.stopDisplayTest() }
+        companionSubtitleOwnsDisplay = owns
+    }
+    func companionSendSubtitle(target: String, payload: Data) throws {
+        guard companionSubtitleOwnsDisplay, companionDeviceID == target, let core else {
+            throw NSError(domain: "CompanionSubtitleConnection", code: 1)
+        }
+        try SubtitleDisplayWire.validateOutbound(payload)
+        try core.sendMessage(MessageFactory.make(payload: payload, deviceID: target,
+            business: .aiSubtitle, messageID: UUID().uuidString))
+        DisplayObservation.shared.packet(payload, business: SubtitleDisplayWire.business, inbound: false)
+    }
     var companionDeviceID: String? { companionReady ? core?.linkedDevices()?.first?.deviceID() : nil }
     func companionSendFile(_ url: URL, id: String) throws -> String {
-        guard companionReady, RNProbeMessageImageMatches(), let device = companionDeviceID,
+        guard !companionSubtitleOwnsDisplay, companionReady, RNProbeMessageImageMatches(), let device = companionDeviceID,
               let task = core?.shareFile(url, device, 0, id), !task.isEmpty else {
             throw NSError(domain: "CompanionFileSend", code: 1)
         }
@@ -63,7 +85,7 @@ final class ProbeController: UIViewController, CBCentralManagerDelegate, StreamD
         core?.cancelShare(device, task)
     }
     func companionSendBusiness(_ index: UInt8, payload: Data) throws {
-        guard companionReady, let core, let target = companionDeviceID,
+        guard !companionSubtitleOwnsDisplay, companionReady, let core, let target = companionDeviceID,
               let business = MessageBusinessIndex(rawValue: index), [13,14,15,20,21,22].contains(index) else {
             throw NSError(domain: "CompanionBusinessConnection", code: 1)
         }
@@ -129,6 +151,7 @@ final class ProbeController: UIViewController, CBCentralManagerDelegate, StreamD
     var companionCloud: Bool { voiceProbe.standby.cloudEnabled }
     func companionStart(cloud: Bool, continuous: Bool) -> Bool {
         loadViewIfNeeded()
+        guard !companionSubtitleOwnsDisplay else { return false }
         guard companionReady, let device = core?.linkedDevices()?.first,
               !cloud || CloudVoiceKeys.ready else { return false }
         UserDefaults.standard.set(true, forKey: "companion.autoVoice.v1")
@@ -152,7 +175,7 @@ final class ProbeController: UIViewController, CBCentralManagerDelegate, StreamD
         companionRestoreAutomaticVoice()
     }
     private func companionRestoreAutomaticVoice() {
-        guard !voiceProbe.standby.enabled, CloudVoiceKeys.ready,
+        guard !companionSubtitleOwnsDisplay, !voiceProbe.standby.enabled, CloudVoiceKeys.ready,
               UserDefaults.standard.bool(forKey: "companion.autoVoice.v1") else { return }
         loadCore()
         guard let bonded = core?.bondedDevices(), bonded.count == 1 else {
@@ -214,6 +237,9 @@ final class ProbeController: UIViewController, CBCentralManagerDelegate, StreamD
         #endif
         voiceProbe.setCloudMode(UserDefaults.standard.bool(forKey:CloudVoiceKeys.enabledKey) && CloudVoiceKeys.ready)
         voiceProbe.send = { [weak self] deviceID, payload in
+            guard self?.voiceDiagnosticsAllowed == true else {
+                throw NSError(domain: "SubtitleDisplayExclusiveOwner", code: 1)
+            }
             guard let core = self?.core, let linked = core.linkedDevices(), linked.count == 1,
                   let device = linked.first, device.deviceID() == deviceID,
                   device.isConnected(), device.bleStateByte() == 9 else {
@@ -250,6 +276,7 @@ final class ProbeController: UIViewController, CBCentralManagerDelegate, StreamD
     }
 
     @objc private func toggleStandby() {
+        guard voiceDiagnosticsAllowed else { log("请先退出字幕显示测试"); return }
         if voiceProbe.standby.enabled { disableStandby(); return }
         guard let linked = core?.linkedDevices(), linked.count == 1, let device = linked.first,
               device.isConnected(), device.bleStateByte() == 9 else {
@@ -300,6 +327,7 @@ final class ProbeController: UIViewController, CBCentralManagerDelegate, StreamD
     }
 
     private func startStandby(target: String) {
+        guard voiceDiagnosticsAllowed else { log("请先退出字幕显示测试"); return }
         reconnectPolicy.reset(); standbyWasReady = false; nextWakeInit = 0
         voiceProbe.enableStandby(deviceID:target)
         if central == nil { central = CBCentralManager(delegate:self, queue:.main) }
@@ -405,8 +433,10 @@ final class ProbeController: UIViewController, CBCentralManagerDelegate, StreamD
                 self.companionBusiness?(id, business, payload)
             }
             receiver.onBusinessLoss = { [weak self] in DisplayObservation.shared.loss(); self?.companionBusinessLoss?() }
+            receiver.onSubtitleSendError = { [weak self] in self?.companionSubtitleSendError?($0, $1, $2) }
             #endif
             receiver.onVoiceEnvelope = { [weak self] deviceID, metadata, audio, arrival in
+                guard self?.voiceDiagnosticsAllowed == true else { return }
                 #if COMPANION_DEVICE
                 if self?.companionDeviceID == deviceID, let type = metadata.messageType {
                     DisplayObservation.shared.voiceMetadata(type:type)
@@ -429,6 +459,7 @@ final class ProbeController: UIViewController, CBCentralManagerDelegate, StreamD
     }
 
     @objc private func confirmVoiceProbe() {
+        guard voiceDiagnosticsAllowed else { log("请先退出字幕显示测试"); return }
         guard let core, let linked = core.linkedDevices(), linked.count == 1,
               let device = linked.first, device.isConnected(), device.bleStateByte() == 9 else {
             log("没有唯一已认证连接，未就绪语音测试"); return
@@ -437,6 +468,7 @@ final class ProbeController: UIViewController, CBCentralManagerDelegate, StreamD
         let alert = UIAlertController(title:"准备一次8秒语音测试？", message:"仅在你主动唤醒后请求音频；收到非空音频才在8秒后显示本轮随机测试串，内容与所说的话无关，再过3秒请求退出页面。不是语音识别或模型回答。只记类型/长度，不保存、不上传；90秒不唤醒自动取消。", preferredStyle:.alert)
         alert.addAction(UIAlertAction(title:"取消", style:.cancel))
         alert.addAction(UIAlertAction(title:"准备测试", style:.default) { [weak self] _ in
+            guard self?.voiceDiagnosticsAllowed == true else { return }
             guard let current = core.linkedDevices()?.first(where: { $0.deviceID() == deviceID }),
                   current.isConnected(), current.bleStateByte() == 9 else {
                 self?.log("连接已变化，取消语音测试"); return
@@ -447,6 +479,7 @@ final class ProbeController: UIViewController, CBCentralManagerDelegate, StreamD
     }
 
     @objc private func showDisplayBoundaryTests() {
+        guard voiceDiagnosticsAllowed else { log("请先退出字幕显示测试"); return }
         if voiceProbe.standby.enabled {
             let menu = UIAlertController(title:"持续待命显示测试",message:"下一次唤醒发送A1至A4四段合成文字，最后一段带校验码；不请求云服务。无10秒强制关闭，验收眼镜自己的收尾行为。",preferredStyle:.actionSheet)
             menu.addAction(UIAlertAction(title:"下一次唤醒：A1–A4增量测试",style:.default) { [weak self] _ in self?.voiceProbe.armIncrementalFixture() })
@@ -473,6 +506,7 @@ final class ProbeController: UIViewController, CBCentralManagerDelegate, StreamD
     }
 
     private func confirmDisplayFixture(_ fixture: DisplayBoundaryFixture) {
+        guard voiceDiagnosticsAllowed else { log("请先退出字幕显示测试"); return }
         guard let core, let linked = core.linkedDevices(), linked.count == 1,
               let device = linked.first, device.isConnected(), device.bleStateByte() == 9 else {
             log("没有唯一已认证连接，不启动显示边界测试"); return
@@ -481,6 +515,7 @@ final class ProbeController: UIViewController, CBCentralManagerDelegate, StreamD
         let alert = UIAlertController(title:"\(fixture.id) · \(fixture.name)", message:"\(fixture.text)\n\n仅主动唤醒后短时收音，不保存/上传。8秒后发送上述合成文字，10秒后自动退出。每次只验本项，90秒未唤醒取消。", preferredStyle:.alert)
         alert.addAction(UIAlertAction(title:"取消", style:.cancel))
         alert.addAction(UIAlertAction(title:"准备本项测试", style:.default) { [weak self] _ in
+            guard self?.voiceDiagnosticsAllowed == true else { return }
             guard let linked = core.linkedDevices(), linked.count == 1,
                   let current = linked.first, current.deviceID() == deviceID,
                   current.isConnected(), current.bleStateByte() == 9 else {
@@ -492,6 +527,7 @@ final class ProbeController: UIViewController, CBCentralManagerDelegate, StreamD
     }
 
     @objc private func confirmVoiceWakeup() {
+        guard voiceDiagnosticsAllowed else { log("请先退出字幕显示测试"); return }
         guard let core, let linked = core.linkedDevices(), linked.count == 1,
               let device = linked.first, device.isConnected(), device.bleStateByte() == 9 else {
             log("没有唯一已认证连接，未开启语音唤醒"); return
@@ -500,6 +536,7 @@ final class ProbeController: UIViewController, CBCentralManagerDelegate, StreamD
         let alert = UIAlertController(title: "开启这副眼镜的语音唤醒？", message: "发送官方实测的 Launcher/type16：set_ai_voice_wakeup，mode=1。只改变唤醒开关；不录音、不上传。需要眼镜回传状态和真人唤醒验收。", preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "取消", style: .cancel))
         alert.addAction(UIAlertAction(title: "开启测试", style: .default) { [weak self] _ in
+            guard self?.voiceDiagnosticsAllowed == true else { return }
             guard let current = core.linkedDevices()?.first(where: { $0.deviceID() == deviceID }),
                   current.isConnected(), current.bleStateByte() == 9 else {
                 self?.log("连接已变化，取消开启"); return
@@ -516,6 +553,7 @@ final class ProbeController: UIViewController, CBCentralManagerDelegate, StreamD
     }
 
     @objc private func confirmTextTest() {
+        guard voiceDiagnosticsAllowed else { log("请先退出字幕显示测试"); return }
         guard let core, let linked = core.linkedDevices(), linked.count == 1,
               let device = linked.first, device.isConnected(), device.bleStateByte() == 9 else {
             log("没有唯一已认证连接，未发消息"); return
@@ -525,6 +563,7 @@ final class ProbeController: UIViewController, CBCentralManagerDelegate, StreamD
         let alert = UIAlertController(title:"发送固定 ASR 文字？", message:"内容：\(text)\n这是 voiceAssistant/type=5，不是 ANCS 通知。可能需要先唤醒眼镜；实际显示需本人确认。", preferredStyle:.alert)
         alert.addAction(UIAlertAction(title:"取消", style:.cancel))
         alert.addAction(UIAlertAction(title:"发送测试", style:.default) { [weak self] _ in
+            guard self?.voiceDiagnosticsAllowed == true else { return }
             guard let current = core.linkedDevices()?.first(where: { $0.deviceID() == deviceID }),
                   current.isConnected(), current.bleStateByte() == 9 else {
                 self?.log("连接已变化，取消发送"); return
