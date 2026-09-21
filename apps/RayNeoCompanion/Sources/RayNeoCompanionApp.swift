@@ -17,6 +17,7 @@ struct RayNeoCompanionApp: App {
                 .environmentObject(store.timeline)
                 .environmentObject(store.recordingASR)
                 .environmentObject(store.features)
+                .environmentObject(store.subtitleDisplay)
                 .environmentObject(store.notifications)
                 .environmentObject(store.headControlTest)
                 .environmentObject(store.automaticWeather)
@@ -41,6 +42,7 @@ struct RootView: View {
             case 1: ConversationView()
             case 2: ArchiveView()
             case 3: ToolsView()
+            case 4: SubtitleDisplayTestView()
             default: DeviceView()
             }
         }
@@ -48,6 +50,7 @@ struct RootView: View {
             if !hideTabBar {
             HStack(spacing: 0) {
                 tabButton(0, "设备", "eyeglasses")
+                tabButton(4, "字幕", "captions.bubble")
                 tabButton(1, "会话", "bubble.left")
                 tabButton(2, "归档", "folder")
                 tabButton(3, "工具", "case")
@@ -96,7 +99,7 @@ struct RootView: View {
                 Text(title).font(.system(size: 11, weight: store.selectedTab == index ? .semibold : .regular))
             }
             .foregroundStyle(store.selectedTab == index ? Color.white : Palette.muted)
-            .frame(width: 70, height: 54)
+            .frame(minWidth: 44, maxWidth: .infinity, minHeight: 54)
             .background(store.selectedTab == index ? Palette.ink : .clear, in: RoundedRectangle(cornerRadius: 16))
             .frame(maxWidth: .infinity)
         }.accessibilityIdentifier("tab-\(index)").accessibilityLabel(title)

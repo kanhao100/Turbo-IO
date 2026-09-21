@@ -31,11 +31,12 @@ import UIKit
     private var finalizationInFlight = false
     private var pendingSettings: [String: Date] = [:]
     private var observers: [NSObjectProtocol] = []
-    var canControl: Bool { voice.ready && !recoveryBusy && store?.alwaysOn.occupied != true && !["recording", "processing", "displaying"].contains(voice.phase) }
+    var canControl: Bool { voice.ready && !voice.subtitleOwnsDisplay && !recoveryBusy && store?.alwaysOn.occupied != true && !["recording", "processing", "displaying"].contains(voice.phase) }
     init(voice: CompanionVoiceRuntime, store: CompanionStore, root: URL) {
         self.voice = voice; self.store = store; inbox = GlassesRecordingInbox(root: root)
         voice.onBusiness = { [weak self] in self?.receive(device: $0, business: $1, data: $2) }
-        voice.onBusinessLoss = { [weak self] in self?.lostMessages(); self?.store?.alwaysOn.lostMessages() }
+        voice.onBusinessLoss = { [weak self] in self?.lostMessages(); self?.store?.alwaysOn.lostMessages(); self?.store?.subtitleDisplay.lostMessages() }
+        voice.onSubtitleSendError = { [weak self] in self?.store?.subtitleDisplay.transportFailed(device: $0, packet: $1, code: $2) }
         // One automatic weather owner. Legacy Weatherstack stays manual to avoid overwrites.
         voice.onRuntimeRefresh = { [weak self] in self?.store?.qweather.tick() }
         voice.featureIsBusy = { [weak self] in self?.recordingID != nil || self?.teleprompterID != nil || self?.store?.alwaysOn.occupied == true }
@@ -44,6 +45,7 @@ import UIKit
             self.store?.notifications.connectionChanged()
             self.store?.headControlTest.connectionChanged()
             self.store?.alwaysOn.connectionChanged()
+            self.store?.subtitleDisplay.connectionChanged()
             self.pendingSettings.removeAll(); self.settings = [:]; self.battery = nil; self.brightness = nil
             if self.recordingID != nil { self.recordingStatus = device == self.captureDevice ? "连接恢复；等待同一录音状态/数据，不自动宣布补传完成" : "连接中断；原始录音保留，等待同一眼镜恢复" }
             if self.teleprompterID != nil, device != self.teleprompterDevice {
@@ -110,6 +112,7 @@ import UIKit
     }
     func receive(device: String, business: UInt8, data: Data) {
         guard voice.deviceID == device else { return }
+        if business == 19 { store?.subtitleDisplay.receive(device: device, packet: data); return }
         if business == 13 || business == 15 { store?.alwaysOn.receive(device: device, business: business, packet: data) }
         do {
             let wire = try DeviceBusinessWire(data)

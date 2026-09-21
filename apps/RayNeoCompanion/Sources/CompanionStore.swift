@@ -111,6 +111,17 @@ final class CompanionStore: ObservableObject {
     let timeline: ConversationTimeline
     let voice: CompanionVoiceRuntime
     let codex: CodexCompanion
+    lazy var subtitleDisplay = SubtitleDisplayRuntime(
+        device: { [weak self] in self?.voice.deviceID },
+        available: { [weak self] in
+            guard let self else { return false }
+            return self.features.canControl && self.features.recordingID == nil && self.features.teleprompterID == nil
+        }, supported: { [weak self] in self?.voice.supportsDevice == true },
+        claimDisplay: { [weak self] in self?.voice.ownDisplayForSubtitles($0) },
+        send: { [weak self] target, packet in
+            guard let self else { throw DeviceFeatureError.disconnected }
+            try self.voice.sendSubtitle(target: target, payload: packet)
+        })
     lazy var alwaysOn = AlwaysOnLocalProbe(defaults: defaults,
         root: customRecordingRoot?.deletingLastPathComponent().appendingPathComponent("AlwaysOnLocalProbeV1")
             ?? FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("AlwaysOnLocalProbeV1"),
