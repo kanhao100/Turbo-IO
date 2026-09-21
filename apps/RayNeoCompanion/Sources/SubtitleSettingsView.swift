@@ -26,7 +26,19 @@ struct SubtitleSettingsView: View {
                         .accessibilityIdentifier("subtitle-provider")
                     LabeledContent("模型", value: draft.service.model)
                     if draft.service == .azure { TextField("Azure Region，例如 eastus", text: $draft.region).textInputAutocapitalization(.never).autocorrectionDisabled() }
-                    if draft.service == .aliyun { TextField("阿里云 Host（aliyuncs.com）", text: $draft.aliyunHost).textInputAutocapitalization(.never).autocorrectionDisabled() }
+                    if draft.service == .aliyun {
+                        TextField("阿里云 Workspace Host", text: $draft.aliyunHost)
+                            .textInputAutocapitalization(.never).autocorrectionDisabled()
+                        if let region = AliyunRealtimeRegion.region(for: draft.aliyunHost) {
+                            LabeledContent("已识别地域", value: region.name)
+                                .foregroundStyle(Palette.green)
+                        } else if !draft.aliyunHost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            Text("只接受中国北京或新加坡的 Workspace 专属 Host；不接受 URL、DashScope 公共域名或 trial 试用域名。")
+                                .font(.caption).foregroundStyle(Palette.amber)
+                        }
+                        Text("北京与新加坡的 Workspace、API Key 和模型权限彼此隔离。请粘贴控制台显示的完整 Host，并使用同一地域创建的 Key。")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
                     Picker("识别语言", selection: $draft.language) {
                         Text("中文").tag("zh-CN"); Text("English · UK").tag("en-GB"); Text("English · US").tag("en-US")
                     }

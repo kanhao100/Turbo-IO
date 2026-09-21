@@ -18,6 +18,7 @@ const result = spawnSync('xcodebuild', [
   '-only-testing:RayNeoCompanionTests/SubtitleDisplayRuntimeTests',
   '-only-testing:RayNeoCompanionTests/SubtitleRealtimeTests',
   '-only-testing:RayNeoCompanionTests/SubtitleLatencyDiagnosticsTests',
+  '-only-testing:RayNeoCompanionTests/AliyunRealtimeProtocolTests',
   '-only-testing:RayNeoCompanionTests/SubtitleArchiveTests',
   '-only-testing:RayNeoCompanionTests/CaptionSocketTests',
   '-only-testing:RayNeoCompanionUITests/SubtitleDisplayUITests',

@@ -16,6 +16,26 @@ final class CaptionPolicyTests: XCTestCase {
             XCTAssertThrowsError(try options.validated(), region)
         }
     }
+    func testAliyunRealtimeWorkspaceHostsAreRegionBoundAndStrict() throws {
+        let beijing = "workspace-a.cn-beijing.maas.aliyuncs.com"
+        let singapore = "workspace-a.ap-southeast-1.maas.aliyuncs.com"
+        XCTAssertEqual(AliyunRealtimeRegion.region(for: " \(beijing.uppercased())\n"), .chinaBeijing)
+        XCTAssertEqual(AliyunRealtimeRegion.region(for: singapore), .singapore)
+        XCTAssertEqual(AliyunRealtimeRegion.normalize(host: " \(singapore.uppercased()) "), singapore)
+        for host in ["dashscope.aliyuncs.com", "dashscope-intl.aliyuncs.com",
+                     "trial.cn-beijing.maas.aliyuncs.com", "trial.ap-southeast-1.maas.aliyuncs.com",
+                     "workspace-a.eu-central-1.maas.aliyuncs.com",
+                     "extra.workspace-a.cn-beijing.maas.aliyuncs.com",
+                     "https://workspace-a.cn-beijing.maas.aliyuncs.com"] {
+            XCTAssertNil(AliyunRealtimeRegion.region(for: host), host)
+        }
+
+        var china = CaptionOptions(); china.service = .aliyun; china.aliyunHost = beijing
+        var international = china; international.aliyunHost = singapore
+        XCTAssertEqual(try china.validated().aliyunHost, beijing)
+        XCTAssertEqual(try international.validated().aliyunHost, singapore)
+        XCTAssertNotEqual(china.credentialService, international.credentialService)
+    }
     func testInvalidPolicyCannotRemoveSafetyCeiling() {
         var options = CaptionOptions(); options.region = "eastus"
         options.maximumSeconds = 0; XCTAssertThrowsError(try options.validated())

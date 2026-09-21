@@ -1,15 +1,23 @@
-# 实时字幕 · 0.3.2 (8)
+# 实时字幕 · 0.3.3 (9)
 
 在已经通过用户镜片验收的字幕显示基础上，接入原生字幕收音与四家 ASR。底部“字幕”页分为正在转写、会话历史，右上角为设置。普通录音的问题继续单独保留在 DEVICE_ISSUES.md，本版不改变普通录音协议。
 
 ## 使用
 
 1. 连接并认证眼镜，结束眼镜现有任务。
-2. 字幕 → 设置，选择 Azure Speech / Deepgram Nova-3 / ElevenLabs Scribe v2 Realtime / 阿里云。Azure 填 Region，阿里云填 Host；其余只需自己的 Key。不需要 DeepSeek，也不生成 AI 回答。
+2. 字幕 → 设置，选择 Azure Speech / Deepgram Nova-3 / ElevenLabs Scribe v2 Realtime / 阿里云 Qwen3-ASR-Flash-Realtime。Azure 填 Region；阿里云粘贴中国北京或新加坡控制台中的完整 Workspace Host，并填写同地域 Key。其余服务只需自己的 Key。不需要 DeepSeek，也不生成 AI 回答。
 3. 选择识别语言、是否保存音频和时长上限，保存。保存或启动 App 不会开启收音。
 4. 回到字幕页点击开始，或直接双击眼镜旋钮。启动不再弹出二次确认；请在使用前自行取得参与者同意。
 5. 眼镜确认字幕起录后，音频只进入当前 ASR，中间稿与定稿更新镜片。手机显示音频时长、电平、定稿与缺口。
 6. 再次双击眼镜，或在手机点击“停止并保存”。App 立即停止上传、完成文件保存并释放本轮，不再要求到手机点击“我确认眼镜已退出”。异常断连不会自动重开录音。
+
+### 阿里云 Qwen3 Realtime 与地域
+
+实时字幕的阿里云适配器使用 Qwen3 Realtime WebSocket：`/api-ws/v1/realtime?model=qwen3-asr-flash-realtime`。会话由 `session.update` 配置，PCM16/16kHz/mono 音频通过 `input_audio_buffer.append` 的 Base64 JSON 字段发送，服务端 VAD 使用 threshold 0.2、静音 400 ms；它不再使用旧 `/api-ws/v1/inference`、`run-task` 或 binary WebSocket 音频帧。
+
+当前仅接受生产用 Workspace 专属 Host：`{WorkspaceId}.cn-beijing.maas.aliyuncs.com`（中国北京）或 `{WorkspaceId}.ap-southeast-1.maas.aliyuncs.com`（新加坡）。App 根据完整 Host 自动识别地域，不替用户猜选；DashScope 公共域名、trial 试用域名、URL/路径以及其他地域会被拒绝。北京与新加坡使用相同模型 ID 和 Realtime 事件协议，但 Workspace、API Key、模型列表和数据所在地域彼此隔离，不能交叉使用；一般选择更靠近手机网络与部署位置的一侧来降低网络延迟，价格、配额及区域功能仍以各自控制台为准。Keychain 也按完整 Host 分仓，切换地域不会把旧 Key 自动发往新地域。
+
+这次只迁移“实时字幕”。AI 语音对话和已保存录音的手动转写仍使用旧 DashScope task 协议，不会因为字幕页显示 Qwen3 就被暗中切换；后续若迁移，必须各自重做事件和结束流程。
 
 ### 双击快捷键
 
@@ -56,4 +64,4 @@ App 在每次认证连接后读取完整旋钮设置；若永久开关仍开启�
 
 源码检查；rayneo-protocol 原生字幕/快捷键测试；rayneo-captions 服务请求/格式/日志/WAV 测试；模拟器运行时测试使用假眼镜、假 ASR 与合成音频检查四家链路、正确 SID/启动回执、重复/缺口、断连、准备取消、超时、停止后的迟到回调和存储边界；UI 测试检查实时/历史/设置页。
 
-不使用真实服务 Key、用户音频或 Apple 签名凭据。设备 CI 输出未签名 0.3.2 (8) IPA，仍需用户自己的签名才能安装。
+不使用真实服务 Key、用户音频或 Apple 签名凭据。设备 CI 输出未签名 0.3.3 (9) IPA，仍需用户自己的签名才能安装。

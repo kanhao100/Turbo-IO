@@ -2,6 +2,46 @@ import Foundation
 
 public typealias SpeechService = CaptionService
 
+/// Qwen3-ASR-Flash-Realtime workspace endpoints supported by the subtitle path.
+/// API keys and workspaces are region-scoped, so callers must keep the complete
+/// workspace host instead of selecting a region independently.
+public enum AliyunRealtimeRegion: String, Codable, CaseIterable {
+    case chinaBeijing = "cn-beijing"
+    case singapore = "ap-southeast-1"
+
+    public var name: String {
+        switch self {
+        case .chinaBeijing: return "中国北京"
+        case .singapore: return "新加坡"
+        }
+    }
+
+    public static func region(for host: String) -> Self? {
+        guard let normalized = normalizedDNSHost(host) else { return nil }
+        let labels = normalized.split(separator: ".", omittingEmptySubsequences: false)
+        guard labels.count == 5, labels[0] != "trial", labels[2] == "maas",
+              labels[3] == "aliyuncs", labels[4] == "com" else { return nil }
+        return Self(rawValue: String(labels[1]))
+    }
+
+    public static func normalize(host: String) -> String? {
+        guard region(for: host) != nil else { return nil }
+        return host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    private static func normalizedDNSHost(_ value: String) -> String? {
+        let host = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard host.utf8.count <= 253,
+              host.split(separator: ".", omittingEmptySubsequences: false).allSatisfy({ label in
+                  !label.isEmpty && label.count <= 63 && label.first != "-" && label.last != "-" &&
+                  label.unicodeScalars.allSatisfy {
+                      (97...122).contains($0.value) || (48...57).contains($0.value) || $0.value == 45
+                  }
+              }) else { return nil }
+        return host
+    }
+}
+
 /// One ASR configuration shared by captions and AI conversation. Session/recording
 /// consent and the language model credential are deliberately not ASR settings.
 public struct SpeechConfiguration: Codable, Equatable {
@@ -20,18 +60,12 @@ public struct SpeechConfiguration: Codable, Equatable {
     }
     public func validated() throws -> Self { Self(options: try applying().validated()) }
     public static func aliyunHost(_ value: String) -> String? {
-        let host = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard host.utf8.count <= 253, host.hasSuffix(".aliyuncs.com"),
-              host.split(separator: ".", omittingEmptySubsequences: false).allSatisfy({ label in
-                  !label.isEmpty && label.count <= 63 && label.first != "-" && label.last != "-" &&
-                  label.unicodeScalars.allSatisfy { (97...122).contains($0.value) || (48...57).contains($0.value) || $0.value == 45 }
-              }) else { return nil }
-        return host
+        AliyunRealtimeRegion.normalize(host: value)
     }
     public func missingRequirements(asrKey: Bool, modelKey: Bool, conversation: Bool) -> [String] {
         var missing: [String] = []
         if (try? validated()) == nil {
-            missing.append(service == .azure ? "Azure Region 或识别语言" : service == .aliyun ? "阿里云 Host 或识别语言" : "识别语言")
+            missing.append(service == .azure ? "Azure Region 或识别语言" : service == .aliyun ? "阿里云 Workspace Host 或识别语言" : "识别语言")
         }
         if !asrKey { missing.append("\(service.name) API Key") }
         if conversation && !modelKey { missing.append("DeepSeek API Key（用于生成回答）") }

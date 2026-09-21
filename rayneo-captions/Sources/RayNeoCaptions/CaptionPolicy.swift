@@ -10,7 +10,7 @@ public enum CaptionService: String, Codable, CaseIterable {
         switch self { case .azure: return "Azure Speech"; case .deepgram: return "Deepgram"; case .elevenLabs: return "ElevenLabs"; case .aliyun: return "阿里云流式 ASR" }
     }
     public var model: String {
-        switch self { case .azure: return "Azure Speech"; case .deepgram: return "Nova-3"; case .elevenLabs: return "Scribe v2 Realtime"; case .aliyun: return "qwen-audio-3.0-asr-flash-streaming" }
+        switch self { case .azure: return "Azure Speech"; case .deepgram: return "Nova-3"; case .elevenLabs: return "Scribe v2 Realtime"; case .aliyun: return "qwen3-asr-flash-realtime" }
     }
     public var keychainService: String {
         switch self {

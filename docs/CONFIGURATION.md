@@ -60,7 +60,20 @@ node scripts/start.mjs --device
 
 已绑定 Turbo IO 后的日常使用优先重连，不需要每次解绑、忽略或重置。非越狱设备已由用户实机验收通过。Android 版本待开发，当前配置步骤仅针对 iOS。
 
-## 4. 云对话：只填自己的服务
+## 4. 阿里云 ASR：实时字幕与旧链路分开配置
+
+### 4.1 实时字幕：Qwen3-ASR-Flash-Realtime
+
+真机打开“字幕 → 设置”，选择阿里云后粘贴 Workspace 专属 Host，只填主机名，不带 `wss://`、端口、路径、用户名或查询参数。当前仅允许以下两个生产地域：
+
+- 中国北京：`{WorkspaceId}.cn-beijing.maas.aliyuncs.com`
+- 新加坡：`{WorkspaceId}.ap-southeast-1.maas.aliyuncs.com`
+
+App 会显示识别出的地域。API Key 必须在该 Host 所属的同一地域、同一 Workspace 权限范围内创建；北京和新加坡的 Host、Key 与模型列表不能混用。trial 域名不支持此处所需的生产 WebSocket 能力，DashScope 公共域名和其他地域也不会被接受。两地都使用 `qwen3-asr-flash-realtime` 和 Realtime 事件协议；通常选离用户/部署更近的地域来降低网络延迟，数据地域、价格、配额和可用能力以对应控制台为准。
+
+实时字幕发送 PCM16/16kHz/mono，但在线路上封装为 Base64 的 `input_audio_buffer.append` JSON 事件；初始化为 `session.update`，不是旧协议的 `run-task`，也不是 binary WebSocket frame。设置保存不会自动收音。
+
+### 4.2 AI 云对话与已保存录音：暂时仍为旧协议
 
 真机打开“会话 → 模型设置 / 配置 ASR 和模型密钥”：
 
@@ -73,6 +86,8 @@ node scripts/start.mjs --device
 源码不带开发者默认 ASR 租户。缺 Host/Key 时不会自动云收音；更换 Host 使用独立服务 Keychain 标识，不沿用旧主机密钥。已有测试安装升级到此配置版，需要先填写自己的 Host；填回原 Host 可按原 service 找到已有钥匙串内容，不删除旧 Key。
 
 普通录音手动 ASR 共用这个用户配置，并在开始时捕获 Host 与对应 Key，避免解码期间改配置把旧 Key 发给新地址。录音不会因为接收到文件就自动转写。
+
+以上 AI 云对话和已保存录音转写仍使用 `/api-ws/v1/inference`、`run-task`、`qwen-audio-3.0-asr-flash-streaming` 与 binary 音频帧。它们没有随实时字幕一起迁移到 Qwen3；不要仅修改模型名，也不要把字幕页的 Realtime 验收结果当作这两条旧链路已经迁移。
 
 ## 5. 天气、通知、录音
 
