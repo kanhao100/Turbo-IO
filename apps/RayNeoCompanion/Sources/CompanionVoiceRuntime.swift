@@ -20,6 +20,7 @@ import Combine
     var onBusiness: ((String, UInt8, Data) -> Void)?
     var onSubtitleEnvelope: ((String, Data, TimeInterval) -> Void)?
     var onBusinessLoss: (() -> Void)?
+    var onSubtitleLoss: (() -> Void)?
     var onSubtitleSendError: ((String, Data, Int) -> Void)?
     @Published private(set) var subtitleOwnsDisplay = false
     func ownDisplayForSubtitles(_ owns: Bool) {
@@ -104,6 +105,7 @@ import Combine
             return await codex.executeTool(name: name, arguments: arguments, requestID: id)
         }
         controller.companionBusinessLoss = { [weak self] in self?.onBusinessLoss?() }
+        controller.companionSubtitleLoss = { [weak self] in self?.onSubtitleLoss?() }
         controller.companionSubtitleSendError = { [weak self] in self?.onSubtitleSendError?($0, $1, $2) }
         controller.companionLog = { [weak self] line in self?.latestEvent = String(line.prefix(200)) }
         controller.companionTranscript = { [weak self] id, text, final in

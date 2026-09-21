@@ -78,6 +78,13 @@ private final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
     private var target: String?, sid: String?, generation = UUID()
     private var deadline: TimeInterval = 0, began: TimeInterval = 0, lastAudioAt: TimeInterval = 0
     private var lastSequence: Int?, gapOpen = false, displayReady = false, cloudStarted = false
+    private(set) var sequenceJumps = 0
+    private(set) var maximumSequenceStep = 0
+    private(set) var discardedSequencePackets = 0
+    private(set) var maximumDispatchDelayMilliseconds = 0
+    private(set) var maximumArrivalIntervalMilliseconds = 0
+    private var sequenceStepCounts: [Int:Int] = [:]
+    private var otherSequenceSteps = 0
     private var pendingText: String?, lastDisplayAt: TimeInterval = -.infinity
     private var acceptedAt: TimeInterval = 0, cloudDeadline: TimeInterval = 0
     private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
@@ -135,6 +142,9 @@ private final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
         provider = config.provider; self.decoder = decoder; phase = .preparing; status = "正在准备本次字幕与音频存储"
         partial = ""; recent = []; elapsed = 0; audioBytes = 0; audioLevel = 0; packets = 0; gaps = 0
         lastSequence = nil; gapOpen = false; displayReady = false; cloudReady = false; cloudStarted = false
+        sequenceJumps = 0; maximumSequenceStep = 0; discardedSequencePackets = 0
+        maximumDispatchDelayMilliseconds = 0; maximumArrivalIntervalMilliseconds = 0
+        sequenceStepCounts = [:]; otherSequenceSteps = 0
         lastDisplayAt = -.infinity; pendingText = nil; error = nil; acceptedAt = now; began = now
         device.ownDisplayForSubtitles(true)
         let value = SubtitleSessionRecord(id: id, title: "字幕 · " + Date().formatted(date: .abbreviated, time: .shortened), options: options)
@@ -174,7 +184,9 @@ private final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
         shortcutEnabled = enabled
     }
     func receive(device source: String, packet: Data, arrival: TimeInterval) {
-        guard source == device.deviceID, now >= arrival, now - arrival <= 0.75 else { return }
+        // `arrival` is captured in the native callback. A bounded main-queue delay must not
+        // silently discard valid audio; session/device/SID/acceptance-time checks reject stale work.
+        guard source == device.deviceID, now >= arrival else { return }
         guard let event = try? SubtitleTranslateWire.event(packet) else {
             if active, source == target { fail("字幕消息格式或音频长度不匹配，已停止本次会话。") }; return
         }
@@ -220,16 +232,32 @@ private final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
     }
     private func acceptAudio(_ event: SubtitleTranslateWire.Event, arrival: TimeInterval) {
         guard let sequence = event.sequence else { return }
+        if event.audio == nil, event.end { stop(reason: "眼镜音频已结束"); return }
+        maximumDispatchDelayMilliseconds = max(maximumDispatchDelayMilliseconds, Int((now - arrival) * 1_000))
+        guard packets == 0 || arrival >= lastAudioAt else { discardedSequencePackets += 1; return }
         if let previous = lastSequence {
-            guard sequence > previous else { return }
-            if sequence != previous + 1 { markGap("音频分片序号不连续，缺失部分未补录") }
+            guard sequence > previous else { discardedSequencePackets += 1; return }
+            let step = sequence - previous
+            maximumSequenceStep = max(maximumSequenceStep, step)
+            if sequenceStepCounts[step] != nil || sequenceStepCounts.count < 8 {
+                sequenceStepCounts[step, default: 0] += 1
+            } else { otherSequenceSteps += 1 }
+            if step != 1 {
+                // Current glasses firmware does not expose `seq` as a guaranteed +1 packet
+                // counter. Keep the bounded aggregate for diagnosis, but never manufacture an
+                // audio gap or rotate a WAV solely from an undocumented numeric stride.
+                sequenceJumps += 1
+            }
         }
         lastSequence = sequence
-        if event.audio == nil, event.end { stop(reason: "眼镜音频已结束"); return }
+        if packets > 0 {
+            let interval = arrival - lastAudioAt
+            maximumArrivalIntervalMilliseconds = max(maximumArrivalIntervalMilliseconds, Int(interval * 1_000))
+            if interval > 0.75 { markGap("音频到达间隔中断") }
+        }
         guard let audio = event.audio, let pcm = decoder?.decode(audio), !pcm.isEmpty, pcm.count <= 3840, pcm.count % 2 == 0 else {
             markGap("音频包未通过 Opus 解码校验"); fail("眼镜字幕音频格式未通过解码；请分享诊断记录。") ; return
         }
-        if arrival - lastAudioAt > 0.5 { markGap("音频到达间隔中断") }
         lastAudioAt = arrival; packets += 1; audioBytes += pcm.count
         record?.receivedPCMBytes = audioBytes
         if gapOpen { writer?.event(CaptionEntry(kind: .gap, text: "音频恢复，缺失部分未补录")); gapOpen = false }
@@ -356,6 +384,7 @@ private final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
         UIApplication.shared.endBackgroundTask(backgroundTask); backgroundTask = .invalid
     }
     var diagnosticText: String {
-        "Turbo IO 实时字幕\nphase=\(phase.rawValue) packets=\(packets) pcmBytes=\(audioBytes) gaps=\(gaps)\nASR=\(options.service.name) ready=\(cloudReady)\n\(status)\n\(error ?? "")\n不包含音频、正文、密钥或设备标识。"
+        let steps = sequenceStepCounts.keys.sorted().map { "\($0):\(sequenceStepCounts[$0] ?? 0)" }.joined(separator: ",")
+        return "Turbo IO 实时字幕\nphase=\(phase.rawValue) packets=\(packets) pcmBytes=\(audioBytes) gaps=\(gaps)\nseqStrideChanges=\(sequenceJumps) maxSeqStep=\(maximumSequenceStep) discardedSeq=\(discardedSequencePackets)\nseqSteps=\(steps.isEmpty ? "none" : steps) otherSteps=\(otherSequenceSteps)\nmaxArrivalMs=\(maximumArrivalIntervalMilliseconds) maxDispatchMs=\(maximumDispatchDelayMilliseconds)\nASR=\(options.service.name) ready=\(cloudReady)\n\(status)\n\(error ?? "")\n不包含音频、正文、密钥、原始序号或设备标识。"
     }
 }

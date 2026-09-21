@@ -42,7 +42,8 @@ import CryptoKit
     init(voice: CompanionVoiceRuntime, store: CompanionStore, root: URL) {
         self.voice = voice; self.store = store; inbox = GlassesRecordingInbox(root: root)
         voice.onBusiness = { [weak self] in self?.receive(device: $0, business: $1, data: $2) }
-        voice.onBusinessLoss = { [weak self] in self?.lostMessages(); self?.store?.alwaysOn.lostMessages(); self?.store?.subtitleDisplay.lostMessages(); self?.store?.realtimeSubtitles.inputLost() }
+        voice.onBusinessLoss = { [weak self] in self?.lostMessages(); self?.store?.alwaysOn.lostMessages(); self?.store?.subtitleDisplay.lostMessages() }
+        voice.onSubtitleLoss = { [weak self] in self?.store?.realtimeSubtitles.inputLost() }
         voice.onSubtitleSendError = { [weak self] in
             self?.store?.subtitleDisplay.transportFailed(device: $0, packet: $1, code: $2)
             self?.store?.realtimeSubtitles.transportFailed(device: $0, packet: $1, code: $2)

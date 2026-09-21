@@ -73,15 +73,48 @@ final class SubtitleRealtimeTests: XCTestCase {
         let fresh = SubtitleRealtimeRuntime(voice: f.device, settings: f.settings, archive: f.archive, defaults: f.defaults, scheduleTimers: false)
         XCTAssertFalse(fresh.shortcutEnabled)
     }
-    @MainActor func testGapOutOfOrderAndLatePacketDoNotInventContinuousAudio() async throws {
+    @MainActor func testNonUnitSequenceStrideDoesNotSplitRecordingAndDuplicatesAreDropped() async throws {
         let f = fixture(); await f.runtime.start(consented: true)?.value
         let sid = try f.sid(); f.feed(2,sid:sid,code:1); f.feed(8,sid:sid,code:2)
-        f.feed(4,sid:sid,seq:0,bytes:Data([1])); f.feed(4,sid:sid,seq:2,bytes:Data([2]))
-        f.feed(4,sid:sid,seq:1,bytes:Data([3]))
-        f.runtime.receive(device: "glasses", packet: try packet(4,sid:sid,seq:3,bytes:Data([4])), arrival: f.clock.now - 1)
-        XCTAssertEqual(f.runtime.packets, 2); XCTAssertEqual(f.runtime.gaps, 1)
-        XCTAssertEqual(f.decoder.resets, 1); XCTAssertEqual(f.writer.gaps, 1)
+        for index in 0..<600 { f.feed(4,sid:sid,seq:index * 10,bytes:Data([1])) }
+        f.feed(4,sid:sid,seq:5_990,bytes:Data([2]))
+        f.feed(4,sid:sid,seq:5_980,bytes:Data([3]))
+        XCTAssertEqual(f.runtime.packets, 600); XCTAssertEqual(f.runtime.gaps, 0)
+        XCTAssertEqual(f.runtime.sequenceJumps, 599); XCTAssertEqual(f.runtime.maximumSequenceStep, 10)
+        XCTAssertEqual(f.runtime.discardedSequencePackets, 2)
+        XCTAssertEqual(f.decoder.resets, 0); XCTAssertEqual(f.writer.gaps, 0)
+        XCTAssertTrue(f.runtime.diagnosticText.contains("seqStrideChanges=599"))
+        XCTAssertTrue(f.runtime.diagnosticText.contains("seqSteps=10:599"))
+        f.runtime.stop(); XCTAssertEqual(f.writer.finished?.state, .completed); f.runtime.confirmExited()
+    }
+    @MainActor func testConfirmedQueueAndArrivalLossSplitOnceAndStalePacketsAreDropped() async throws {
+        let f = fixture(); await f.runtime.start(consented: true)?.value
+        let sid = try f.sid(); f.feed(2,sid:sid,code:1); f.feed(8,sid:sid,code:2)
+        f.clock.now += 1 // Startup latency before the first packet is not a recording gap.
+        f.feed(4,sid:sid,seq:100,bytes:Data([1]))
+        f.runtime.inputLost(); f.runtime.inputLost()
+        f.feed(4,sid:sid,seq:120,bytes:Data([2]))
+        f.clock.now += 1
+        f.feed(4,sid:sid,seq:140,bytes:Data([3]))
+        f.runtime.receive(device: "glasses", packet: try packet(4,sid:sid,seq:160,bytes:Data([4])), arrival: f.clock.now - 1)
+        XCTAssertEqual(f.runtime.packets, 3); XCTAssertEqual(f.runtime.gaps, 2)
+        XCTAssertEqual(f.runtime.discardedSequencePackets, 1)
+        XCTAssertEqual(f.decoder.resets, 2); XCTAssertEqual(f.writer.gaps, 2)
         f.runtime.stop(); XCTAssertEqual(f.writer.finished?.state, .interrupted); f.runtime.confirmExited()
+    }
+    @MainActor func testMainQueueDelayKeepsChronologicalAudioAndDuplicateEndStillStops() async throws {
+        let f = fixture(); await f.runtime.start(consented: true)?.value
+        let sid = try f.sid(); f.feed(2,sid:sid,code:1); f.feed(8,sid:sid,code:2)
+        f.feed(4,sid:sid,seq:100,bytes:Data([1]))
+        f.clock.now += 2
+        f.runtime.receive(device: "glasses", packet: try packet(4,sid:sid,seq:120,bytes:Data([2])), arrival: f.clock.now - 1.9)
+        XCTAssertEqual(f.runtime.packets, 2); XCTAssertEqual(f.runtime.gaps, 0)
+        XCTAssertGreaterThanOrEqual(f.runtime.maximumDispatchDelayMilliseconds, 1_800)
+        XCTAssertLessThan(f.runtime.maximumArrivalIntervalMilliseconds, 750)
+        let end = try DeviceBusinessWire.encode(type: 4, json: ["sid":sid,"seq":120,"end":true])
+        f.runtime.receive(device: "glasses", packet: end, arrival: f.clock.now - 1.8)
+        XCTAssertEqual(f.runtime.phase, .stopping); XCTAssertEqual(f.writer.finished?.state, .completed)
+        f.runtime.confirmExited()
     }
     @MainActor func testDisconnectStopsCloudAndNeverSendsCleanupToReplacement() async throws {
         let f = fixture(); await f.runtime.start(consented: true)?.value

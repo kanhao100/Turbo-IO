@@ -87,7 +87,7 @@ jobs:
       - name: Package unsigned IPA
         run: |
           APP="apps/RayNeoCompanion/build-subtitle-device/Build/Products/Debug-iphoneos/RayNeoCompanion.app"
-          OUTPUT="apps/RayNeoCompanion/ipa-subtitle-display"
+          OUTPUT="apps/RayNeoCompanion/ipa-realtime-subtitles"
 
           test -d "$APP"
           test -f "$APP/RayNeoCompanion"
@@ -95,15 +95,15 @@ jobs:
           test "$IPA_PLATFORM" = "iPhoneOS"
           IPA_VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Info.plist")
           IPA_BUILD=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Info.plist")
-          test "$IPA_VERSION" = "0.3.0"
-          test "$IPA_BUILD" = "6"
+          test "$IPA_VERSION" = "0.3.1"
+          test "$IPA_BUILD" = "7"
 
           rm -rf "$OUTPUT"
           mkdir -p "$OUTPUT/Payload"
           cp -R "$APP" "$OUTPUT/Payload/"
           /usr/bin/ditto -c -k --sequesterRsrc --keepParent \
-            "$OUTPUT/Payload" "$OUTPUT/TurboIO-subtitle-display-unsigned.ipa"
-          shasum -a 256 "$OUTPUT/TurboIO-subtitle-display-unsigned.ipa" | tee "$OUTPUT/SHA256SUMS.txt"
+            "$OUTPUT/Payload" "$OUTPUT/TurboIO-realtime-subtitles-unsigned.ipa"
+          shasum -a 256 "$OUTPUT/TurboIO-realtime-subtitles-unsigned.ipa" | tee "$OUTPUT/SHA256SUMS.txt"
 
           {
             echo "Unsigned iPhoneOS IPA"
@@ -116,7 +116,7 @@ jobs:
         with:
           name: TurboIO-realtime-subtitles-unsigned-ipa
           path: |
-            apps/RayNeoCompanion/ipa-subtitle-display/TurboIO-subtitle-display-unsigned.ipa
-            apps/RayNeoCompanion/ipa-subtitle-display/SHA256SUMS.txt
+            apps/RayNeoCompanion/ipa-realtime-subtitles/TurboIO-realtime-subtitles-unsigned.ipa
+            apps/RayNeoCompanion/ipa-realtime-subtitles/SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 7

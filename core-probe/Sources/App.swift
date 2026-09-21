@@ -58,6 +58,7 @@ final class ProbeController: UIViewController, CBCentralManagerDelegate, StreamD
     var companionBusiness: ((String, UInt8, Data) -> Void)?
     var companionSubtitleEnvelope: ((String, Data, TimeInterval) -> Void)?
     var companionBusinessLoss: (() -> Void)?
+    var companionSubtitleLoss: (() -> Void)?
     var companionSubtitleSendError: ((String, Data, Int) -> Void)?
     private(set) var companionSubtitleOwnsDisplay = false
     func companionOwnDisplayForSubtitles(_ owns: Bool) {
@@ -447,6 +448,7 @@ final class ProbeController: UIViewController, CBCentralManagerDelegate, StreamD
                 self.companionSubtitleEnvelope?(id, packet, arrival)
             }
             receiver.onBusinessLoss = { [weak self] in DisplayObservation.shared.loss(); self?.companionBusinessLoss?() }
+            receiver.onSubtitleLoss = { [weak self] in DisplayObservation.shared.loss(); self?.companionSubtitleLoss?() }
             receiver.onSubtitleSendError = { [weak self] in self?.companionSubtitleSendError?($0, $1, $2) }
             #endif
             receiver.onVoiceEnvelope = { [weak self] deviceID, metadata, audio, arrival in
