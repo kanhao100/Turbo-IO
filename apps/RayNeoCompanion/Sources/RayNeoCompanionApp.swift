@@ -18,6 +18,10 @@ struct RayNeoCompanionApp: App {
                 .environmentObject(store.recordingASR)
                 .environmentObject(store.features)
                 .environmentObject(store.subtitleDisplay)
+                .environmentObject(store.realtimeSubtitles)
+                .environmentObject(store.subtitleSettings)
+                .environmentObject(store.subtitleArchive)
+                .environmentObject(store.subtitlePlayback)
                 .environmentObject(store.notifications)
                 .environmentObject(store.headControlTest)
                 .environmentObject(store.automaticWeather)
@@ -42,7 +46,9 @@ struct RootView: View {
             case 1: ConversationView()
             case 2: ArchiveView()
             case 3: ToolsView()
-            case 4: SubtitleDisplayTestView()
+            case 4:
+                if ProcessInfo.processInfo.arguments.contains("--ui-subtitle-display-test") { SubtitleDisplayTestView() }
+                else { RealtimeSubtitlesView() }
             default: DeviceView()
             }
         }

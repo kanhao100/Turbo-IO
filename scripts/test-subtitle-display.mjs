@@ -16,7 +16,11 @@ const result = spawnSync('xcodebuild', [
   '-project', 'apps/RayNeoCompanion/RayNeoCompanion.xcodeproj', '-scheme', 'RayNeoCompanion',
   '-destination', `id=${device.udid}`,
   '-only-testing:RayNeoCompanionTests/SubtitleDisplayRuntimeTests',
+  '-only-testing:RayNeoCompanionTests/SubtitleRealtimeTests',
+  '-only-testing:RayNeoCompanionTests/SubtitleArchiveTests',
+  '-only-testing:RayNeoCompanionTests/CaptionSocketTests',
   '-only-testing:RayNeoCompanionUITests/SubtitleDisplayUITests',
+  '-only-testing:RayNeoCompanionUITests/RealtimeSubtitlesUITests',
   '-derivedDataPath', 'apps/RayNeoCompanion/build-subtitle-simulator',
   '-resultBundlePath', 'apps/RayNeoCompanion/build-subtitle-simulator/Tests.xcresult',
   'CODE_SIGNING_ALLOWED=NO', 'test'

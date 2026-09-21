@@ -111,6 +111,14 @@ final class CompanionStore: ObservableObject {
     let timeline: ConversationTimeline
     let voice: CompanionVoiceRuntime
     let codex: CodexCompanion
+    let subtitleSettings: SubtitleSettingsStore
+    let subtitleArchive: SubtitleArchiveStore
+    lazy var realtimeSubtitles: SubtitleRealtimeRuntime = {
+        let runtime = SubtitleRealtimeRuntime(voice: voice, settings: subtitleSettings, archive: subtitleArchive, defaults: defaults)
+        runtime.onShortcutStart = { [weak self] in self?.subtitlePlayback.stop(); self?.selectedTab = 4 }
+        return runtime
+    }()
+    lazy var subtitlePlayback = SubtitleAudioPlayback()
     lazy var subtitleDisplay = SubtitleDisplayRuntime(
         device: { [weak self] in self?.voice.deviceID },
         available: { [weak self] in
@@ -194,6 +202,8 @@ final class CompanionStore: ObservableObject {
         self.customRecordingRoot = recordingRoot
         timeline = ConversationTimeline(root: archiveRoot?.deletingLastPathComponent().appendingPathComponent("ConversationTimelineV1"))
         voice = CompanionVoiceRuntime(timeline: timeline)
+        subtitleSettings = SubtitleSettingsStore(defaults: defaults)
+        subtitleArchive = SubtitleArchiveStore(root: archiveRoot?.deletingLastPathComponent().appendingPathComponent("RealtimeSubtitlesV1"))
         codex = CodexCompanion(defaults: defaults)
         voice.codex = codex
         books = BookLibrary(root: archiveRoot?.deletingLastPathComponent().appendingPathComponent("ReadingLibraryV1"), allowsTestFixture: allowsBookTestFixture)

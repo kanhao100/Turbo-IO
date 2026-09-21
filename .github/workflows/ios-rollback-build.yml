@@ -1,4 +1,4 @@
-name: iOS subtitle display test
+name: iOS realtime subtitles
 
 on:
   pull_request:
@@ -33,6 +33,9 @@ jobs:
 
       - name: Test glasses protocol
         run: swift test --package-path rayneo-protocol
+
+      - name: Test ASR adapters and subtitle storage
+        run: swift test --package-path rayneo-captions
 
       - name: Install XcodeGen
         run: brew install xcodegen
@@ -92,8 +95,8 @@ jobs:
           test "$IPA_PLATFORM" = "iPhoneOS"
           IPA_VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Info.plist")
           IPA_BUILD=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Info.plist")
-          test "$IPA_VERSION" = "0.2.1"
-          test "$IPA_BUILD" = "5"
+          test "$IPA_VERSION" = "0.3.0"
+          test "$IPA_BUILD" = "6"
 
           rm -rf "$OUTPUT"
           mkdir -p "$OUTPUT/Payload"
@@ -111,7 +114,7 @@ jobs:
       - name: Upload unsigned IPA
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: TurboIO-subtitle-display-unsigned-ipa
+          name: TurboIO-realtime-subtitles-unsigned-ipa
           path: |
             apps/RayNeoCompanion/ipa-subtitle-display/TurboIO-subtitle-display-unsigned.ipa
             apps/RayNeoCompanion/ipa-subtitle-display/SHA256SUMS.txt

@@ -10,6 +10,8 @@ settings:
     DEVELOPMENT_TEAM: ""
     CODE_SIGN_STYLE: Automatic
 packages:
+  RayNeoCaptions:
+    path: ../../rayneo-captions
   ZIPFoundation:
     path: ../../third-party/ZIPFoundation
   RayNeoProtocol:
@@ -30,7 +32,9 @@ targets:
       - Sources
       - ../../core-probe/Sources/VoiceToolCallAccumulator.swift
       - ../../core-probe/Sources/CloudASRHostSettings.swift
+      - ../../core-probe/Sources/AliyunSpeechSession.swift
     dependencies:
+      - package: RayNeoCaptions
       - package: ZIPFoundation
       - package: RayNeoProtocol
       - package: RayNeoDisplay
@@ -50,8 +54,8 @@ targets:
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: UIInterfaceOrientationPortrait
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
         TARGETED_DEVICE_FAMILY: "1,2"
-        MARKETING_VERSION: "0.2.1"
-        CURRENT_PROJECT_VERSION: "5"
+        MARKETING_VERSION: "0.3.0"
+        CURRENT_PROJECT_VERSION: "6"
     info:
       path: Generated/Companion-Info.plist
       properties:

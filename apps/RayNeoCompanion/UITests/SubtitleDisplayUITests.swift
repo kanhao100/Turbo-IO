@@ -3,7 +3,7 @@ import XCTest
 final class SubtitleDisplayUITests: XCTestCase {
     func testIndependentSubtitleTabNeedsDeviceAndCannotStartMicrophoneInPreview() {
         let app = XCUIApplication()
-        app.launchArguments = ["--ui-test-scope", UUID().uuidString, "--ui-tab", "4"]
+        app.launchArguments = ["--ui-test-scope", UUID().uuidString, "--ui-tab", "4", "--ui-subtitle-display-test"]
         app.launch()
         XCTAssertTrue(app.staticTexts["subtitle-display-status"].waitForExistence(timeout: 8))
         XCTAssertTrue(app.buttons["tab-4"].exists)
