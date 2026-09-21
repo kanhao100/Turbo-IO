@@ -49,6 +49,14 @@ final class SubtitleRealtimeTests: XCTestCase {
             f.runtime.confirmExited()
         }
     }
+    @MainActor func testLateACKBeforeTimerFiresIsRejected() async throws {
+        let f = fixture(); await f.runtime.start(consented: true)?.value
+        f.clock.now += 11
+        f.feed(2, sid: try f.sid(), code: 1)
+        XCTAssertEqual(f.provider.starts, 0)
+        XCTAssertEqual(f.runtime.phase, .stopping)
+        f.runtime.confirmExited()
+    }
     @MainActor func testShortcutRequiresOptInAndUsesIncomingSIDWithoutAIWake() async throws {
         let f = fixture()
         f.feed(1, sid: "glasses-shortcut")

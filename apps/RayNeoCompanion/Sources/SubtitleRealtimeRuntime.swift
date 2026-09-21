@@ -183,6 +183,10 @@ private final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
             _ = begin(deviceID: source, incomingSID: event.sid); return
         }
         guard active, source == target, event.sid == sid, arrival >= acceptedAt else { return }
+        if (phase == .startingAudio || phase == .openingDisplay), now >= deadline {
+            fail("字幕握手回应已超时，未根据迟到回包重新开启收音。")
+            return
+        }
         if event.type == 3 {
             // Could be pause or stop. End local capture immediately; physical exit is explicit.
             stop(reason: "眼镜发出字幕控制事件（\(event.reason.map(String.init) ?? "未知")）", interrupted: false)
@@ -303,6 +307,7 @@ private final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
         }
         writer.finish(value) { [weak self] success in
             guard let self else { return }; self.saving = false; self.lastSavedID = value.id
+            if self.phase == .idle { self.sessionID = nil }
             if !success { self.error = "存储收尾未完整完成；已收到的原文件保留。" }
             self.endBackgroundTask(); Task { await self.archive.load() }
         }

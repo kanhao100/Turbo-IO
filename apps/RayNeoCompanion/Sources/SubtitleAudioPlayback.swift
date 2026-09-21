@@ -37,8 +37,10 @@ import AVFAudio
         catch { error = "无法定位此音频片段。" }
     }
     func stop() {
+        let hadPlayer = player != nil
         timer?.invalidate(); timer = nil; player?.stop(); player = nil
         playing = false; position = 0; segmentIndex = 0
+        if hadPlayer { try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation) }
     }
     private func openSegment(_ index: Int) throws {
         guard files.indices.contains(index) else { return }
