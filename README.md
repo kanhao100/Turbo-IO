@@ -2,7 +2,20 @@
 
 面向开发者的智能眼镜 SDK 与 App 扩展研究项目：iOS、Android，以及新增的原生鸿蒙 HarmonyOS 客户端。自有模型、搜索、录音研究、Agent 与眼镜导航。**不是给小白直接安装的成品 App。**
 
-仅供学习、研究与非商业使用，沿用 [PolyForm Noncommercial 1.0.0](LICENSE)，未经授权不得商用或收费分发。只发布源码与明确列出的依赖，**不提供 IPA / APK / HAP 安装包、预签名 App、签名证书、个人密钥或测试账号**。需要自行配置、编译和签名。
+原创代码仅供学习、研究与非商业使用，沿用 [PolyForm Noncommercial 1.0.0](LICENSE)，未经授权不得商用或收费分发。发布源码与明确列出的依赖，另在 Release 提供下述原厂砸壳 IPA 作为 iOS 扩展输入。**不提供已合并 Turbo IO 的 IPA / APK / HAP 成品包、个人预签名 App、签名证书、个人密钥或测试账号**。需要自行配置、编译和签名。
+
+## iOS 原厂砸壳 IPA 下载
+
+**[雷鸟 AI iOS 1.0.5（201）原厂砸壳 IPA](https://github.com/Turbo1123/Turbo-IO/releases/tag/rayneo-ios-1.0.5-201)**。
+
+提供的是**原厂应用的砸壳（解密）版本，未合并 Turbo IO 扩展，不是修改功能后的版本**。砸壳是对原应用二进制解除加密，不代表整个文件与 App Store 原始加密包逐字节相同。下载该 IPA 不会直接获得 Turbo IO 功能；需按 [iOS 扩展教程](official-addon/README.md) 自行合并、配置并使用自己的签名安装。
+
+**版权归雷鸟及相关权利人所有。** 该 IPA 是二进制应用副本，不是官方应用源码；本仓库的源码许可证不适用于该 IPA。附件不含维护者个人 Apple 开发者签名、描述文件、服务密钥或账号数据，也不是为你的设备预签名的安装包。
+
+- 文件：`RayNeo_AI_1.0.5_201_decrypted_original.ipa`
+- 版本 / Build：`1.0.5 / 201`；Bundle ID：`com.rayneo.venus.pub`
+- SHA-256：`39d12aff8f2b312dc3b40ce784a444e52c536e61378434005255177548df966a`
+- 普通 App Store 加密 IPA 仍不能直接合并；未知版本必须通过兼容性检查。项目不提供代砸壳或代签名服务。
 
 新增实验：[统一语音服务与实时字幕](docs/VOICE_SERVICES.md)——Azure / Deepgram / ElevenLabs / 阿里云共用转写配置，可用于实时字幕和 AI 对话；对话另需 DeepSeek Key。Actions 提供未签名 IPA。锁屏、后台和真实眼镜效果仍需设备验收。
 
@@ -46,7 +59,7 @@
 
 **四端都不支持任意替换眼镜固件 UI；有限卡片/通知布局不等于自由绘制整个系统。Claude Code、Hermes、WorkBuddy、OpenClaw 也不能仅凭下拉选项视作已接通。**
 
-详细证据与使用限制：[iOS V1](#能力与边界) · [iOS V2](official-addon/docs/VALIDATION.md) · [Android](android-addon/docs/VALIDATION.md) · [鸿蒙 HarmonyOS](harmony-sdk/VALIDATION.md)。各端都需自己的服务配置与签名，**均不提供安装包或签名包**。
+详细证据与使用限制：[iOS V1](#能力与边界) · [iOS V2](official-addon/docs/VALIDATION.md) · [Android](android-addon/docs/VALIDATION.md) · [鸿蒙 HarmonyOS](harmony-sdk/VALIDATION.md)。各端都需自己的服务配置与签名，**不提供已集成 Turbo IO 的成品安装包或个人签名包**；上方原厂砸壳 IPA 仅作为 iOS 宿主输入。
 
 ### 通知与权限，先看这里
 
@@ -58,9 +71,9 @@
 
 **Android：[雷鸟 AI Android 官方下载入口](https://rayneo.cn/commonPage/venus/appDownload/index_m.html)** · **[完整 AI 接入说明](docs/AI_SETUP.md)**
 
-**iOS：需要自行解决砸壳／未加密应用副本的准备问题，并确保有权使用。我们不提供砸壳 IPA、砸壳文件、下载来源或代砸壳服务；普通 App Store 加密 IPA 不能直接合并。**
+**iOS：可使用上方 Release 提供的原厂 1.0.5（201）砸壳 IPA，或自行准备有权使用的兼容未加密副本。提供的 IPA 没有 Turbo IO 扩展，需自行合并和签名；普通 App Store 加密 IPA 不能直接合并。**
 
-Android 用户把**官方下载入口 + 本仓库 + 下面的提示词**一起交给电脑上的 Claude Code 或 Codex；iOS 官方扩展用户需另行自行准备合法兼容的未加密应用副本。原生鸿蒙 HarmonyOS 用户只需本仓库与提示词，不需要官方包。再让助手按所选路线检查环境、编译并引导配置；只有官方扩展需要合并宿主。不需要先弄懂所有脚本；但你仍需提供自己的签名、服务配置并完成手机授权和镜片验收。仅聊天、不能访问本机文件和终端的环境不能替你完成真机安装。
+Android 用户把**官方下载入口 + 本仓库 + 下面的提示词**一起交给电脑上的 Claude Code 或 Codex；iOS 官方扩展用户可同时提供上方原厂砸壳 IPA Release 链接，或自行准备合法兼容的未加密应用副本。原生鸿蒙 HarmonyOS 用户只需本仓库与提示词，不需要官方包。再让助手按所选路线检查环境、编译并引导配置；只有官方扩展需要合并宿主。不需要先弄懂所有脚本；但你仍需提供自己的签名、服务配置并完成手机授权和镜片验收。仅聊天、不能访问本机文件和终端的环境不能替你完成真机安装。
 
 复制下面整段，选择括号里的目标：
 
@@ -68,7 +81,8 @@ Android 用户把**官方下载入口 + 本仓库 + 下面的提示词**一起�
 请帮我在这台电脑上接入 Turbo IO，仅用于个人非商业学习研究。
 源码：https://github.com/Turbo1123/Turbo-IO
 Android 官方 App 下载入口：https://rayneo.cn/commonPage/venus/appDownload/index_m.html
-iOS 官方扩展：合法兼容的砸壳/未加密应用副本由我自行准备，项目不提供文件或砸壳服务。
+iOS 官方扩展原厂砸壳 IPA：https://github.com/Turbo1123/Turbo-IO/releases/tag/rayneo-ios-1.0.5-201
+该 IPA 未合并 Turbo IO，需校验 SHA-256、版本和 UUID，再自行合并、配置并签名；也可使用我自行准备的合法兼容副本。
 目标：[原生鸿蒙 HarmonyOS 客户端 / Android 官方扩展 / iOS 官方扩展 / iOS 独立 SDK / 仅 Web 预览]
 
 先读取 README、docs/AI_SETUP.md 和目标平台文档，检查电脑环境、现有项目改动及设备状态。
@@ -83,7 +97,7 @@ Key由我在本机安全填写，不索取聊天明文、不复用维护者配�
 
 - **原生鸿蒙 HarmonyOS**：独立客户端已在 Mate X5（HarmonyOS 6.1）验证连接、自有语音和步行模拟导航镜片显示，**无需 Root，也不需要官方 APK / IPA**。使用 DevEco Studio、自有开发者账号和签名自行编译安装，服务 Key 自行配置；不提供 HAP 或签名包。系统通知转发尚未实现，其他限制见[鸿蒙安装、权限与验收说明](harmony-sdk/README.md)。
 - **Android**：非 Root 设备已由用户实机验证可用；官方下载页用于取得 Android 宿主，输入仍需通过仓库校验，使用自己的签名与服务配置。见 [Android 安装教程](android-addon/README.md)。
-- **iOS**：需自行准备合法兼容的未加密 `Runner.app`；我们不提供砸壳文件或服务，官方下载/商店安装也不等于取得可合并的输入。缺少合规兼容输入时先做源码构建或预览。只用 V1/Web 不需要官方包。见 [iOS 扩展教程](official-addon/README.md)。
+- **iOS**：从上方原厂砸壳 IPA 或自行准备的合法兼容副本提取未加密 `Runner.app`；仍需校验、合并与个人签名，官方下载/商店安装不等于取得可合并输入。只用 V1/Web 不需要官方包。见 [iOS 扩展教程](official-addon/README.md)。
 
 已有 `turbo-io` 技能也可使用，见[技能安装与更新](docs/AGENT_SKILL.md)；选择鸿蒙时，应同时提供 [HarmonyOS 安装教程](harmony-sdk/README.md)，不要套用 iOS/Android 宿主合并流程。
 
@@ -97,7 +111,7 @@ Key由我在本机安全填写，不索取聊天明文、不复用维护者配�
 - **iOS 1.0.4 + Strix OS 1.0.4.8**：保留 iOS 1.0.2 支持；非越狱 iPhone 上个人签名研究版的语音、自有模型与导航回归正常。新增自适应毛玻璃 TurboIO 底栏。[兼容性与预览](official-addon/docs/COMPATIBILITY_104.md)
 - **导航**：三种出行方式、地图搜索和眼镜文字指引，不是地图投屏。两端实现与验收不同，当前均保留前台/4分钟显示等研究限制。[iOS 导航](official-addon/docs/NAVIGATION.md) · [Android 导航](android-addon/README.md#5-导航怎么用)
 
-模型 Key、搜索 Key、个人提示词与私有知识库由使用者自己配置。我们不提供官方安装包、解密产物、固件或签名材料；未知二进制版本不得跳过兼容检查。iOS 详细版本/UUID见 [V2文档](official-addon/README.md#1-兼容性门槛)，Android输入校验见 [Android文档](android-addon/README.md#2-兼容与安装边界)。
+模型 Key、搜索 Key、个人提示词与私有知识库由使用者自己配置。除上方明确列出的原厂砸壳 IPA 外，不提供其他官方安装包、解密产物、固件或个人签名材料；未知二进制版本不得跳过兼容检查。iOS 详细版本/UUID见 [V2文档](official-addon/README.md#1-兼容性门槛)，Android输入校验见 [Android文档](android-addon/README.md#2-兼容与安装边界)。
 
 ### 按需阅读
 
@@ -111,13 +125,13 @@ Key由我在本机安全填写，不索取聊天明文、不复用维护者配�
 >
 > 仓库中的 iOS App 是 **SDK 的示例客户端与研究调试工具**，用于演示和验证眼镜连接、语音、录音、通知及 Agent 接入，方便开发者二次开发。使用者需要自行编译、签名、配置 API，并具备基本的开发与调试能力。
 >
-> **不提供现成 IPA、代签名或开箱即用服务。不熟悉开发、只想直接使用眼镜功能的用户，请使用雷鸟官方 App。** 部分功能仍在研究和验收，欢迎开发者一起完善。
+> **不提供 V1 成品 IPA、代签名或开箱即用服务；上方原厂砸壳 IPA 不是 V1 客户端。不熟悉开发、只想直接使用眼镜功能的用户，请使用雷鸟官方 App。** 部分功能仍在研究和验收，欢迎开发者一起完善。
 
 > **仅供学习、研究与非商业使用，未经授权不得商用或收费分发。** 当前原创内容采用 [PolyForm Noncommercial 1.0.0](LICENSE)，不再以 MIT 提供新版本。未经授权的商用可能侵犯相关权利，权利人保留依法追究法律责任的权利。第三方组件仍遵循各自许可，详见[许可说明](docs/LICENSING.md)。
 
 面向雷鸟 iO（RayNeo iO）AI 眼镜的非官方 SDK 研究项目，附带 iOS 示例客户端：眼镜语音 → 自己的 ASR/模型，录音 → 本地归档与手动转写，Codex → 电脑任务与结果通知。
 
-**发布源码与明确列出的构建依赖，不发布 IPA、预签名 App 或开发者服务密钥。用户自行配置、签名与编译。** 现阶段是研究驱动的开发版，不是所有设备/固件都已验收的通用 SDK。
+**V1 发布源码与明确列出的构建依赖，不发布 V1 成品 IPA、个人预签名 App 或开发者服务密钥。用户自行配置、签名与编译。** 现阶段是研究驱动的开发版，不是所有设备/固件都已验收的通用 SDK。
 
 An unofficial RayNeo iO smart glasses SDK for developers, with a sample iOS client—not a ready-to-install consumer app. Build, sign and configure your own services to explore voice AI, recordings, custom notifications, Codex integration and a read-only web display observer.
 
@@ -321,7 +335,7 @@ xcrun swift test --package-path rayneo-session
 
 当前有权授权的原创内容采用 [PolyForm Noncommercial 1.0.0](LICENSE)，用于非商业学习研究；未经授权不得商用或收费分发。历史 MIT 权利不追溯撤销，详见[许可说明](docs/LICENSING.md)。第三方组件及厂商通信库不因随工程使用而变更许可，具体归属见 [第三方说明](THIRD_PARTY_NOTICES.md)。本工程与设备厂商无官方隶属关系。
 
-发布不包含个人录音、聊天、凭据、绑定数据库、原始日志、私有临时隧道配置、IPA或预签名App。详见[源码发布说明](docs/SOURCE_RELEASE.md)。
+发布不包含个人录音、聊天、凭据、绑定数据库、原始日志、私有临时隧道配置、个人开发者签名或预签名 App。Release 中单独列出的原厂砸壳 IPA 不含 Turbo IO 扩展，也不适用本仓库原创源码许可证。详见[源码发布说明](docs/SOURCE_RELEASE.md)；旧文档中“不提供 IPA”的一概表述，以本页明确列出的原厂 IPA 例外为准，其他隐私和签名边界保持不变。
 
 ## 请我喝杯咖啡 ☕
 
