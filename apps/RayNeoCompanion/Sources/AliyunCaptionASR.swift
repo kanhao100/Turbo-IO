@@ -35,14 +35,14 @@ import RayNeoCaptions
             taskDriver.onText = text
             taskDriver.onEndpoint = endpoint
             taskDriver.onFailure = failure
-            taskDriver.start(host: options.aliyunHost, key: key, language: options.language)
+            taskDriver.start(host: options.aliyunHost, key: key, language: options.cloudLanguage)
         case .qwen3Realtime:
             activeDriver = .realtime
             realtimeDriver.onReady = ready
             realtimeDriver.onText = text
             realtimeDriver.onEndpoint = endpoint
             realtimeDriver.onFailure = failure
-            realtimeDriver.start(host: options.aliyunHost, key: key, language: options.language)
+            realtimeDriver.start(host: options.aliyunHost, key: key, language: options.cloudLanguage)
         }
     }
     func append(_ pcm: Data) {

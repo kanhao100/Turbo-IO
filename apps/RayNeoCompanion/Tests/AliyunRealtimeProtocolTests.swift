@@ -65,6 +65,10 @@ final class AliyunRealtimeProtocolTests: XCTestCase {
         XCTAssertEqual(parameters["language_hints"] as? [String], ["zh"])
         XCTAssertFalse(try AliyunTaskSpeechSession.startCommand(taskID: taskID, language: "en-GB").contains("session.update"))
         XCTAssertThrowsError(try AliyunTaskSpeechSession.startCommand(taskID: taskID, language: "fr-FR"))
+        let automatic = try json(AliyunTaskSpeechSession.startCommand(taskID: taskID, language: nil))
+        let automaticPayload = try XCTUnwrap(automatic["payload"] as? [String: Any])
+        let automaticParameters = try XCTUnwrap(automaticPayload["parameters"] as? [String: Any])
+        XCTAssertNil(automaticParameters["language_hints"])
 
         let finish = try json(AliyunTaskSpeechSession.finishCommand(taskID: taskID))
         XCTAssertEqual((finish["header"] as? [String: Any])?["action"] as? String, "finish-task")
@@ -129,6 +133,28 @@ final class AliyunRealtimeProtocolTests: XCTestCase {
         let englishSession = try XCTUnwrap(english["session"] as? [String: Any])
         XCTAssertEqual((englishSession["input_audio_transcription"] as? [String: String])?["language"], "en")
         XCTAssertThrowsError(try AliyunSpeechSession.sessionUpdate(language: "fr-FR", eventID: "event_bad"))
+        let automatic = try json(AliyunSpeechSession.sessionUpdate(language: nil, eventID: "event_auto"))
+        let automaticSession = try XCTUnwrap(automatic["session"] as? [String: Any])
+        XCTAssertNil((automaticSession["input_audio_transcription"] as? [String: Any])?["language"])
+    }
+
+    func testSelfHostedQwenUsesExplicitEndpointBearerHeaderAndManualCommit() throws {
+        let endpoint = "wss://asr.example.com/compat/openai/v1/realtime"
+        let request = try AliyunSpeechSession.selfHostedRequest(endpoint: endpoint, key: "synthetic-key-123456")
+        XCTAssertEqual(request.url?.absoluteString, endpoint)
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer synthetic-key-123456")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "OpenAI-Beta"), "realtime=v1")
+        XCTAssertFalse(request.url!.absoluteString.contains("synthetic-key"))
+
+        let command = try json(AliyunSpeechSession.sessionUpdate(language: nil,
+            eventID: "event_manual", serverVAD: false))
+        let session = try XCTUnwrap(command["session"] as? [String: Any])
+        XCTAssertTrue(session["turn_detection"] is NSNull)
+        XCTAssertNil((session["input_audio_transcription"] as? [String: Any])?["language"])
+        XCTAssertEqual(try json(AliyunSpeechSession.commitCommand(eventID: "event_commit"))["type"] as? String,
+                       "input_audio_buffer.commit")
+        XCTAssertThrowsError(try AliyunSpeechSession.selfHostedRequest(
+            endpoint: "https://asr.example.com/compat/openai/v1/realtime", key: "synthetic-key-123456"))
     }
 
     func testAudioIsBase64JSONAndFinishUsesRealtimeEvent() throws {

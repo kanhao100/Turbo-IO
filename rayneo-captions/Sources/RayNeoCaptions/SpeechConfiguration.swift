@@ -48,15 +48,27 @@ public struct SpeechConfiguration: Codable, Equatable {
     public var service: SpeechService = .azure
     public var region = ""
     public var aliyunHost = ""
+    public var selfHostedEndpoint = ""
     public var language = "en-GB"
     public init() {}
     public init(options: CaptionOptions) {
-        service = options.service; region = options.region; aliyunHost = options.aliyunHost; language = options.language
+        service = options.service; region = options.region; aliyunHost = options.aliyunHost
+        selfHostedEndpoint = options.selfHostedEndpoint; language = options.language
     }
     public func applying(to policy: CaptionOptions = CaptionOptions()) -> CaptionOptions {
         var value = policy
-        value.service = service; value.region = region; value.aliyunHost = aliyunHost; value.language = language
+        value.service = service; value.region = region; value.aliyunHost = aliyunHost
+        value.selfHostedEndpoint = selfHostedEndpoint; value.language = language
         return value
+    }
+    private enum CodingKeys: String, CodingKey { case service, region, aliyunHost, selfHostedEndpoint, language }
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        service = try values.decodeIfPresent(SpeechService.self, forKey: .service) ?? .azure
+        region = try values.decodeIfPresent(String.self, forKey: .region) ?? ""
+        aliyunHost = try values.decodeIfPresent(String.self, forKey: .aliyunHost) ?? ""
+        selfHostedEndpoint = try values.decodeIfPresent(String.self, forKey: .selfHostedEndpoint) ?? ""
+        language = try values.decodeIfPresent(String.self, forKey: .language) ?? "en-GB"
     }
     public func validated() throws -> Self { Self(options: try applying().validated()) }
     public static func aliyunHost(_ value: String) -> String? {
@@ -65,7 +77,12 @@ public struct SpeechConfiguration: Codable, Equatable {
     public func missingRequirements(asrKey: Bool, modelKey: Bool, conversation: Bool) -> [String] {
         var missing: [String] = []
         if (try? validated()) == nil {
-            missing.append(service == .azure ? "Azure Region 或识别语言" : service == .aliyun ? "阿里云 Workspace Host 或识别语言" : "识别语言")
+            switch service {
+            case .azure: missing.append("Azure Region 或识别语言")
+            case .aliyun: missing.append("阿里云 Workspace Host 或识别语言")
+            case .selfHostedQwen: missing.append("自建 Qwen WSS Realtime 地址或识别语言")
+            case .deepgram, .elevenLabs: missing.append("识别语言")
+            }
         }
         if !asrKey { missing.append("\(service.name) API Key") }
         if conversation && !modelKey { missing.append("DeepSeek API Key（用于生成回答）") }

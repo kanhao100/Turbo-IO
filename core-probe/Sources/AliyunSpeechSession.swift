@@ -33,51 +33,73 @@ final class AliyunSpeechSession {
     private var queue: [Data] = []
     private var queuedBytes = 0
     private var ready = false
+    private var usesManualCommits = false
+    private var bytesSinceCommit = 0
     private var completedItems: Set<String> = []
     private var completedItemOrder: [String] = []
 
-    func start(host: String, key: String, language: String) {
+    func start(host: String, key: String, language: String?) {
         precondition(Thread.isMainThread)
         stop()
         do {
             let request = try Self.request(host: host, key: key)
-            let update = try Self.sessionUpdate(language: language, eventID: Self.eventID())
-            let token = generation
-            let config = URLSessionConfiguration.ephemeral
-            config.timeoutIntervalForRequest = 15
-            config.timeoutIntervalForResource = 7_230
-            config.urlCache = nil
-            config.httpCookieStorage = nil
-            config.urlCredentialStorage = nil
-            config.requestCachePolicy = .reloadIgnoringLocalCacheData
-            let session = URLSession(configuration: config, delegate: AliyunNoRedirect(), delegateQueue: nil)
-            self.session = session
-            let socket = session.webSocketTask(with: request)
-            socket.maximumMessageSize = 262_144
-            self.socket = socket
-            socket.resume()
-            receiver = Task { @MainActor [weak self] in
-                do {
-                    try await socket.send(.string(update))
-                    while !Task.isCancelled {
-                        let message = try await socket.receive()
-                        guard let self, self.generation == token else { return }
-                        let data: Data
-                        switch message {
-                        case .data(let value): data = value
-                        case .string(let value): data = Data(value.utf8)
-                        @unknown default: throw ProtocolError.invalid
-                        }
-                        try self.accept(data)
-                    }
-                } catch {
-                    guard let self, self.generation == token, !Task.isCancelled else { return }
-                    let status = (socket.response as? HTTPURLResponse)?.statusCode
-                    self.fail(Self.failure(forHTTPStatus: status))
-                }
-            }
+            let update = try Self.sessionUpdate(language: language, eventID: Self.eventID(), serverVAD: true)
+            open(request: request, update: update, manualCommits: false)
         } catch {
             fail(.configuration)
+        }
+    }
+
+    /// OpenAI-Realtime compatible self-hosted Qwen endpoint. The currently
+    /// deployed server uses manual commits, so bounded one-second PCM windows
+    /// are committed without adding a second glasses session or saving audio.
+    func start(endpoint: String, key: String, language: String?) {
+        precondition(Thread.isMainThread)
+        stop()
+        do {
+            let request = try Self.selfHostedRequest(endpoint: endpoint, key: key)
+            let update = try Self.sessionUpdate(language: language, eventID: Self.eventID(), serverVAD: false)
+            open(request: request, update: update, manualCommits: true)
+        } catch {
+            fail(.configuration)
+        }
+    }
+
+    private func open(request: URLRequest, update: String, manualCommits: Bool) {
+        usesManualCommits = manualCommits; bytesSinceCommit = 0
+        let token = generation
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 15
+        config.timeoutIntervalForResource = 7_230
+        config.urlCache = nil
+        config.httpCookieStorage = nil
+        config.urlCredentialStorage = nil
+        config.requestCachePolicy = .reloadIgnoringLocalCacheData
+        let session = URLSession(configuration: config, delegate: AliyunNoRedirect(), delegateQueue: nil)
+        self.session = session
+        let socket = session.webSocketTask(with: request)
+        socket.maximumMessageSize = 262_144
+        self.socket = socket
+        socket.resume()
+        receiver = Task { @MainActor [weak self] in
+            do {
+                try await socket.send(.string(update))
+                while !Task.isCancelled {
+                    let message = try await socket.receive()
+                    guard let self, self.generation == token else { return }
+                    let data: Data
+                    switch message {
+                    case .data(let value): data = value
+                    case .string(let value): data = Data(value.utf8)
+                    @unknown default: throw ProtocolError.invalid
+                    }
+                    try self.accept(data)
+                }
+            } catch {
+                guard let self, self.generation == token, !Task.isCancelled else { return }
+                let status = (socket.response as? HTTPURLResponse)?.statusCode
+                self.fail(Self.failure(forHTTPStatus: status))
+            }
         }
     }
 
@@ -97,13 +119,32 @@ final class AliyunSpeechSession {
         return request
     }
 
-    static func sessionUpdate(language: String, eventID: String) throws -> String {
-        let recognitionLanguage: String
-        switch language {
-        case "zh-CN": recognitionLanguage = "zh"
-        case "en-GB", "en-US": recognitionLanguage = "en"
-        default: throw ProtocolError.invalid
+    static func selfHostedRequest(endpoint: String, key: String) throws -> URLRequest {
+        guard let normalized = CaptionOptions.normalizedSelfHostedEndpoint(endpoint),
+              let url = URL(string: normalized),
+              (16...512).contains(key.utf8.count),
+              key.utf8.allSatisfy({ (33...126).contains($0) }) else { throw ProtocolError.invalid }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 15
+        request.setValue("Bearer " + key, forHTTPHeaderField: "Authorization")
+        request.setValue("realtime=v1", forHTTPHeaderField: "OpenAI-Beta")
+        return request
+    }
+
+    static func sessionUpdate(language: String?, eventID: String, serverVAD: Bool = true) throws -> String {
+        var transcription: [String: Any] = [:]
+        if let language {
+            switch language {
+            case "zh-CN": transcription["language"] = "zh"
+            case "en-GB", "en-US": transcription["language"] = "en"
+            default: throw ProtocolError.invalid
+            }
         }
+        let turnDetection: Any = serverVAD ? [
+            "type": "server_vad",
+            "threshold": 0.2,
+            "silence_duration_ms": 400
+        ] : NSNull()
         return try json([
             "event_id": eventID,
             "type": "session.update",
@@ -111,12 +152,8 @@ final class AliyunSpeechSession {
                 "modalities": ["text"],
                 "input_audio_format": "pcm",
                 "sample_rate": 16_000,
-                "input_audio_transcription": ["language": recognitionLanguage],
-                "turn_detection": [
-                    "type": "server_vad",
-                    "threshold": 0.2,
-                    "silence_duration_ms": 400
-                ]
+                "input_audio_transcription": transcription,
+                "turn_detection": turnDetection
             ]
         ])
     }
@@ -134,6 +171,10 @@ final class AliyunSpeechSession {
 
     static func finishCommand(eventID: String) throws -> String {
         try json(["event_id": eventID, "type": "session.finish"])
+    }
+
+    static func commitCommand(eventID: String) throws -> String {
+        try json(["event_id": eventID, "type": "input_audio_buffer.commit"])
     }
 
     /// Internal for deterministic wire-fixture tests; never logs raw responses.
@@ -205,6 +246,13 @@ final class AliyunSpeechSession {
                     self.queuedBytes -= data.count
                     let message = try Self.audioAppend(data, eventID: Self.eventID())
                     try await socket.send(.string(message))
+                    if self.usesManualCommits {
+                        self.bytesSinceCommit += data.count
+                        if self.bytesSinceCommit >= 32_000 {
+                            try await socket.send(.string(try Self.commitCommand(eventID: Self.eventID())))
+                            self.bytesSinceCommit = 0
+                        }
+                    }
                 }
             } catch {
                 guard let self, self.generation == token, !Task.isCancelled else { return }
@@ -223,6 +271,7 @@ final class AliyunSpeechSession {
         let closingSocket = socket
         let closingSession = session
         let sendFinish = gracefully && ready
+        let sendCommit = sendFinish && usesManualCommits && bytesSinceCommit > 0
         generation = UUID()
         receiver?.cancel()
         sender?.cancel()
@@ -233,12 +282,17 @@ final class AliyunSpeechSession {
         queue.removeAll()
         queuedBytes = 0
         ready = false
+        usesManualCommits = false
+        bytesSinceCommit = 0
         completedItems.removeAll()
         completedItemOrder.removeAll()
 
         guard let closingSocket, let closingSession else { return }
         if sendFinish, let finish = try? Self.finishCommand(eventID: Self.eventID()) {
             Task {
+                if sendCommit, let commit = try? Self.commitCommand(eventID: Self.eventID()) {
+                    try? await closingSocket.send(.string(commit))
+                }
                 try? await closingSocket.send(.string(finish))
                 closingSocket.cancel(with: .normalClosure, reason: nil)
                 closingSession.finishTasksAndInvalidate()
@@ -320,7 +374,7 @@ final class AliyunTaskSpeechSession {
     private var lastSentence = -1
     private var sentenceFinished = false
 
-    func start(host: String, key: String, language: String) {
+    func start(host: String, key: String, language: String?) {
         precondition(Thread.isMainThread)
         stop()
         do {
@@ -381,13 +435,19 @@ final class AliyunTaskSpeechSession {
         return request
     }
 
-    static func startCommand(taskID: String, language: String) throws -> String {
+    static func startCommand(taskID: String, language: String?) throws -> String {
         guard (1...128).contains(taskID.utf8.count) else { throw ProtocolError.invalid }
-        let recognitionLanguage: String
-        switch language {
-        case "zh-CN": recognitionLanguage = "zh"
-        case "en-GB", "en-US": recognitionLanguage = "en"
-        default: throw ProtocolError.invalid
+        var parameters: [String: Any] = [
+            "format": "pcm",
+            "sample_rate": 16_000,
+            "heartbeat": true
+        ]
+        if let language {
+            switch language {
+            case "zh-CN": parameters["language_hints"] = ["zh"]
+            case "en-GB", "en-US": parameters["language_hints"] = ["en"]
+            default: throw ProtocolError.invalid
+            }
         }
         return try json([
             "header": ["action": "run-task", "task_id": taskID, "streaming": "duplex"],
@@ -396,12 +456,7 @@ final class AliyunTaskSpeechSession {
                 "task": "asr",
                 "function": "recognition",
                 "model": model,
-                "parameters": [
-                    "format": "pcm",
-                    "sample_rate": 16_000,
-                    "heartbeat": true,
-                    "language_hints": [recognitionLanguage]
-                ],
+                "parameters": parameters,
                 "input": [:]
             ]
         ])

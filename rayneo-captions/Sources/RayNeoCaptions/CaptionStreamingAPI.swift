@@ -46,19 +46,23 @@ public enum CaptionStreamingAPI {
         switch options.service {
         case .deepgram:
             url = URLComponents(string: "wss://api.deepgram.com/v1/listen")!
-            url.queryItems = ["model": "nova-3", "language": options.language,
+            guard let language = options.cloudLanguage else { throw CaptionConnectionFailure.configuration }
+            url.queryItems = ["model": "nova-3", "language": language,
                 "encoding": "linear16", "sample_rate": "16000", "channels": "1",
                 "interim_results": "true", "punctuate": "true", "smart_format": "true",
                 "endpointing": "300"].sorted { $0.key < $1.key }.map { URLQueryItem(name: $0.key, value: $0.value) }
             headers = ["Authorization": "Token \(key)"]
         case .elevenLabs:
             url = URLComponents(string: "wss://api.elevenlabs.io/v1/speech-to-text/realtime")!
-            url.queryItems = ["model_id": "scribe_v2_realtime", "audio_format": "pcm_16000",
-                "language_code": options.language == "zh-CN" ? "zh" : "en",
+            var query = ["model_id": "scribe_v2_realtime", "audio_format": "pcm_16000",
                 "commit_strategy": "vad", "include_timestamps": "false",
-                "include_language_detection": "false"].sorted { $0.key < $1.key }.map { URLQueryItem(name: $0.key, value: $0.value) }
+                "include_language_detection": options.cloudLanguage == nil ? "true" : "false"]
+            if let language = options.cloudLanguage {
+                query["language_code"] = language == "zh-CN" ? "zh" : "en"
+            }
+            url.queryItems = query.sorted { $0.key < $1.key }.map { URLQueryItem(name: $0.key, value: $0.value) }
             headers = ["xi-api-key": key]
-        case .azure, .aliyun: throw CaptionConnectionFailure.configuration
+        case .azure, .aliyun, .selfHostedQwen: throw CaptionConnectionFailure.configuration
         }
         var request = URLRequest(url: url.url!)
         request.timeoutInterval = 15
@@ -102,7 +106,7 @@ public enum CaptionStreamingAPI {
             case "error", "unaccepted_terms", "input_error", "invalid_request", "chunk_size_exceeded": return .failure(.rejected)
             default: return object["error"] == nil ? .ignored : .failure(.rejected)
             }
-        case .azure, .aliyun: throw CaptionConnectionFailure.configuration
+        case .azure, .aliyun, .selfHostedQwen: throw CaptionConnectionFailure.configuration
         }
     }
     private static func transcript(_ text: String, final: Bool, utteranceEnd: Bool) throws -> CaptionStreamEvent {

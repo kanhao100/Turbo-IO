@@ -18,6 +18,7 @@ import RayNeoCaptions
         case .azure: return AzureCaptionASR()
         case .aliyun: return AliyunCaptionASR()
         case .deepgram, .elevenLabs: return WebSocketCaptionASR(service: service)
+        case .selfHostedQwen: return SelfHostedQwenCaptionASR()
         }
         #else
         return nil // Source-only UI cannot start any cloud transcription provider.

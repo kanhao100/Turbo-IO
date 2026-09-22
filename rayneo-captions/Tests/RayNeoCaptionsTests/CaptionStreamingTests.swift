@@ -15,6 +15,7 @@ final class CaptionStreamingTests: XCTestCase {
         for service in CaptionService.allCases {
             var options = CaptionOptions(); options.service = service
             if service == .aliyun { options.aliyunHost = "workspace-a.cn-beijing.maas.aliyuncs.com" }
+            if service == .selfHostedQwen { options.selfHostedEndpoint = "wss://asr.example.com/compat/openai/v1/realtime" }
             if service == .azure { XCTAssertThrowsError(try options.validated()); options.region = "eastus" }
             XCTAssertNoThrow(try options.validated())
             XCTAssertEqual(try JSONDecoder().decode(CaptionOptions.self, from: JSONEncoder().encode(options)), options)
@@ -23,11 +24,14 @@ final class CaptionStreamingTests: XCTestCase {
         }
     }
     func testCredentialScopesAreSeparateAndAzureScopeIsStable() {
-        XCTAssertEqual(Set(CaptionService.allCases.map(\.keychainService)).count, 4)
+        XCTAssertEqual(Set(CaptionService.allCases.map(\.keychainService)).count, 5)
         var options = CaptionOptions(); options.region = " EastUS\n"
         XCTAssertEqual(options.credentialAccount, "eastus")
         options.service = .deepgram; XCTAssertEqual(options.credentialAccount, "default")
         options.service = .elevenLabs; XCTAssertEqual(options.credentialAccount, "default")
+        options.service = .selfHostedQwen
+        options.selfHostedEndpoint = "wss://asr.example.com/compat/openai/v1/realtime"
+        XCTAssertEqual(options.credentialAccount, options.selfHostedEndpoint)
     }
     func testDeepgramRequestKeepsKeyOutOfURLAndUsesPCMFormat() throws {
         var options = CaptionOptions(); options.service = .deepgram; options.language = "zh-CN"
@@ -56,6 +60,14 @@ final class CaptionStreamingTests: XCTestCase {
             XCTAssertEqual(query["audio_format"], "pcm_16000"); XCTAssertEqual(query["commit_strategy"], "vad")
             XCTAssertEqual(query["include_timestamps"], "false")
         }
+    }
+    func testElevenLabsAutomaticLanguageOmitsHintAndEnablesDetection() throws {
+        var options = CaptionOptions(); options.service = .elevenLabs; options.languageMode = .automatic
+        let request = try CaptionStreamingAPI.request(options: options, key: "synthetic-test-only")
+        let query = Dictionary(uniqueKeysWithValues: URLComponents(url: try XCTUnwrap(request.url), resolvingAgainstBaseURL: false)!
+            .queryItems!.map { ($0.name, $0.value!) })
+        XCTAssertNil(query["language_code"])
+        XCTAssertEqual(query["include_language_detection"], "true")
     }
     func testHeaderInjectionAndInvalidOptionsNeverCreateRequests() {
         var options = CaptionOptions(); options.service = .deepgram

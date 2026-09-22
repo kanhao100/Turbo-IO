@@ -47,6 +47,7 @@ import CryptoKit
         voice.onSubtitleSendError = { [weak self] in
             self?.store?.subtitleDisplay.transportFailed(device: $0, packet: $1, code: $2)
             self?.store?.realtimeSubtitles.transportFailed(device: $0, packet: $1, code: $2)
+            self?.store?.alwaysOn.displayTransportFailed(device: $0, packet: $1, code: $2)
         }
         voice.onSubtitleEnvelope = { [weak self] in self?.store?.realtimeSubtitles.receive(device: $0, packet: $1, arrival: $2) }
         // One automatic weather owner. Legacy Weatherstack stays manual to avoid overwrites.
@@ -137,6 +138,7 @@ import CryptoKit
     func receive(device: String, business: UInt8, data: Data) {
         guard voice.deviceID == device else { return }
         if business == 19 {
+            store?.alwaysOn.receive(device: device, business: business, packet: data)
             store?.subtitleDisplay.receive(device: device, packet: data)
             return
         }

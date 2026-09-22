@@ -58,6 +58,29 @@ final class CaptionPolicyTests: XCTestCase {
         options.idleSeconds = 0; options.language = "unsupported"
         XCTAssertThrowsError(try options.validated())
     }
+    func testAutomaticLanguageRoundTripsAndDeepgramRequiresFixedLanguage() throws {
+        var options = CaptionOptions(); options.service = .elevenLabs; options.languageMode = .automatic
+        let restored = try JSONDecoder().decode(CaptionOptions.self, from: JSONEncoder().encode(options))
+        XCTAssertEqual(restored.languageMode, .automatic); XCTAssertNil(restored.cloudLanguage)
+        options.service = .deepgram
+        XCTAssertThrowsError(try options.validated())
+        options.language = "zh-CN"
+        XCTAssertEqual(try options.validated().languageMode, .fixed(localeIdentifier: "zh-CN"))
+    }
+    func testSelfHostedQwenRequiresExplicitWSSRealtimeEndpointAndSupportsAutomaticLanguage() throws {
+        var options = CaptionOptions(); options.service = .selfHostedQwen; options.languageMode = .automatic
+        for endpoint in ["", "https://asr.example.com/compat/openai/v1/realtime",
+                         "wss://user@asr.example.com/compat/openai/v1/realtime",
+                         "wss://asr.example.com/compat/openai/v1/realtime?key=secret",
+                         "wss://asr.example.com/not-streaming"] {
+            options.selfHostedEndpoint = endpoint
+            XCTAssertThrowsError(try options.validated(), endpoint)
+        }
+        options.selfHostedEndpoint = "wss://ASR.Example.com/compat/openai/v1/realtime/"
+        let valid = try options.validated()
+        XCTAssertEqual(valid.selfHostedEndpoint, "wss://asr.example.com/compat/openai/v1/realtime")
+        XCTAssertNil(valid.cloudLanguage)
+    }
     func testMissingAudioIsNotSilence() {
         var options = CaptionOptions(); options.idleSeconds = 60
         let clock = CaptionClock(options: options, now: 100)

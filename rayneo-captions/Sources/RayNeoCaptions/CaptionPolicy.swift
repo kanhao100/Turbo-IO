@@ -26,12 +26,25 @@ public enum AliyunCaptionModel: String, Codable, CaseIterable {
 public enum CaptionService: String, Codable, CaseIterable {
     case azure, deepgram, aliyun
     case elevenLabs = "elevenlabs"
+    case selfHostedQwen = "self-hosted-qwen"
 
     public var name: String {
-        switch self { case .azure: return "Azure Speech"; case .deepgram: return "Deepgram"; case .elevenLabs: return "ElevenLabs"; case .aliyun: return "阿里云流式 ASR" }
+        switch self {
+        case .azure: return "Azure Speech"
+        case .deepgram: return "Deepgram"
+        case .elevenLabs: return "ElevenLabs"
+        case .aliyun: return "阿里云流式 ASR"
+        case .selfHostedQwen: return "自建 Qwen3-ASR"
+        }
     }
     public var model: String {
-        switch self { case .azure: return "Azure Speech"; case .deepgram: return "Nova-3"; case .elevenLabs: return "Scribe v2 Realtime"; case .aliyun: return AliyunCaptionModel.qwenAudio31Streaming.rawValue }
+        switch self {
+        case .azure: return "Azure Speech"
+        case .deepgram: return "Nova-3"
+        case .elevenLabs: return "Scribe v2 Realtime"
+        case .aliyun: return AliyunCaptionModel.qwenAudio31Streaming.rawValue
+        case .selfHostedQwen: return "Qwen3-ASR OpenAI Realtime"
+        }
     }
     public var keychainService: String {
         switch self {
@@ -40,6 +53,36 @@ public enum CaptionService: String, Codable, CaseIterable {
         case .deepgram: return "io.turboio.companion.deepgram.v1"
         case .elevenLabs: return "io.turboio.companion.elevenlabs.v1"
         case .aliyun: return "RayNeo.CloudASR.https."
+        case .selfHostedQwen: return "io.turboio.companion.self-hosted-qwen.v1"
+        }
+    }
+}
+
+/// Explicit recognition-language intent. `automatic` is not represented by a
+/// made-up locale: adapters must omit their language hint (or use a provider's
+/// real auto-detection API).
+public enum RecognitionLanguageMode: Codable, Equatable, Sendable {
+    case automatic
+    case fixed(localeIdentifier: String)
+
+    private enum CodingKeys: String, CodingKey { case kind, localeIdentifier }
+    private enum Kind: String, Codable { case automatic, fixed }
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        switch try values.decode(Kind.self, forKey: .kind) {
+        case .automatic: self = .automatic
+        case .fixed:
+            self = .fixed(localeIdentifier: try values.decode(String.self, forKey: .localeIdentifier))
+        }
+    }
+    public func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .automatic:
+            try values.encode(Kind.automatic, forKey: .kind)
+        case .fixed(let localeIdentifier):
+            try values.encode(Kind.fixed, forKey: .kind)
+            try values.encode(localeIdentifier, forKey: .localeIdentifier)
         }
     }
 }
@@ -49,34 +92,70 @@ public struct CaptionOptions: Codable, Equatable {
     public var service: CaptionService = .azure
     public var region = ""
     public var aliyunHost = ""
+    public var selfHostedEndpoint = ""
     public var aliyunModel: AliyunCaptionModel = .qwenAudio31Streaming
-    public var language = "en-GB"
+    public var languageMode: RecognitionLanguageMode = .fixed(localeIdentifier: "en-GB")
+    /// Source-compatible view used by the existing fixed-language subtitle UI.
+    /// Assigning `auto` selects real provider auto detection.
+    public var language: String {
+        get {
+            switch languageMode {
+            case .automatic: return "auto"
+            case .fixed(let localeIdentifier): return localeIdentifier
+            }
+        }
+        set { languageMode = newValue == "auto" ? .automatic : .fixed(localeIdentifier: newValue) }
+    }
     public var idleSeconds = 900
     public var maximumSeconds = 7200
     public var recordAudio = false
     public init() {}
 
     private enum CodingKeys: String, CodingKey {
-        case service, region, aliyunHost, aliyunModel, language, idleSeconds, maximumSeconds, recordAudio
+        case service, region, aliyunHost, selfHostedEndpoint, aliyunModel, languageMode, language
+        case idleSeconds, maximumSeconds, recordAudio
     }
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         service = try values.decodeIfPresent(CaptionService.self, forKey: .service) ?? .azure
         region = try values.decode(String.self, forKey: .region)
         aliyunHost = try values.decodeIfPresent(String.self, forKey: .aliyunHost) ?? ""
+        selfHostedEndpoint = try values.decodeIfPresent(String.self, forKey: .selfHostedEndpoint) ?? ""
         // 0.3.3 had only Qwen3 Realtime and therefore no model field. Preserve
         // that explicit user configuration; fresh CaptionOptions default to 3.1.
         aliyunModel = try values.decodeIfPresent(AliyunCaptionModel.self, forKey: .aliyunModel)
             ?? (service == .aliyun ? .qwen3Realtime : .qwenAudio31Streaming)
-        language = try values.decode(String.self, forKey: .language)
+        if let mode = try values.decodeIfPresent(RecognitionLanguageMode.self, forKey: .languageMode) {
+            languageMode = mode
+        } else {
+            let legacy = try values.decodeIfPresent(String.self, forKey: .language) ?? "en-GB"
+            languageMode = legacy == "auto" ? .automatic : .fixed(localeIdentifier: legacy)
+        }
         idleSeconds = try values.decode(Int.self, forKey: .idleSeconds)
         maximumSeconds = try values.decode(Int.self, forKey: .maximumSeconds)
         recordAudio = try values.decode(Bool.self, forKey: .recordAudio)
+    }
+    public func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(service, forKey: .service)
+        try values.encode(region, forKey: .region)
+        try values.encode(aliyunHost, forKey: .aliyunHost)
+        try values.encode(selfHostedEndpoint, forKey: .selfHostedEndpoint)
+        try values.encode(aliyunModel, forKey: .aliyunModel)
+        try values.encode(languageMode, forKey: .languageMode)
+        // Keep the legacy scalar during the migration window so older builds can
+        // still read fixed configurations. They will reject `auto` rather than
+        // silently choosing a language.
+        try values.encode(language, forKey: .language)
+        try values.encode(idleSeconds, forKey: .idleSeconds)
+        try values.encode(maximumSeconds, forKey: .maximumSeconds)
+        try values.encode(recordAudio, forKey: .recordAudio)
     }
     public var credentialAccount: String {
         switch service {
         case .azure: return region.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         case .aliyun: return "user-api-key"
+        case .selfHostedQwen: return selfHostedEndpoint.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         default: return "default"
         }
     }
@@ -90,6 +169,14 @@ public struct CaptionOptions: Codable, Equatable {
     public static let idleChoices = [0, 60, 300, 900, 1800, 3600]
     public static let durationChoices = [1800, 3600, 7200]
     public static let languages = ["en-GB", "en-US", "zh-CN"]
+    public var cloudLanguage: String? {
+        if case .fixed(let localeIdentifier) = languageMode { return localeIdentifier }
+        return nil
+    }
+    /// The glasses settings message still requires a concrete source locale.
+    /// This does not constrain cloud-side automatic detection.
+    public var glassesLanguage: String { cloudLanguage ?? "zh-CN" }
+    public var languageName: String { cloudLanguage ?? "自动检测" }
     public func validated() throws -> Self {
         var result = self
         result.region = region.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -97,15 +184,40 @@ public struct CaptionOptions: Codable, Equatable {
             guard let host = SpeechConfiguration.aliyunHost(aliyunHost) else { throw CaptionFailure.invalidConfiguration }
             result.aliyunHost = host
         }
+        if service == .selfHostedQwen {
+            guard let endpoint = Self.normalizedSelfHostedEndpoint(selfHostedEndpoint) else {
+                throw CaptionFailure.invalidConfiguration
+            }
+            result.selfHostedEndpoint = endpoint
+        }
         // A region identifier, never a URL or arbitrary host receiving a secret.
         if service == .azure {
             guard (3...40).contains(result.region.count), result.region.utf8.allSatisfy({
                 (97...122).contains($0) || (48...57).contains($0)
             }) else { throw CaptionFailure.invalidConfiguration }
         }
-        guard Self.languages.contains(language), Self.idleChoices.contains(idleSeconds),
+        switch result.languageMode {
+        case .automatic:
+            guard service != .deepgram else { throw CaptionFailure.invalidConfiguration }
+        case .fixed(let localeIdentifier):
+            guard Self.languages.contains(localeIdentifier) else { throw CaptionFailure.invalidConfiguration }
+        }
+        guard Self.idleChoices.contains(idleSeconds),
               Self.durationChoices.contains(maximumSeconds) else { throw CaptionFailure.invalidConfiguration }
         return result
+    }
+
+    public static func normalizedSelfHostedEndpoint(_ value: String) -> String? {
+        var raw = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        while raw.hasSuffix("/") { raw.removeLast() }
+        guard (16...512).contains(raw.utf8.count), var components = URLComponents(string: raw),
+              components.scheme?.lowercased() == "wss", components.host?.isEmpty == false,
+              components.user == nil, components.password == nil, components.fragment == nil,
+              components.query == nil,
+              components.path.hasSuffix("/realtime") else { return nil }
+        components.scheme = "wss"
+        components.host = components.host?.lowercased()
+        return components.url?.absoluteString
     }
 }
 

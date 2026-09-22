@@ -5,16 +5,15 @@ final class CompanionUITests: XCTestCase {
     private var testArguments: [String] { ["--ui-test-scope", scope] }
     override func setUpWithError() throws { continueAfterFailure = false }
 
-    func testAlwaysOnRequiresConsentAndRealDevice() {
-        let app = XCUIApplication(); app.launchArguments = testArguments + ["--ui-tab", "3"]; app.launch()
-        let entry = app.buttons["always-on-entry"]; reveal(entry, in: app); entry.tap()
+    func testAlwaysOnDefaultsOffAndCannotEnableWithoutRealDevice() {
+        let app = XCUIApplication(); app.launchArguments = testArguments + ["--ui-tab", "4"]; app.launch()
+        app.segmentedControls["realtime-pages"].buttons["全天智记"].tap()
         XCTAssertTrue(app.staticTexts["always-on-status"].waitForExistence(timeout: 5))
-        XCTAssertFalse(app.buttons["always-on-start"].isEnabled)
-        XCTAssertFalse(app.buttons["always-on-stop"].isEnabled)
-        app.switches["always-on-consent"].tap()
-        XCTAssertFalse(app.buttons["always-on-start"].isEnabled, "Consent cannot fabricate a connected device")
-        XCTAssertTrue(app.staticTexts["always-on-counters"].label.contains("0 包"))
-        capture("54-always-on-consent-no-device")
+        let enabled = app.switches["always-on-enabled"]
+        XCTAssertEqual(enabled.value as? String, "0")
+        XCTAssertFalse(enabled.isEnabled, "A simulator cannot fabricate an authenticated glasses target")
+        XCTAssertFalse(app.switches["always-on-lens"].isEnabled)
+        capture("54-always-on-off-no-device")
     }
 
     func testModelToolsCatalogueIsReadOnlyAndShowsActualSchema() {

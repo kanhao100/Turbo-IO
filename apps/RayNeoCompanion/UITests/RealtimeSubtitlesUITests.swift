@@ -5,7 +5,7 @@ final class RealtimeSubtitlesUITests:XCTestCase {
         let app=XCUIApplication();app.launchArguments=["--ui-test-scope",UUID().uuidString,"--ui-tab","4"];app.launch()
         XCTAssertTrue(app.staticTexts["realtime-status"].waitForExistence(timeout:8))
         capture(app,"realtime-subtitles-live")
-        app.segmentedControls["realtime-pages"].buttons["会话历史"].tap()
+        app.segmentedControls["realtime-pages"].buttons["历史记录"].tap()
         XCTAssertTrue(app.textFields["subtitle-history-search"].waitForExistence(timeout:3))
         capture(app,"realtime-subtitles-history")
         app.buttons["realtime-settings"].tap()

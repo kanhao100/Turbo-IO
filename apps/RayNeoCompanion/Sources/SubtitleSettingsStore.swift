@@ -61,8 +61,8 @@ struct SubtitleKeychainStorage: SubtitleCredentialStorage {
     }
     func refresh() { hasKey = credentials.key(for: options).map { !$0.isEmpty } ?? false }
     func hasKey(for value: CaptionOptions) -> Bool { credentials.key(for: value).map { !$0.isEmpty } ?? false }
-    @discardableResult func save(_ draft: CaptionOptions, key: String = "") -> Bool {
-        guard allowsChanges, isBusy?() != true else { error = "请先结束字幕或语音会话，再修改设置。"; return false }
+    @discardableResult func save(_ draft: CaptionOptions, key: String = "", allowActiveAlwaysOn: Bool = false) -> Bool {
+        guard allowsChanges, allowActiveAlwaysOn || isBusy?() != true else { error = "请先结束字幕或语音会话，再修改设置。"; return false }
         do {
             let value = try draft.validated()
             if !key.isEmpty { try credentials.save(key, for: value) }
@@ -76,8 +76,11 @@ struct SubtitleKeychainStorage: SubtitleCredentialStorage {
         catch { self.error = "无法移除此服务的密钥。" }
     }
     func recognizer() -> (options: CaptionOptions, key: String, provider: CaptionASRProvider)? {
+        recognizer(for: options)
+    }
+    func recognizer(for requested: CaptionOptions) -> (options: CaptionOptions, key: String, provider: CaptionASRProvider)? {
         refresh()
-        guard let value = try? options.validated(), let key = credentials.key(for: value), !key.isEmpty,
+        guard let value = try? requested.validated(), let key = credentials.key(for: value), !key.isEmpty,
               let provider = factory(value.service) else { return nil }
         return (value, key, provider)
     }

@@ -20,7 +20,7 @@ protocol SubtitlePCMDecoder: AnyObject {
 }
 
 #if COMPANION_DEVICE
-private final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
+final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
     private let handle: OpaquePointer
     init?() { guard let handle = RNVoiceVADCreate() else { return nil }; self.handle = handle }
     deinit { RNVoiceVADDestroy(handle) }
@@ -64,6 +64,7 @@ private final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
     @Published private(set) var saving = false
     @Published private(set) var shortcutEnabled = false
     @Published private(set) var cloudReady = false
+    @Published private(set) var controlEvents: [String] = []
     let settings: SubtitleSettingsStore
     let archive: SubtitleArchiveStore
     let latency: SubtitleLatencyDiagnostics
@@ -91,7 +92,7 @@ private final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
     private var otherSequenceSteps = 0
     private var pendingText: String?, lastDisplayAt: TimeInterval = -.infinity
     private var acceptedAt: TimeInterval = 0, cloudDeadline: TimeInterval = 0
-    private var queuedShortcut: (device: String, sid: String)?
+    private var shortcutSuppressedUntil: TimeInterval = 0
     private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
     private var now: TimeInterval { uptime() }
     var active: Bool { phase != .idle }
@@ -192,7 +193,6 @@ private final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
         guard !enabled || settings.requirements.isEmpty else { error = "请先保存转写配置与密钥。"; return }
         shortcutEnabled = enabled
         defaults.set(enabled, forKey: Self.shortcutKey)
-        if !enabled { queuedShortcut = nil }
         error = nil
     }
     func receive(device source: String, packet: Data, arrival: TimeInterval) {
@@ -202,11 +202,28 @@ private final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
         guard let event = try? SubtitleTranslateWire.event(packet) else {
             if active, source == target { fail("字幕消息格式或音频长度不匹配，已停止本次会话。") }; return
         }
+        if [1, 2, 3, 7, 8].contains(event.type) {
+            let state = active ? phase.rawValue : (saving ? "saving" : "idle")
+            controlEvents.append("t=\(String(format: "%.3f", arrival)) business=19 type=\(event.type) sid=\(String(event.sid.prefix(24))) state=\(state)")
+            controlEvents = Array(controlEvents.suffix(80))
+        }
+        // A second glasses shortcut uses the same type-1 control event as the first one on
+        // current firmware. Handle it before strict SID filtering: its new SID is a gesture
+        // identifier and must never replace the active caption SID.
+        if active, event.type == 1, source == target, arrival >= acceptedAt {
+            guard now - acceptedAt >= 1.5 else {
+                lastEvent = "忽略字幕启动后的重复 type=1（防抖）"
+                return
+            }
+            lastEvent = "收到第二次眼镜双击，停止当前字幕"
+            shortcutSuppressedUntil = now + 1.5
+            stop(reason: "眼镜再次双击，已停止并保存", interrupted: false, notifyGlasses: true)
+            return
+        }
         if phase == .idle, event.type == 1 {
             guard shortcutEnabled else { return }
-            if saving {
-                queuedShortcut = (source, event.sid)
-                status = "上一段正在保存；完成后自动启动新字幕"
+            guard !saving, now >= shortcutSuppressedUntil else {
+                status = "上一段正在保存或仍在防抖期；请稍后再次双击"
                 return
             }
             guard canStart else { return }
@@ -218,8 +235,8 @@ private final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
             return
         }
         if event.type == 3 {
-            // The matching glasses control event is the authoritative exit signal. A second
-            // double-tap therefore stops, saves and immediately makes the next tap available.
+            // The matching glasses control event is the authoritative exit signal. Stop through
+            // the same idempotent path as the phone button; a short cooldown rejects tail events.
             stop(reason: "眼镜已停止字幕（\(event.reason.map(String.init) ?? "未提供原因")）",
                  interrupted: false, notifyGlasses: false)
             return
@@ -342,6 +359,7 @@ private final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
     func stop(reason: String = "用户停止", interrupted: Bool = false, notifyGlasses: Bool = true) {
         guard canStop else { return }
         let wasPreparing = phase == .preparing
+        shortcutSuppressedUntil = max(shortcutSuppressedUntil, now + 1.5)
         generation = UUID(); status = reason
         cloudStarted = false; provider?.stop(); provider = nil; key = ""; cloudReady = false; pendingText = nil
         latency.sessionStopped()
@@ -373,17 +391,7 @@ private final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
             if self.phase == .idle { self.sessionID = nil }
             if !success { self.error = "存储收尾未完整完成；已收到的原文件保留。" }
             self.endBackgroundTask(); Task { await self.archive.load() }
-            self.resumeQueuedShortcut()
         }
-    }
-    private func resumeQueuedShortcut() {
-        guard let queuedShortcut else { return }
-        self.queuedShortcut = nil
-        guard shortcutEnabled, device.deviceID == queuedShortcut.device, canStart else {
-            status = "上一段已保存；眼镜当前不可用，请再次双击重试"
-            return
-        }
-        _ = begin(deviceID: queuedShortcut.device, incomingSID: queuedShortcut.sid)
     }
     private func release() {
         timer?.invalidate(); timer = nil; phase = .idle; target = nil; sid = nil
@@ -414,6 +422,7 @@ private final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
     }
     var diagnosticText: String {
         let steps = sequenceStepCounts.keys.sorted().map { "\($0):\(sequenceStepCounts[$0] ?? 0)" }.joined(separator: ",")
-        return "Turbo IO 实时字幕\nphase=\(phase.rawValue) packets=\(packets) pcmBytes=\(audioBytes) gaps=\(gaps)\nseqStrideChanges=\(sequenceJumps) maxSeqStep=\(maximumSequenceStep) discardedSeq=\(discardedSequencePackets)\nseqSteps=\(steps.isEmpty ? "none" : steps) otherSteps=\(otherSequenceSteps)\nmaxArrivalMs=\(maximumArrivalIntervalMilliseconds) maxDispatchMs=\(maximumDispatchDelayMilliseconds)\nASR=\(options.service.name) model=\(options.selectedModel) ready=\(cloudReady)\n\(status)\n\(error ?? "")\n不包含音频、正文、密钥、原始序号或设备标识。"
+        let controls = controlEvents.isEmpty ? "none" : controlEvents.joined(separator: "\n")
+        return "Turbo IO 实时字幕\nphase=\(phase.rawValue) packets=\(packets) pcmBytes=\(audioBytes) gaps=\(gaps)\nseqStrideChanges=\(sequenceJumps) maxSeqStep=\(maximumSequenceStep) discardedSeq=\(discardedSequencePackets)\nseqSteps=\(steps.isEmpty ? "none" : steps) otherSteps=\(otherSequenceSteps)\nmaxArrivalMs=\(maximumArrivalIntervalMilliseconds) maxDispatchMs=\(maximumDispatchDelayMilliseconds)\nASR=\(options.service.name) model=\(options.selectedModel) ready=\(cloudReady)\n\(status)\n\(error ?? "")\ncontrolEvents:\n\(controls)\n不包含音频、正文、密钥、原始序号或设备标识。"
     }
 }

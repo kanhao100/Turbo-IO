@@ -42,10 +42,18 @@ private final class AzureCaptionWorker {
         queue.async { [self] in
             do {
                 let config = try SPXSpeechConfiguration(subscription: key, region: options.region)
-                config.speechRecognitionLanguage = options.language
                 let input = SPXPushAudioInputStream() // PCM16, 16 kHz, mono; never phone mic.
                 guard let audio = SPXAudioConfiguration(streamInput: input) else { failure(); return }
-                let reco = try SPXSpeechRecognizer(speechConfiguration: config, audioConfiguration: audio)
+                let reco: SPXSpeechRecognizer
+                if let language = options.cloudLanguage {
+                    config.speechRecognitionLanguage = language
+                    reco = try SPXSpeechRecognizer(speechConfiguration: config, audioConfiguration: audio)
+                } else {
+                    guard let detection = SPXAutoDetectSourceLanguageConfiguration(["zh-CN", "en-US", "en-GB"])
+                    else { failure(); return }
+                    reco = try SPXSpeechRecognizer(speechConfiguration: config,
+                        autoDetectSourceLanguageConfiguration: detection, audioConfiguration: audio)
+                }
                 reco.addRecognizingEventHandler { _, event in
                     if let value = event.result.text, !value.isEmpty { text(value, false) }
                 }

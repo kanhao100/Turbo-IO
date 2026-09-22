@@ -8,6 +8,7 @@ struct RealtimeSubtitlesView: View {
     @EnvironmentObject private var latency: SubtitleLatencyDiagnostics
     @EnvironmentObject private var settings: SubtitleSettingsStore
     @EnvironmentObject private var archive: SubtitleArchiveStore
+    @EnvironmentObject private var alwaysOn: AlwaysOnRuntime
     @State private var page = 0
     @State private var showSettings = false
     @State private var showDisplayTest = false
@@ -18,17 +19,19 @@ struct RealtimeSubtitlesView: View {
                 VStack(alignment: .leading, spacing: 20) {
                     HStack {
                         VStack(alignment: .leading, spacing: 5) {
-                            Text("实时字幕").font(.largeTitle.bold()).foregroundStyle(Palette.ink)
-                            Text("听见当下，留住每一句").font(.subheadline).foregroundStyle(Palette.muted)
+                            Text("字幕").font(.largeTitle.bold()).foregroundStyle(Palette.ink)
+                            Text("实时查看，也可以全天只记文字").font(.subheadline).foregroundStyle(Palette.muted)
                         }
                         Spacer()
                         Button { showSettings = true } label: { Image(systemName: "slider.horizontal.3").font(.title2).padding(12).background(.white, in: Circle()) }
                             .accessibilityLabel("字幕设置").accessibilityIdentifier("realtime-settings")
                     }
                     Picker("字幕页面", selection: $page) {
-                        Text("正在转写").tag(0); Text("会话历史").tag(1)
+                        Text("实时字幕").tag(0); Text("全天智记").tag(1); Text("历史记录").tag(2)
                     }.pickerStyle(.segmented).accessibilityIdentifier("realtime-pages")
-                    if page == 0 { liveContent } else { historyContent }
+                    if page == 0 { liveContent }
+                    else if page == 1 { AlwaysOnView() }
+                    else { historyContent }
                 }.padding(20).padding(.bottom, 85)
             }.background(Palette.background.ignoresSafeArea())
                 .toolbar(.hidden, for: .navigationBar)
@@ -80,6 +83,11 @@ struct RealtimeSubtitlesView: View {
             }
             if runtime.canStop {
                 PrimaryButton(title: "停止并保存", icon: "stop.fill") { runtime.stop() }.accessibilityIdentifier("realtime-stop")
+            } else if alwaysOn.enabled {
+                PrimaryButton(title: "前往关闭全天智记", icon: "arrow.right.circle") { page = 1 }
+                    .accessibilityIdentifier("realtime-close-always-on")
+                Text("全天智记正在独占眼镜音频。关闭后再启动普通实时字幕；这里不会暗中抢占或改动永久设置。")
+                    .font(.caption).foregroundStyle(Palette.amber)
             } else if !settings.requirements.isEmpty {
                 PrimaryButton(title: "配置转写服务", icon: "key") { showSettings = true }.accessibilityIdentifier("realtime-configure")
             } else {

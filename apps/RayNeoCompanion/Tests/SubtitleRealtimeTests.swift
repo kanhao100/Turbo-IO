@@ -57,7 +57,7 @@ final class SubtitleRealtimeTests: XCTestCase {
         XCTAssertEqual(f.runtime.phase, .idle)
         XCTAssertFalse(f.device.subtitleOwnsDisplay)
     }
-    @MainActor func testShortcutPersistsAndSecondGlassesControlStopsWithoutPhoneConfirmation() async throws {
+    @MainActor func testShortcutPersistsAndSecondTypeOneStopsUsingCurrentSID() async throws {
         let f = fixture()
         f.feed(1, sid: "glasses-shortcut")
         XCTAssertTrue(f.device.sent.isEmpty)
@@ -69,11 +69,15 @@ final class SubtitleRealtimeTests: XCTestCase {
         XCTAssertEqual(try f.types(), [2,7])
         XCTAssertEqual(try f.sid(), "glasses-shortcut")
         XCTAssertEqual(f.provider.starts, 1)
-        f.feed(3, sid: "glasses-shortcut")
+        f.feed(1, sid: "duplicate-start") // Same physical tap duplicate is inside debounce.
+        XCTAssertEqual(f.runtime.phase, .openingDisplay)
+        f.clock.now += 2
+        f.feed(1, sid: "second-double-tap-new-sid")
         XCTAssertEqual(f.runtime.phase, .idle)
         XCTAssertFalse(f.device.subtitleOwnsDisplay)
         XCTAssertEqual(f.writer.finished?.state, .completed)
-        XCTAssertEqual(try f.types(), [2,7]) // A glasses stop is not echoed back.
+        XCTAssertEqual(try f.types(), [2,7,3])
+        XCTAssertEqual(try SubtitleTranslateWire.event(f.device.sent.last!).sid, "glasses-shortcut")
         let fresh = SubtitleRealtimeRuntime(voice: f.device, settings: f.settings, archive: f.archive, defaults: f.defaults, scheduleTimers: false)
         XCTAssertTrue(fresh.shortcutEnabled)
         fresh.setShortcut(false)
@@ -89,23 +93,27 @@ final class SubtitleRealtimeTests: XCTestCase {
         XCTAssertFalse(f.defaults.bool(forKey: "companion.realtimeSubtitles.exitPending.v1"))
         XCTAssertTrue(fresh.status.contains("自动清理"))
     }
-    @MainActor func testGlassesStartDuringPreviousSaveQueuesWithoutOpeningPhone() async throws {
+    @MainActor func testGlassesStartDuringSaveAndCooldownIsNotQueued() async throws {
         let f = fixture(); f.writer.deferFinish = true; f.runtime.setShortcut(true)
         let firstStarted = expectation(description: "first shortcut starts")
         f.runtime.onShortcutStart = { firstStarted.fulfill() }
         f.feed(1, sid: "first-shortcut")
         await fulfillment(of: [firstStarted], timeout: 3)
-        f.feed(3, sid: "first-shortcut")
+        f.clock.now += 2
+        f.feed(1, sid: "stop-shortcut")
         XCTAssertEqual(f.runtime.phase, .idle); XCTAssertTrue(f.runtime.saving)
-
-        let secondStarted = expectation(description: "queued shortcut starts after save")
-        f.runtime.onShortcutStart = { secondStarted.fulfill() }
         f.feed(1, sid: "second-shortcut")
-        XCTAssertTrue(f.runtime.status.contains("完成后自动启动"))
+        XCTAssertTrue(f.runtime.status.contains("保存") || f.runtime.status.contains("防抖"))
         f.writer.complete()
+        XCTAssertEqual(f.runtime.phase, .idle)
+        XCTAssertEqual(try f.types(), [2,7,3])
+        f.clock.now += 2
+        let secondStarted = expectation(description: "fresh shortcut starts after explicit later tap")
+        f.runtime.onShortcutStart = { secondStarted.fulfill() }
+        f.feed(1, sid: "fresh-shortcut")
         await fulfillment(of: [secondStarted], timeout: 3)
         XCTAssertEqual(f.runtime.phase, .openingDisplay)
-        XCTAssertEqual(try f.types(), [2,7,2,7])
+        XCTAssertEqual(try f.types(), [2,7,3,2,7])
         f.writer.deferFinish = false
     }
     @MainActor func testLatencyExperimentReceivesRealRuntimeBoundaries() async throws {
@@ -215,6 +223,7 @@ final class SubtitleRealtimeTests: XCTestCase {
             let provider=provider
             settings=SubtitleSettingsStore(defaults:defaults,credentials:vault,allowsChanges:true,factory:{_ in provider})
             var options=CaptionOptions();options.service=service;options.region="eastus";options.aliyunHost="workspace-a.cn-beijing.maas.aliyuncs.com";options.recordAudio=true
+            options.selfHostedEndpoint="wss://asr.example.com/compat/openai/v1/realtime"
             XCTAssertTrue(settings.save(options,key:"synthetic-test-only"))
             archive=SubtitleArchiveStore(root:FileManager.default.temporaryDirectory.appendingPathComponent(name))
             let decoder=decoder,writer=writer,clock=clock

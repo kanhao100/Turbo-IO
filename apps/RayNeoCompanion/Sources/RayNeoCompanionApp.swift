@@ -21,6 +21,8 @@ struct RayNeoCompanionApp: App {
                 .environmentObject(store.realtimeSubtitles)
                 .environmentObject(store.subtitleSettings)
                 .environmentObject(store.subtitleArchive)
+                .environmentObject(store.alwaysOn)
+                .environmentObject(store.alwaysOnArchive)
                 .environmentObject(store.subtitlePlayback)
                 .environmentObject(store.realtimeSubtitles.latency)
                 .environmentObject(store.notifications)
@@ -96,6 +98,7 @@ struct RootView: View {
             // glasses shortcuts must not depend on the user first opening the subtitles tab.
             store.features.prepare()
             store.realtimeSubtitles.prepare()
+            store.alwaysOn.prepare()
             let arguments = ProcessInfo.processInfo.arguments
             if let index = arguments.firstIndex(of: "--ui-tab"), arguments.indices.contains(index + 1) {
                 store.selectedTab = Int(arguments[index + 1]) ?? 0

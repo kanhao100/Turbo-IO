@@ -9,16 +9,20 @@ struct SubtitleSettingsView: View {
     @EnvironmentObject private var latency: SubtitleLatencyDiagnostics
     @EnvironmentObject private var features: CompanionDeviceFeatures
     @EnvironmentObject private var voice: CompanionVoiceRuntime
+    @EnvironmentObject private var alwaysOn: AlwaysOnRuntime
     @State private var draft = CaptionOptions()
     @State private var key = ""
     @State private var saved = false
-    private var busy: Bool { runtime.active || runtime.saving || voice.enabled || voice.subtitleOwnsDisplay }
+    @State private var confirmApply = false
+    private var busy: Bool {
+        runtime.active || runtime.saving || voice.enabled || (voice.subtitleOwnsDisplay && !alwaysOn.activeTask)
+    }
     var body: some View {
         NavigationStack {
             Form {
                 Section {
                     Label("字幕只需要转写服务", systemImage: "captions.bubble").font(.headline)
-                    Text("选用一家服务即可。密钥留在本机钥匙串，音频只发送给当前所选服务；不需要 DeepSeek，也不生成 AI 回答。")
+                    Text("选用一家服务即可。密钥留在本机钥匙串，音频只发送给当前所选服务；不需要 DeepSeek，也不生成 AI 回答。普通字幕仅在每次启动后上传；永久开启全天智记后，会在眼镜任务期间持续上传用于转写。")
                         .font(.subheadline).foregroundStyle(.secondary)
                 }
                 Section("转写服务") {
@@ -43,6 +47,13 @@ struct SubtitleSettingsView: View {
                         Text("北京与新加坡的 Workspace、API Key 和模型权限彼此隔离。请粘贴控制台显示的完整 Host，并使用同一地域创建的 Key。")
                             .font(.caption).foregroundStyle(.secondary)
                     }
+                    if draft.service == .selfHostedQwen {
+                        TextField("wss://example.com/compat/openai/v1/realtime", text: $draft.selfHostedEndpoint)
+                            .textInputAutocapitalization(.never).autocorrectionDisabled()
+
+                        Text("填写完整 WSS Realtime 地址。Key 只发送到这个地址，重定向会被拒绝；该可选端点仅在你主动选中时使用。当前按 1 秒 PCM 窗口提交，不保存音频。")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
                     Picker("识别语言", selection: $draft.language) {
                         Text("中文").tag("zh-CN"); Text("English · UK").tag("en-GB"); Text("English · US").tag("en-US")
                     }
@@ -56,7 +67,11 @@ struct SubtitleSettingsView: View {
                     Picker("单次时长上限", selection: $draft.maximumSeconds) {
                         Text("30 分钟").tag(1800); Text("60 分钟").tag(3600); Text("120 分钟").tag(7200)
                     }
-                    Button("保存字幕设置") { draft.idleSeconds = 0; saved = settings.save(draft, key: key); if saved { key = "" } }
+                    Button("保存字幕设置") {
+                        draft.idleSeconds = 0
+                        if alwaysOn.activeTask { confirmApply = true }
+                        else { saved = settings.save(draft, key: key); if saved { key = "" } }
+                    }
                         .accessibilityIdentifier("subtitle-save-settings")
                     if saved { Text("已保存；不会自动开始收音。之后从手机或眼镜启动时不再二次确认。") .font(.caption).foregroundStyle(Palette.green) }
                     if let error = settings.error { Text(error).font(.caption).foregroundStyle(Palette.amber) }
@@ -79,7 +94,7 @@ struct SubtitleSettingsView: View {
                         .font(.caption).foregroundStyle(.secondary)
                     Button("恢复原来的双击操作") { runtime.setShortcut(false); features.setDoubleTapSubtitles(false) }
                         .disabled(!voice.ready || busy)
-                }
+                }.disabled(alwaysOn.enabled)
                 Section("实验：延迟诊断") {
                     Toggle("记录分阶段延迟（永久记住）", isOn: Binding(
                         get: { latency.enabled },
@@ -101,6 +116,16 @@ struct SubtitleSettingsView: View {
             .onAppear { draft = settings.options; settings.refresh() }
             .onChange(of: draft.service) { _ in key = ""; saved = false }
             .onChange(of: draft.aliyunModel) { _ in saved = false }
+            .confirmationDialog("全天智记正在运行，何时应用新服务设置？", isPresented: $confirmApply) {
+                Button("立即应用并重连 ASR") { applyAlwaysOn(.immediately) }
+                Button("下一次眼镜语音任务生效") { applyAlwaysOn(.nextTask) }
+                Button("取消", role: .cancel) {}
+            } message: { Text("立即应用不会重启眼镜采音，但 ASR 重连期间可能产生短暂缺口。") }
         }
+    }
+
+    private func applyAlwaysOn(_ policy: AlwaysOnApplyPolicy) {
+        saved = alwaysOn.applySpeechSettings(draft, key: key, policy: policy)
+        if saved { key = "" }
     }
 }
