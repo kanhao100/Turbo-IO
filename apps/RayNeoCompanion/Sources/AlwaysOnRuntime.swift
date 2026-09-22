@@ -261,7 +261,7 @@ private struct AlwaysOnActiveMarker: Codable {
         var candidate = draft; candidate.languageMode = languageMode; candidate.recordAudio = false
         do { _ = try candidate.validated() }
         catch {
-            error = candidate.service == .deepgram && languageMode == .automatic
+            self.error = candidate.service == .deepgram && languageMode == .automatic
                 ? "Deepgram 与自动检测不能组合；请选择固定语言。" : "转写设置不完整。"
             return false
         }
@@ -639,7 +639,7 @@ private struct AlwaysOnActiveMarker: Codable {
         catch {
             preferences.enabled = false; enabled = false; persistPreferences()
             phase = .error; status = "全天智记因本机文字存储不可用而暂停"
-            error = "无法写入上次 App 中断记录；已停止自动恢复，请检查本机存储。"
+            self.error = "无法写入上次 App 中断记录；已停止自动恢复，请检查本机存储。"
         }
     }
 
