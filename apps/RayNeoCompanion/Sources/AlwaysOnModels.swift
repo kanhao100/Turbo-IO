@@ -202,7 +202,10 @@ enum AlwaysOnArchiveError: Error { case invalidDay, invalidEntry, corruptArchive
             includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
             .filter { $0.lastPathComponent.hasPrefix("entries-") && $0.pathExtension == "jsonl" }
             .sorted { $0.lastPathComponent < $1.lastPathComponent }
-        guard files.count <= 512 else { throw AlwaysOnArchiveError.limit }
+        // A 30-second idle timeout can create far more than 512 A1 tasks in
+        // one day. Keep a high defensive ceiling without breaking normal
+        // all-day use or making old days unreadable after many short tasks.
+        guard files.count <= 8_192 else { throw AlwaysOnArchiveError.limit }
         let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
         var result: [AlwaysOnTranscriptEntry] = []
         for file in files {

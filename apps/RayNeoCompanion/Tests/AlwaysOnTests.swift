@@ -307,6 +307,20 @@ import RayNeoCaptions
         await f.archive.delete(day: day); XCTAssertTrue(f.archive.days.isEmpty)
     }
 
+    func testMoreThanFiveHundredShortTasksRemainReadable() async throws {
+        let f = fixture(), run = UUID(), now = f.clock.date
+        try f.archive.append(AlwaysOnTranscriptEntry(timestamp: now, runID: run, kind: .final,
+            text: "许多短任务后仍可读取", service: "fixture", model: "fixture", languageMode: .automatic))
+        let day = f.archive.dayKey(for: now)
+        let directory = f.root.appendingPathComponent(day, isDirectory: true)
+        for _ in 0..<512 {
+            let file = directory.appendingPathComponent("entries-\(UUID().uuidString.lowercased()).jsonl")
+            XCTAssertTrue(FileManager.default.createFile(atPath: file.path, contents: Data()))
+        }
+        let entries = try await f.archive.entries(for: day)
+        XCTAssertEqual(entries.map(\.text), ["许多短任务后仍可读取"])
+    }
+
     private func fixture(date: Date = Date(), timeZone: TimeZone = .autoupdatingCurrent) -> Fixture {
         Fixture(date: date, timeZone: timeZone)
     }
