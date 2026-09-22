@@ -150,12 +150,12 @@ private struct AlwaysOnActiveMarker: Codable {
            let restored = try? JSONDecoder().decode(AlwaysOnSettings.self, from: data) {
             preferences = restored
         } else { preferences = AlwaysOnSettings() }
+        presenter = LensCaptionPresenter(currentDevice: device, claimDisplay: claimDisplay,
+            send: sendSubtitle, uptime: uptime)
         enabled = preferences.enabled; showOnGlasses = preferences.showOnGlasses
         languageMode = preferences.languageMode
         phase = enabled ? .waitingForDevice : .disabled
         status = enabled ? "已记住全天智记，等待同一副眼镜连接" : "全天智记尚未开启"
-        presenter = LensCaptionPresenter(currentDevice: device, claimDisplay: claimDisplay,
-            send: sendSubtitle, uptime: uptime)
         presenter.onFailure = { [weak self] message in self?.note(message); self?.error = message }
         refreshLegacyDiagnostics()
         recoverInterruptedRun()
