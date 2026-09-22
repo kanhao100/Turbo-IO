@@ -17,7 +17,9 @@ final class CoreMessageReceiver: RNMessageDelegate {
     var onMetadata: ((String) -> Void)?
     var onVoiceEnvelope: ((String, BusinessEnvelopeMetadata, Data?, TimeInterval) -> Void)?
     var onBusinessEnvelope: ((String, UInt8, Data) -> Void)?
+    var onSubtitleEnvelope: ((String, Data, TimeInterval) -> Void)?
     var onBusinessLoss: (() -> Void)?
+    var onSubtitleLoss: (() -> Void)?
     var onSubtitleSendError: ((String, Data, Int) -> Void)?
     private let businessSlots = DispatchSemaphore(value: 128)
     private var businessLossQueued = false
@@ -32,7 +34,19 @@ final class CoreMessageReceiver: RNMessageDelegate {
         }
     }
     private let audioSlots = DispatchSemaphore(value:32)
+    private let subtitleSlots = DispatchSemaphore(value: 32)
     private let lock = NSLock()
+    private var subtitleLossQueued = false
+    private func reportSubtitleLoss() {
+        lock.lock()
+        guard !subtitleLossQueued else { lock.unlock(); return }
+        subtitleLossQueued = true; lock.unlock()
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.lock.lock(); self.subtitleLossQueued = false; self.lock.unlock()
+            self.onSubtitleLoss?()
+        }
+    }
     private var counts: [String:Int] = [:]
     private func emit(_ text: String) {
         DispatchQueue.main.async { [weak self] in self?.onMetadata?(text) }
@@ -53,6 +67,15 @@ final class CoreMessageReceiver: RNMessageDelegate {
                     self?.onBusinessEnvelope?(id, business, forwarded)
                 }
             } else { reportBusinessLoss() }
+        }
+        if business == 19, onSubtitleEnvelope != nil {
+            if payload.count <= 8192, subtitleSlots.wait(timeout: .now()) == .success {
+                let id = handle.deviceID(), arrival = ProcessInfo.processInfo.systemUptime, slots = subtitleSlots
+                DispatchQueue.main.async { [weak self] in
+                    defer { slots.signal() }
+                    self?.onSubtitleEnvelope?(id, payload, arrival)
+                }
+            } else { reportSubtitleLoss() }
         }
         if business == 13, !alwaysOn, let metadata {
             let deviceID = handle.deviceID()

@@ -1,4 +1,4 @@
-name: iOS subtitle display test
+name: iOS realtime subtitles
 
 on:
   pull_request:
@@ -33,6 +33,9 @@ jobs:
 
       - name: Test glasses protocol
         run: swift test --package-path rayneo-protocol
+
+      - name: Test ASR adapters and subtitle storage
+        run: swift test --package-path rayneo-captions
 
       - name: Install XcodeGen
         run: brew install xcodegen
@@ -82,9 +85,10 @@ jobs:
           build
 
       - name: Package unsigned IPA
+        id: package
         run: |
           APP="apps/RayNeoCompanion/build-subtitle-device/Build/Products/Debug-iphoneos/RayNeoCompanion.app"
-          OUTPUT="apps/RayNeoCompanion/ipa-subtitle-display"
+          OUTPUT="apps/RayNeoCompanion/ipa-realtime-subtitles"
 
           test -d "$APP"
           test -f "$APP/RayNeoCompanion"
@@ -92,28 +96,33 @@ jobs:
           test "$IPA_PLATFORM" = "iPhoneOS"
           IPA_VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Info.plist")
           IPA_BUILD=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Info.plist")
-          test "$IPA_VERSION" = "0.2.1"
-          test "$IPA_BUILD" = "5"
+          test "$IPA_VERSION" = "0.3.5"
+          test "$IPA_BUILD" = "11"
+          IPA_NAME="TurboIO-realtime-subtitles-v${IPA_VERSION}-build${IPA_BUILD}-unsigned.ipa"
+          IPA_PATH="$OUTPUT/$IPA_NAME"
 
           rm -rf "$OUTPUT"
           mkdir -p "$OUTPUT/Payload"
           cp -R "$APP" "$OUTPUT/Payload/"
           /usr/bin/ditto -c -k --sequesterRsrc --keepParent \
-            "$OUTPUT/Payload" "$OUTPUT/TurboIO-subtitle-display-unsigned.ipa"
-          shasum -a 256 "$OUTPUT/TurboIO-subtitle-display-unsigned.ipa" | tee "$OUTPUT/SHA256SUMS.txt"
+            "$OUTPUT/Payload" "$IPA_PATH"
+          shasum -a 256 "$IPA_PATH" | tee "$OUTPUT/SHA256SUMS.txt"
+          echo "ipa_path=$IPA_PATH" >> "$GITHUB_OUTPUT"
+          echo "artifact_name=TurboIO-realtime-subtitles-v${IPA_VERSION}-build${IPA_BUILD}-unsigned-ipa" >> "$GITHUB_OUTPUT"
 
           {
             echo "Unsigned iPhoneOS IPA"
             echo "Version: $IPA_VERSION ($IPA_BUILD)"
+            echo "Filename: $IPA_NAME"
             echo "Source commit: $GITHUB_SHA"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload unsigned IPA
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: TurboIO-subtitle-display-unsigned-ipa
+          name: ${{ steps.package.outputs.artifact_name }}
           path: |
-            apps/RayNeoCompanion/ipa-subtitle-display/TurboIO-subtitle-display-unsigned.ipa
-            apps/RayNeoCompanion/ipa-subtitle-display/SHA256SUMS.txt
+            ${{ steps.package.outputs.ipa_path }}
+            apps/RayNeoCompanion/ipa-realtime-subtitles/SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 7

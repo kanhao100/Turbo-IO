@@ -3,6 +3,7 @@ import Combine
 import RayNeoDisplay
 import RayNeoProtocol
 import UIKit
+import CryptoKit
 
 @MainActor final class CompanionDeviceFeatures: ObservableObject {
     @Published private(set) var status = "连接后可使用眼镜功能；未自动开始采音"
@@ -19,6 +20,12 @@ import UIKit
     @Published private(set) var recoveryBusy = false
     @Published private(set) var recoveryStatus = "仅扫描本机，不访问眼镜。"
     @Published var error: String?
+    @Published private(set) var subtitleShortcutStatus = "先读取眼镜设置，再配置双击字幕"
+    private var crownReadAt = Date.distantPast
+    var doubleTapIsSubtitle: Bool {
+        let crown = settings["crownConfig"] as? [String: Any] ?? settings["crown_config"] as? [String: Any]
+        return DeviceBusinessWire.integer(crown ?? [:], "double") == 4
+    }
     let voice: CompanionVoiceRuntime
     private weak var store: CompanionStore?
     private let inbox: GlassesRecordingInbox
@@ -36,7 +43,13 @@ import UIKit
         self.voice = voice; self.store = store; inbox = GlassesRecordingInbox(root: root)
         voice.onBusiness = { [weak self] in self?.receive(device: $0, business: $1, data: $2) }
         voice.onBusinessLoss = { [weak self] in self?.lostMessages(); self?.store?.alwaysOn.lostMessages(); self?.store?.subtitleDisplay.lostMessages() }
-        voice.onSubtitleSendError = { [weak self] in self?.store?.subtitleDisplay.transportFailed(device: $0, packet: $1, code: $2) }
+        voice.onSubtitleLoss = { [weak self] in self?.store?.realtimeSubtitles.inputLost() }
+        voice.onSubtitleSendError = { [weak self] in
+            self?.store?.subtitleDisplay.transportFailed(device: $0, packet: $1, code: $2)
+            self?.store?.realtimeSubtitles.transportFailed(device: $0, packet: $1, code: $2)
+            self?.store?.alwaysOn.displayTransportFailed(device: $0, packet: $1, code: $2)
+        }
+        voice.onSubtitleEnvelope = { [weak self] in self?.store?.realtimeSubtitles.receive(device: $0, packet: $1, arrival: $2) }
         // One automatic weather owner. Legacy Weatherstack stays manual to avoid overwrites.
         voice.onRuntimeRefresh = { [weak self] in self?.store?.qweather.tick() }
         voice.featureIsBusy = { [weak self] in self?.recordingID != nil || self?.teleprompterID != nil || self?.store?.alwaysOn.occupied == true }
@@ -46,11 +59,23 @@ import UIKit
             self.store?.headControlTest.connectionChanged()
             self.store?.alwaysOn.connectionChanged()
             self.store?.subtitleDisplay.connectionChanged()
+            self.store?.realtimeSubtitles.connectionChanged()
             self.pendingSettings.removeAll(); self.settings = [:]; self.battery = nil; self.brightness = nil
+            self.crownReadAt = .distantPast
             if self.recordingID != nil { self.recordingStatus = device == self.captureDevice ? "连接恢复；等待同一录音状态/数据，不自动宣布补传完成" : "连接中断；原始录音保留，等待同一眼镜恢复" }
             if self.teleprompterID != nil, device != self.teleprompterDevice {
                 self.teleprompterPrepared = false
                 self.teleprompterStatus = "提词连接中断；停止自动操作，请恢复连接后退出并重新准备"
+            }
+            if device != nil, self.store?.realtimeSubtitles.shortcutEnabled == true {
+                self.subtitleShortcutStatus = "永久双击字幕已开启，正在核对眼镜快捷键"
+                // Wait for the authenticated connection callback to unwind before asking for
+                // the complete settings object. Never reconstruct or overwrite unknown fields.
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, self.voice.deviceID == device,
+                          self.store?.realtimeSubtitles.shortcutEnabled == true else { return }
+                    self.refreshSettings()
+                }
             }
         }
         for (name, foreground) in [(UIApplication.didEnterBackgroundNotification,false),(UIApplication.didBecomeActiveNotification,true)] {
@@ -112,7 +137,11 @@ import UIKit
     }
     func receive(device: String, business: UInt8, data: Data) {
         guard voice.deviceID == device else { return }
-        if business == 19 { store?.subtitleDisplay.receive(device: device, packet: data); return }
+        if business == 19 {
+            store?.alwaysOn.receive(device: device, business: business, packet: data)
+            store?.subtitleDisplay.receive(device: device, packet: data)
+            return
+        }
         if business == 13 || business == 15 { store?.alwaysOn.receive(device: device, business: business, packet: data) }
         do {
             let wire = try DeviceBusinessWire(data)
@@ -316,6 +345,25 @@ import UIKit
               let long = DeviceBusinessWire.integer(crown,"longPress") else { error = "请先读取完整旋钮设置，避免覆盖原长按配置。"; return }
         perform { let body = try JSONSerialization.data(withJSONObject:["double":todo ? 8:0,"longPress":long]); try submitCommand(type:5,cmd:"crown_config",value:0,mode:0,data:String(decoding:body,as:UTF8.self)) }
     }
+    func setDoubleTapSubtitles(_ enabled: Bool) {
+        guard let device = voice.deviceID, Date().timeIntervalSince(crownReadAt) < 60,
+              let crown = settings["crownConfig"] as? [String:Any] ?? settings["crown_config"] as? [String:Any],
+              let original = DeviceBusinessWire.integer(crown, "double") else {
+            error = "请先读取眼镜完整旋钮设置（60 秒内有效），保留其他按键配置。"; return
+        }
+        let scope = SHA256.hash(data: Data(device.utf8)).map { String(format: "%02x", $0) }.joined()
+        let backup = "companion.realtimeSubtitles.previousDoubleTap." + scope
+        let old = (UserDefaults.standard.object(forKey: backup) as? NSNumber)?.intValue
+        guard enabled || old != nil else { error = "没有本 App 保存的旧快捷键；请在设备设置中自行选择。"; return }
+        perform {
+            let changed = try SubtitleShortcut.replacingDouble(in: crown, with: enabled ? 4 : old!)
+            let body = try JSONSerialization.data(withJSONObject: changed)
+            if enabled, original != 4, old == nil { UserDefaults.standard.set(Int(original), forKey: backup) }
+            try submitCommand(type: 5, cmd: "crown_config", value: 0, mode: 0, data: String(decoding: body, as: UTF8.self))
+            crownReadAt = .distantPast
+            subtitleShortcutStatus = "设置已提交，请再次读取设置确认；不会覆盖长按或其他字段。"
+        }
+    }
     func setDisplay(height: Int? = nil, distance: Int? = nil) {
         guard let config = settings["displayConfig"] as? [String:Any] ?? settings["display_config"] as? [String:Any],
               let oldHeight = DeviceBusinessWire.integer(config,"height"), let oldDistance = DeviceBusinessWire.integer(config,"distance"),
@@ -361,7 +409,16 @@ import UIKit
             if let n = DeviceBusinessWire.integer(state,"battery") { battery = Int(n) }
             if let n = DeviceBusinessWire.integer(state,"brightness") { brightness = Int(n) }
         }
-        if wire.type == 4 { settings = j["generalSettings"] as? [String:Any] ?? j; status = "眼镜通用设置已收到" }
+        if wire.type == 4 {
+            settings = j["generalSettings"] as? [String:Any] ?? j; status = "眼镜通用设置已收到"
+            crownReadAt = Date()
+            if store?.realtimeSubtitles.shortcutEnabled == true, !doubleTapIsSubtitle {
+                subtitleShortcutStatus = "检测到双击映射丢失，正在自动恢复字幕"
+                setDoubleTapSubtitles(true)
+            } else {
+                subtitleShortcutStatus = doubleTapIsSubtitle ? "眼镜回读：双击已设置为字幕（永久）" : "眼镜回读：双击当前不是字幕"
+            }
+        }
         guard let cmd = j["cmd"] as? String, let p = j["payload"] as? [String:Any] else { return }
         if wire.type == 3, cmd == "brightness_change", let n = DeviceBusinessWire.integer(p,"value") { brightness = Int(n) }
         if [3,6,17,19].contains(wire.type) {
@@ -369,6 +426,9 @@ import UIKit
                let config = try? JSONSerialization.jsonObject(with:bytes) as? [String:Any],
                let key = ["display_config":"displayConfig","crown_config":"crownConfig","privacy_config":"privacyConfig"][cmd] {
                 settings[key] = config
+                if cmd == "crown_config" {
+                    subtitleShortcutStatus = doubleTapIsSubtitle ? "眼镜已确认：双击永久设为字幕" : "眼镜回报：双击不是字幕"
+                }
             }
             pendingSettings.removeValue(forKey:cmd)
             status = "眼镜回报 \(cmd.prefix(45))：\(DeviceBusinessWire.integer(p,"value") ?? -1)（未验证镜片效果）"

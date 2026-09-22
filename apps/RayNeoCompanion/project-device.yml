@@ -9,6 +9,11 @@ settings:
     DEVELOPMENT_TEAM: ""
     CODE_SIGN_STYLE: Automatic
 packages:
+  AzureSpeech:
+    url: https://github.com/microsoft/speech-sdk-spm
+    revision: 253f49a30de749996e142ccee573da9a431a034f
+  RayNeoCaptions:
+    path: ../../rayneo-captions
   ZIPFoundation:
     path: ../../third-party/ZIPFoundation
   RayNeoProtocol:
@@ -29,7 +34,9 @@ targets:
       - Sources
       - ../../core-probe/Sources/VoiceToolCallAccumulator.swift
       - ../../core-probe/Sources/CloudASRHostSettings.swift
+      - ../../core-probe/Sources/AliyunSpeechSession.swift
     dependencies:
+      - package: RayNeoCaptions
       - package: ZIPFoundation
       - package: RayNeoProtocol
       - package: RayNeoDisplay
@@ -49,8 +56,8 @@ targets:
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: UIInterfaceOrientationPortrait
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
         TARGETED_DEVICE_FAMILY: "1,2"
-        MARKETING_VERSION: "0.2.1"
-        CURRENT_PROJECT_VERSION: "5"
+        MARKETING_VERSION: "0.3.5"
+        CURRENT_PROJECT_VERSION: "11"
     info:
       path: Generated/Companion-Info.plist
       properties:
@@ -101,6 +108,9 @@ targets:
       - path: ../../core-probe/Vendor/opus-1.5.2/COPYING
         buildPhase: resources
     dependencies:
+      - package: RayNeoCaptions
+      - package: AzureSpeech
+        product: MicrosoftCognitiveServicesSpeech-iOS
       - package: RayNeoSession
       - package: RayNeoArchive
       - package: RayNeoAudioContainer
@@ -135,8 +145,8 @@ targets:
         OTHER_LDFLAGS: "$(inherited) $(SRCROOT)/../../core-probe/Vendor/opus-ios/libopus.a"
         LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/Frameworks"
         TARGETED_DEVICE_FAMILY: "1"
-        MARKETING_VERSION: "0.2.1"
-        CURRENT_PROJECT_VERSION: "5"
+        MARKETING_VERSION: "0.3.5"
+        CURRENT_PROJECT_VERSION: "11"
     info:
       path: Generated/CompanionDevice-Info.plist
       properties:

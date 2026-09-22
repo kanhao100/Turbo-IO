@@ -56,7 +56,9 @@ final class ProbeController: UIViewController, CBCentralManagerDelegate, StreamD
     var companionTranscript: ((UUID,String,Bool) -> Void)?
     var companionLog: ((String) -> Void)?
     var companionBusiness: ((String, UInt8, Data) -> Void)?
+    var companionSubtitleEnvelope: ((String, Data, TimeInterval) -> Void)?
     var companionBusinessLoss: (() -> Void)?
+    var companionSubtitleLoss: (() -> Void)?
     var companionSubtitleSendError: ((String, Data, Int) -> Void)?
     private(set) var companionSubtitleOwnsDisplay = false
     func companionOwnDisplayForSubtitles(_ owns: Bool) {
@@ -71,6 +73,15 @@ final class ProbeController: UIViewController, CBCentralManagerDelegate, StreamD
         try core.sendMessage(MessageFactory.make(payload: payload, deviceID: target,
             business: .aiSubtitle, messageID: UUID().uuidString))
         DisplayObservation.shared.packet(payload, business: SubtitleDisplayWire.business, inbound: false)
+    }
+    func companionSendRealtimeSubtitle(target: String, payload: Data) throws {
+        guard companionSubtitleOwnsDisplay, companionDeviceID == target, let core else {
+            throw NSError(domain: "CompanionSubtitleConnection", code: 1)
+        }
+        try SubtitleTranslateWire.validateOutbound(payload)
+        try core.sendMessage(MessageFactory.make(payload: payload, deviceID: target,
+            business: .aiSubtitle, messageID: UUID().uuidString))
+        DisplayObservation.shared.packet(payload, business: 19, inbound: false)
     }
     var companionDeviceID: String? { companionReady ? core?.linkedDevices()?.first?.deviceID() : nil }
     func companionSendFile(_ url: URL, id: String) throws -> String {
@@ -432,7 +443,12 @@ final class ProbeController: UIViewController, CBCentralManagerDelegate, StreamD
                 DisplayObservation.shared.packet(payload,business:business,inbound:true)
                 self.companionBusiness?(id, business, payload)
             }
+            receiver.onSubtitleEnvelope = { [weak self] id, packet, arrival in
+                guard let self, self.companionDeviceID == id else { return }
+                self.companionSubtitleEnvelope?(id, packet, arrival)
+            }
             receiver.onBusinessLoss = { [weak self] in DisplayObservation.shared.loss(); self?.companionBusinessLoss?() }
+            receiver.onSubtitleLoss = { [weak self] in DisplayObservation.shared.loss(); self?.companionSubtitleLoss?() }
             receiver.onSubtitleSendError = { [weak self] in self?.companionSubtitleSendError?($0, $1, $2) }
             #endif
             receiver.onVoiceEnvelope = { [weak self] deviceID, metadata, audio, arrival in

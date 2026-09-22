@@ -111,6 +111,15 @@ final class CompanionStore: ObservableObject {
     let timeline: ConversationTimeline
     let voice: CompanionVoiceRuntime
     let codex: CodexCompanion
+    let subtitleSettings: SubtitleSettingsStore
+    let subtitleArchive: SubtitleArchiveStore
+    let alwaysOnArchive: AlwaysOnTranscriptArchive
+    lazy var realtimeSubtitles: SubtitleRealtimeRuntime = {
+        let runtime = SubtitleRealtimeRuntime(voice: voice, settings: subtitleSettings, archive: subtitleArchive, defaults: defaults)
+        runtime.onShortcutStart = { [weak self] in self?.subtitlePlayback.stop(); self?.selectedTab = 4 }
+        return runtime
+    }()
+    lazy var subtitlePlayback = SubtitleAudioPlayback()
     lazy var subtitleDisplay = SubtitleDisplayRuntime(
         device: { [weak self] in self?.voice.deviceID },
         available: { [weak self] in
@@ -122,18 +131,24 @@ final class CompanionStore: ObservableObject {
             guard let self else { throw DeviceFeatureError.disconnected }
             try self.voice.sendSubtitle(target: target, payload: packet)
         })
-    lazy var alwaysOn = AlwaysOnLocalProbe(defaults: defaults,
-        root: customRecordingRoot?.deletingLastPathComponent().appendingPathComponent("AlwaysOnLocalProbeV1")
-            ?? FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("AlwaysOnLocalProbeV1"),
+    lazy var alwaysOn = AlwaysOnRuntime(defaults: defaults, archive: alwaysOnArchive, settings: subtitleSettings,
         device: { [weak self] in self?.voice.deviceID },
+        supportsDevice: { [weak self] in self?.voice.supportsDevice == true },
         available: { [weak self] in
             guard let self else { return false }
-            return self.features.canControl && self.features.recordingID == nil && self.features.teleprompterID == nil
+            return self.voice.ready && !self.voice.subtitleOwnsDisplay && !self.realtimeSubtitles.active &&
+                !self.subtitleDisplay.occupied && self.features.recordingID == nil &&
+                self.features.teleprompterID == nil && !["recording", "processing", "displaying"].contains(self.voice.phase)
         }, suspendVoice: { [weak self] in self?.voice.stop() },
-        send: { [weak self] business, packet in
+        claimDisplay: { [weak self] in self?.voice.ownDisplayForSubtitles($0) },
+        sendBusiness: { [weak self] business, packet in
             guard let self else { throw DeviceFeatureError.disconnected }
             try self.voice.sendBusiness(business, payload: packet)
-        })
+        }, sendSubtitle: { [weak self] target, packet in
+            guard let self else { throw DeviceFeatureError.disconnected }
+            try self.voice.sendSubtitle(target: target, payload: packet)
+        }, legacyDiagnosticsRoot: customRecordingRoot?.deletingLastPathComponent()
+            .appendingPathComponent("AlwaysOnLocalProbeV1", isDirectory: true))
     lazy var codexPush = CodexPush(codex: codex, defaults: defaults,
         canDeliver: { [weak self] in
             guard let self else { return false }
@@ -194,6 +209,9 @@ final class CompanionStore: ObservableObject {
         self.customRecordingRoot = recordingRoot
         timeline = ConversationTimeline(root: archiveRoot?.deletingLastPathComponent().appendingPathComponent("ConversationTimelineV1"))
         voice = CompanionVoiceRuntime(timeline: timeline)
+        subtitleSettings = SubtitleSettingsStore(defaults: defaults)
+        subtitleArchive = SubtitleArchiveStore(root: archiveRoot?.deletingLastPathComponent().appendingPathComponent("RealtimeSubtitlesV1"))
+        alwaysOnArchive = AlwaysOnTranscriptArchive(root: archiveRoot?.deletingLastPathComponent().appendingPathComponent("AlwaysOnTranscriptsV1"))
         codex = CodexCompanion(defaults: defaults)
         voice.codex = codex
         books = BookLibrary(root: archiveRoot?.deletingLastPathComponent().appendingPathComponent("ReadingLibraryV1"), allowsTestFixture: allowsBookTestFixture)

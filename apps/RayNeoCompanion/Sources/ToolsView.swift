@@ -9,9 +9,6 @@ struct ToolsView: View {
             NavigationLink { DisplayObserverView() } label: {
                 Card { FeatureRow(icon: "eyeglasses", title: "显示观察", subtitle: "USB · 页面回报与发送文字 · 非截图", status: "只读") }
             }.buttonStyle(.plain).accessibilityIdentifier("display-observer-entry")
-            NavigationLink { AlwaysOnLocalProbeView(probe: store.alwaysOn) } label: {
-                Card { FeatureRow(icon: "waveform.path", title: "全天智记", subtitle: "仅音频 · 30秒本地协议测试", status: "实验") }
-            }.buttonStyle(.plain).accessibilityIdentifier("always-on-entry")
             NavigationLink { ModelToolsView() } label: {
                 Card { FeatureRow(icon: "wrench.and.screwdriver", title: "AI Tools", subtitle: "模型工具 · 参数 · 可用条件", status: "查看") }
             }.buttonStyle(.plain).accessibilityIdentifier("model-tools-entry")
