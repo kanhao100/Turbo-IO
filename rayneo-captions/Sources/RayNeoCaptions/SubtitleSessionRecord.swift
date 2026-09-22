@@ -8,6 +8,7 @@ public struct SubtitleSessionRecord: Codable, Identifiable, Equatable {
     public let createdAt: Date
     public var endedAt: Date?
     public let service: CaptionService
+    public let model: String?
     public let language: String
     public let savesAudio: Bool
     public var state: State = .active
@@ -19,11 +20,12 @@ public struct SubtitleSessionRecord: Codable, Identifiable, Equatable {
     public var audioSeconds: TimeInterval { Double(receivedPCMBytes) / 32_000 }
     public init(id: UUID = UUID(), title: String, createdAt: Date = Date(), options: CaptionOptions) {
         version = 1; self.id = id; self.title = title; self.createdAt = createdAt
-        service = options.service; language = options.language; savesAudio = options.recordAudio
+        service = options.service; model = options.selectedModel
+        language = options.language; savesAudio = options.recordAudio
     }
     public func write(to directory: URL) throws {
         guard directory.lastPathComponent == id.uuidString, title.count <= 120,
-              endReason.utf8.count <= 2048 else { throw CaptionFailure.corruptArchive }
+              endReason.utf8.count <= 2048, (model?.utf8.count ?? 0) <= 128 else { throw CaptionFailure.corruptArchive }
         let data = try JSONEncoder().encode(self)
         #if os(iOS)
         try data.write(to: directory.appendingPathComponent("session.json"), options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
@@ -41,7 +43,7 @@ public struct SubtitleSessionRecord: Codable, Identifiable, Equatable {
         let record = try JSONDecoder().decode(Self.self, from: Data(contentsOf: file))
         guard record.version == 1, record.id.uuidString == directory.lastPathComponent,
               record.receivedPCMBytes >= 0, record.finalSentences >= 0, record.gaps >= 0,
-              record.title.count <= 120 else { throw CaptionFailure.corruptArchive }
+              record.title.count <= 120, (record.model?.utf8.count ?? 0) <= 128 else { throw CaptionFailure.corruptArchive }
         return record
     }
 }

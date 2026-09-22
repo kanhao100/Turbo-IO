@@ -6,13 +6,17 @@ import RayNeoCaptions
     var onReady: (() -> Void)?
     var onEndpoint: (() -> Void)?
     var onFailure: ((CaptionConnectionFailure) -> Void)?
-    private let driver = AliyunSpeechSession()
+    private enum ActiveDriver { case task, realtime }
+    private let taskDriver = AliyunTaskSpeechSession()
+    private let realtimeDriver = AliyunSpeechSession()
+    private var activeDriver: ActiveDriver?
+
     func start(options: CaptionOptions, key: String) {
-        driver.stop()
-        driver.onReady = { [weak self] in self?.onReady?() }
-        driver.onText = { [weak self] in self?.onText?($0, $1) }
-        driver.onEndpoint = { [weak self] in self?.onEndpoint?() }
-        driver.onFailure = { [weak self] failure in
+        stop()
+        let ready: () -> Void = { [weak self] in self?.onReady?() }
+        let text: (String, Bool) -> Void = { [weak self] in self?.onText?($0, $1) }
+        let endpoint: () -> Void = { [weak self] in self?.onEndpoint?() }
+        let failure: (AliyunSpeechSession.Failure) -> Void = { [weak self] failure in
             let mapped: CaptionConnectionFailure
             switch failure {
             case .configuration: mapped = .configuration
@@ -23,8 +27,34 @@ import RayNeoCaptions
             }
             self?.onFailure?(mapped)
         }
-        driver.start(host: options.aliyunHost, key: key, language: options.language)
+
+        switch options.aliyunModel {
+        case .qwenAudio31Streaming:
+            activeDriver = .task
+            taskDriver.onReady = ready
+            taskDriver.onText = text
+            taskDriver.onEndpoint = endpoint
+            taskDriver.onFailure = failure
+            taskDriver.start(host: options.aliyunHost, key: key, language: options.language)
+        case .qwen3Realtime:
+            activeDriver = .realtime
+            realtimeDriver.onReady = ready
+            realtimeDriver.onText = text
+            realtimeDriver.onEndpoint = endpoint
+            realtimeDriver.onFailure = failure
+            realtimeDriver.start(host: options.aliyunHost, key: key, language: options.language)
+        }
     }
-    func append(_ pcm: Data) { driver.append(pcm) }
-    func stop() { driver.stop() }
+    func append(_ pcm: Data) {
+        switch activeDriver {
+        case .task: taskDriver.append(pcm)
+        case .realtime: realtimeDriver.append(pcm)
+        case nil: break
+        }
+    }
+    func stop() {
+        activeDriver = nil
+        taskDriver.stop()
+        realtimeDriver.stop()
+    }
 }

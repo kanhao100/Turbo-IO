@@ -2,6 +2,27 @@ import Foundation
 
 public enum CaptionFailure: Error { case invalidConfiguration, limit, corruptArchive, closed }
 
+public enum AliyunCaptionModel: String, Codable, CaseIterable {
+    case qwenAudio31Streaming = "qwen-audio-3.1-asr-flash-streaming"
+    case qwen3Realtime = "qwen3-asr-flash-realtime"
+
+    public var name: String {
+        switch self {
+        case .qwenAudio31Streaming: return "Qwen-Audio 3.1 Streaming（推荐）"
+        case .qwen3Realtime: return "Qwen3 Realtime（兼容 / 实验）"
+        }
+    }
+
+    public var detail: String {
+        switch self {
+        case .qwenAudio31Streaming:
+            return "Task WebSocket · binary PCM · 支持时间戳与后续热词/上下文扩展"
+        case .qwen3Realtime:
+            return "Realtime Session API · Base64 JSON · 服务端 VAD"
+        }
+    }
+}
+
 public enum CaptionService: String, Codable, CaseIterable {
     case azure, deepgram, aliyun
     case elevenLabs = "elevenlabs"
@@ -10,7 +31,7 @@ public enum CaptionService: String, Codable, CaseIterable {
         switch self { case .azure: return "Azure Speech"; case .deepgram: return "Deepgram"; case .elevenLabs: return "ElevenLabs"; case .aliyun: return "阿里云流式 ASR" }
     }
     public var model: String {
-        switch self { case .azure: return "Azure Speech"; case .deepgram: return "Nova-3"; case .elevenLabs: return "Scribe v2 Realtime"; case .aliyun: return "qwen3-asr-flash-realtime" }
+        switch self { case .azure: return "Azure Speech"; case .deepgram: return "Nova-3"; case .elevenLabs: return "Scribe v2 Realtime"; case .aliyun: return AliyunCaptionModel.qwenAudio31Streaming.rawValue }
     }
     public var keychainService: String {
         switch self {
@@ -28,6 +49,7 @@ public struct CaptionOptions: Codable, Equatable {
     public var service: CaptionService = .azure
     public var region = ""
     public var aliyunHost = ""
+    public var aliyunModel: AliyunCaptionModel = .qwenAudio31Streaming
     public var language = "en-GB"
     public var idleSeconds = 900
     public var maximumSeconds = 7200
@@ -35,13 +57,17 @@ public struct CaptionOptions: Codable, Equatable {
     public init() {}
 
     private enum CodingKeys: String, CodingKey {
-        case service, region, aliyunHost, language, idleSeconds, maximumSeconds, recordAudio
+        case service, region, aliyunHost, aliyunModel, language, idleSeconds, maximumSeconds, recordAudio
     }
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         service = try values.decodeIfPresent(CaptionService.self, forKey: .service) ?? .azure
         region = try values.decode(String.self, forKey: .region)
         aliyunHost = try values.decodeIfPresent(String.self, forKey: .aliyunHost) ?? ""
+        // 0.3.3 had only Qwen3 Realtime and therefore no model field. Preserve
+        // that explicit user configuration; fresh CaptionOptions default to 3.1.
+        aliyunModel = try values.decodeIfPresent(AliyunCaptionModel.self, forKey: .aliyunModel)
+            ?? (service == .aliyun ? .qwen3Realtime : .qwenAudio31Streaming)
         language = try values.decode(String.self, forKey: .language)
         idleSeconds = try values.decode(Int.self, forKey: .idleSeconds)
         maximumSeconds = try values.decode(Int.self, forKey: .maximumSeconds)
@@ -56,6 +82,9 @@ public struct CaptionOptions: Codable, Equatable {
     }
     public var credentialService: String {
         service.keychainService + (service == .aliyun ? aliyunHost.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() : "")
+    }
+    public var selectedModel: String {
+        service == .aliyun ? aliyunModel.rawValue : service.model
     }
 
     public static let idleChoices = [0, 60, 300, 900, 1800, 3600]

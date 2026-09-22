@@ -152,7 +152,9 @@ private final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
         maximumDispatchDelayMilliseconds = 0; maximumArrivalIntervalMilliseconds = 0
         sequenceStepCounts = [:]; otherSequenceSteps = 0
         lastDisplayAt = -.infinity; pendingText = nil; error = nil; acceptedAt = now; began = now
-        latency.sessionStarted(at: now, service: options.service.name)
+        let latencyService = options.service == .aliyun
+            ? "\(options.service.name) · \(options.aliyunModel.rawValue)" : options.service.name
+        latency.sessionStarted(at: now, service: latencyService)
         device.ownDisplayForSubtitles(true)
         let value = SubtitleSessionRecord(id: id, title: "字幕 · " + Date().formatted(date: .abbreviated, time: .shortened), options: options)
         record = value
@@ -169,7 +171,7 @@ private final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
                 }
                 writer = output
                 guard device.deviceID == deviceID else { stop(reason: "准备时眼镜已断开", interrupted: true); return }
-                writer?.event(CaptionEntry(kind: .started, text: "\(options.service.name) · \(options.language) · \(options.recordAudio ? "保存文本及音频" : "仅保存文本")"))
+                writer?.event(CaptionEntry(kind: .started, text: "\(options.service.name) · \(options.selectedModel) · \(options.language) · \(options.recordAudio ? "保存文本及音频" : "仅保存文本")"))
                 defaults.set(true, forKey: Self.pendingKey)
                 phase = .startingAudio; deadline = now + 10; lastAudioAt = now
                 installTimer()
@@ -228,7 +230,9 @@ private final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
             acceptedStart()
         } else if event.type == 8, phase == .openingDisplay {
             guard event.code == 1 || event.code == 2 else { fail("眼镜未接受字幕显示配置。" ); return }
-            displayReady = true; phase = .listening; status = "正在听 · \(options.service.name)"
+            displayReady = true; phase = .listening
+            status = options.service == .aliyun
+                ? "正在听 · \(options.aliyunModel.name)" : "正在听 · \(options.service.name)"
             pumpDisplay()
         } else if event.type == 4, cloudStarted, phase == .openingDisplay || phase == .listening {
             acceptAudio(event, arrival: arrival)
@@ -410,6 +414,6 @@ private final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
     }
     var diagnosticText: String {
         let steps = sequenceStepCounts.keys.sorted().map { "\($0):\(sequenceStepCounts[$0] ?? 0)" }.joined(separator: ",")
-        return "Turbo IO 实时字幕\nphase=\(phase.rawValue) packets=\(packets) pcmBytes=\(audioBytes) gaps=\(gaps)\nseqStrideChanges=\(sequenceJumps) maxSeqStep=\(maximumSequenceStep) discardedSeq=\(discardedSequencePackets)\nseqSteps=\(steps.isEmpty ? "none" : steps) otherSteps=\(otherSequenceSteps)\nmaxArrivalMs=\(maximumArrivalIntervalMilliseconds) maxDispatchMs=\(maximumDispatchDelayMilliseconds)\nASR=\(options.service.name) ready=\(cloudReady)\n\(status)\n\(error ?? "")\n不包含音频、正文、密钥、原始序号或设备标识。"
+        return "Turbo IO 实时字幕\nphase=\(phase.rawValue) packets=\(packets) pcmBytes=\(audioBytes) gaps=\(gaps)\nseqStrideChanges=\(sequenceJumps) maxSeqStep=\(maximumSequenceStep) discardedSeq=\(discardedSequencePackets)\nseqSteps=\(steps.isEmpty ? "none" : steps) otherSteps=\(otherSequenceSteps)\nmaxArrivalMs=\(maximumArrivalIntervalMilliseconds) maxDispatchMs=\(maximumDispatchDelayMilliseconds)\nASR=\(options.service.name) model=\(options.selectedModel) ready=\(cloudReady)\n\(status)\n\(error ?? "")\n不包含音频、正文、密钥、原始序号或设备标识。"
     }
 }

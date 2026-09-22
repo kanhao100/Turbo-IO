@@ -54,7 +54,10 @@ struct RealtimeSubtitlesView: View {
                 }
                 ProgressView(value: runtime.audioLevel).tint(Palette.mint).accessibilityLabel("实际收到的音频电平")
                 HStack {
-                    Text(settings.options.service.name)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(settings.options.service.name)
+                        Text(settings.options.selectedModel).lineLimit(1).minimumScaleFactor(0.7)
+                    }
                     Spacer()
                     Label(settings.options.recordAudio ? "文本 + 音频" : "仅文本", systemImage: settings.options.recordAudio ? "waveform" : "doc.text")
                 }.font(.caption).foregroundStyle(.white.opacity(0.75))

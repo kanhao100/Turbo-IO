@@ -3,10 +3,20 @@ import RayNeoCaptions
 @testable import RayNeoCompanion
 
 final class SubtitleArchiveTests:XCTestCase {
+    func testLegacySessionWithoutModelStillDecodes() throws {
+        let record = SubtitleSessionRecord(title:"旧会话",options:CaptionOptions())
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(record)) as? [String:Any])
+        object.removeValue(forKey:"model")
+        let legacy = try JSONDecoder().decode(SubtitleSessionRecord.self,
+            from: JSONSerialization.data(withJSONObject:object))
+        XCTAssertNil(legacy.model)
+        XCTAssertEqual(legacy.id,record.id)
+    }
     func testMetadataTranscriptAndWAVRoundtripRejectsMismatchedIdentity() throws {
         let root=FileManager.default.temporaryDirectory.appendingPathComponent("subtitle-archive-"+UUID().uuidString)
         defer{try? FileManager.default.removeItem(at:root)}
-        var options=CaptionOptions();options.recordAudio=true
+        var options=CaptionOptions();options.recordAudio=true;options.service = .aliyun
+        options.aliyunHost="workspace-a.cn-beijing.maas.aliyuncs.com";options.aliyunModel = .qwenAudio31Streaming
         var record=SubtitleSessionRecord(title:"合成测试",options:options)
         let journal=try CaptionJournal(root:root,id:record.id)
         try record.write(to:journal.directory)
@@ -16,6 +26,7 @@ final class SubtitleArchiveTests:XCTestCase {
         record.receivedPCMBytes=640;record.finalSentences=1;record.state = .completed
         try record.write(to:journal.directory)
         XCTAssertEqual(try SubtitleSessionRecord.read(from:journal.directory),record)
+        XCTAssertEqual(record.model,"qwen-audio-3.1-asr-flash-streaming")
         XCTAssertEqual(try SubtitleArchiveFiles.audio(in:journal.directory).count,1)
         XCTAssertEqual(try SubtitleArchiveFiles.catalog(root:root).records.count,1)
         XCTAssertTrue(try CaptionJournal.exportText(CaptionJournal.load(journal.directory)).contains("Hello 世界"))

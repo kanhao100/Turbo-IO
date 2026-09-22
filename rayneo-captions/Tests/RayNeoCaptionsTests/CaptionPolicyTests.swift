@@ -7,8 +7,22 @@ final class CaptionPolicyTests: XCTestCase {
         XCTAssertFalse(options.recordAudio)
         XCTAssertEqual(options.idleSeconds, 900)
         XCTAssertEqual(options.maximumSeconds, 7200)
+        XCTAssertEqual(options.aliyunModel, .qwenAudio31Streaming)
         options.region = "  EastUS\n"
         XCTAssertEqual(try options.validated().region, "eastus")
+    }
+    func testAliyunModelSelectionRoundTripsAndLegacyQwen3ChoiceIsPreserved() throws {
+        var current = CaptionOptions()
+        current.service = .aliyun
+        current.aliyunHost = "workspace-a.cn-beijing.maas.aliyuncs.com"
+        current.aliyunModel = .qwenAudio31Streaming
+        XCTAssertEqual(try JSONDecoder().decode(CaptionOptions.self, from: JSONEncoder().encode(current)), current)
+        XCTAssertEqual(current.selectedModel, "qwen-audio-3.1-asr-flash-streaming")
+
+        let legacy = Data(#"{"service":"aliyun","region":"","aliyunHost":"workspace-a.cn-beijing.maas.aliyuncs.com","language":"zh-CN","idleSeconds":0,"maximumSeconds":3600,"recordAudio":true}"#.utf8)
+        let migrated = try JSONDecoder().decode(CaptionOptions.self, from: legacy)
+        XCTAssertEqual(migrated.aliyunModel, .qwen3Realtime)
+        XCTAssertEqual(migrated.selectedModel, "qwen3-asr-flash-realtime")
     }
     func testCannotSupplyAnArbitraryCredentialDestination() {
         for region in ["", "https://example.com", "eastus/path", "eastus.example.com", "user@host", "../", "区域"] {

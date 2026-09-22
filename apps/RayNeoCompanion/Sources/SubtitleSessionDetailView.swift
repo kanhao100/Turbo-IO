@@ -24,6 +24,7 @@ struct SubtitleSessionDetailView: View {
                         Text(record.title).font(.title2.bold()).textSelection(.enabled)
                         Text(record.createdAt.formatted(date: .abbreviated, time: .shortened)).font(.caption).foregroundStyle(Palette.muted)
                         HStack { Badge(text: record.service.name, active: true); Text(record.language); Spacer(); Text("\(record.finalSentences) 句") }.font(.caption)
+                        if let model = record.model { Text(model).font(.caption2).foregroundStyle(Palette.muted).textSelection(.enabled) }
                         if record.state != .completed { Label("本次会话中断或未正常收尾；已保存内容可能不完整。", systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(Palette.amber) }
                         if record.gaps > 0 { Text("记录了 \(record.gaps) 处音频缺口；片段之间不会补静音。") .font(.caption).foregroundStyle(Palette.amber) }
                     }

@@ -62,16 +62,21 @@ node scripts/start.mjs --device
 
 ## 4. 阿里云 ASR：实时字幕与旧链路分开配置
 
-### 4.1 实时字幕：Qwen3-ASR-Flash-Realtime
+### 4.1 实时字幕：Qwen-Audio 3.1 Streaming 或 Qwen3 Realtime
 
-真机打开“字幕 → 设置”，选择阿里云后粘贴 Workspace 专属 Host，只填主机名，不带 `wss://`、端口、路径、用户名或查询参数。当前仅允许以下两个生产地域：
+真机打开“字幕 → 设置”，选择阿里云，再选择模型。新配置默认使用 `qwen-audio-3.1-asr-flash-streaming`（推荐）；已经在 0.3.3 保存的阿里云配置继续保留 `qwen3-asr-flash-realtime`，也可以手动切换。然后粘贴 Workspace 专属 Host，只填主机名，不带 `wss://`、端口、路径、用户名或查询参数。当前仅允许以下两个生产地域：
 
 - 中国北京：`{WorkspaceId}.cn-beijing.maas.aliyuncs.com`
 - 新加坡：`{WorkspaceId}.ap-southeast-1.maas.aliyuncs.com`
 
-App 会显示识别出的地域。API Key 必须在该 Host 所属的同一地域、同一 Workspace 权限范围内创建；北京和新加坡的 Host、Key 与模型列表不能混用。trial 域名不支持此处所需的生产 WebSocket 能力，DashScope 公共域名和其他地域也不会被接受。两地都使用 `qwen3-asr-flash-realtime` 和 Realtime 事件协议；通常选离用户/部署更近的地域来降低网络延迟，数据地域、价格、配额和可用能力以对应控制台为准。
+App 会显示识别出的地域。API Key 必须在该 Host 所属的同一地域、同一 Workspace 权限范围内创建；北京和新加坡的 Host、Key 与模型权限不能混用。trial 域名、DashScope 公共域名和其他地域不会被接受。北京与新加坡均支持这两个模型；通常选离用户/部署更近的地域来降低网络延迟，数据地域、价格、配额和可用能力以对应控制台为准。
 
-实时字幕发送 PCM16/16kHz/mono，但在线路上封装为 Base64 的 `input_audio_buffer.append` JSON 事件；初始化为 `session.update`，不是旧协议的 `run-task`，也不是 binary WebSocket frame。设置保存不会自动收音。
+实时字幕统一使用 PCM16/16kHz/mono，但两套线路不同：
+
+- Qwen-Audio 3.1：`/api-ws/v1/inference`、`run-task`、binary PCM、`result-generated`、`finish-task`。
+- Qwen3 Realtime：`/api-ws/v1/realtime`、`session.update`、Base64 JSON `input_audio_buffer.append`、Realtime transcription events、`session.finish`。
+
+设置保存或切换模型不会自动收音。同一 Host 的两个模型复用同地域 API Key；切换北京/新加坡 Host 时，Keychain 仍按完整 Host 隔离。
 
 ### 4.2 AI 云对话与已保存录音：暂时仍为旧协议
 
@@ -87,7 +92,7 @@ App 会显示识别出的地域。API Key 必须在该 Host 所属的同一地�
 
 普通录音手动 ASR 共用这个用户配置，并在开始时捕获 Host 与对应 Key，避免解码期间改配置把旧 Key 发给新地址。录音不会因为接收到文件就自动转写。
 
-以上 AI 云对话和已保存录音转写仍使用 `/api-ws/v1/inference`、`run-task`、`qwen-audio-3.0-asr-flash-streaming` 与 binary 音频帧。它们没有随实时字幕一起迁移到 Qwen3；不要仅修改模型名，也不要把字幕页的 Realtime 验收结果当作这两条旧链路已经迁移。
+以上 AI 云对话和已保存录音转写仍使用 `/api-ws/v1/inference`、`run-task`、`qwen-audio-3.0-asr-flash-streaming` 与 binary 音频帧。字幕页选择 3.1 或 Qwen3 都不会改变这两条链路；不要把字幕页的验收结果当作对话或录音转写已经迁移。
 
 ## 5. 天气、通知、录音
 

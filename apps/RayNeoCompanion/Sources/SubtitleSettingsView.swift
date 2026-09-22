@@ -24,9 +24,13 @@ struct SubtitleSettingsView: View {
                 Section("转写服务") {
                     Picker("服务", selection: $draft.service) { ForEach(CaptionService.allCases, id: \.self) { Text($0.name).tag($0) } }
                         .accessibilityIdentifier("subtitle-provider")
-                    LabeledContent("模型", value: draft.service.model)
+                    if draft.service != .aliyun { LabeledContent("模型", value: draft.service.model) }
                     if draft.service == .azure { TextField("Azure Region，例如 eastus", text: $draft.region).textInputAutocapitalization(.never).autocorrectionDisabled() }
                     if draft.service == .aliyun {
+                        Picker("阿里云模型", selection: $draft.aliyunModel) {
+                            ForEach(AliyunCaptionModel.allCases, id: \.self) { Text($0.name).tag($0) }
+                        }.accessibilityIdentifier("subtitle-aliyun-model")
+                        Text(draft.aliyunModel.detail).font(.caption).foregroundStyle(.secondary)
                         TextField("阿里云 Workspace Host", text: $draft.aliyunHost)
                             .textInputAutocapitalization(.never).autocorrectionDisabled()
                         if let region = AliyunRealtimeRegion.region(for: draft.aliyunHost) {
@@ -96,6 +100,7 @@ struct SubtitleSettingsView: View {
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
             .onAppear { draft = settings.options; settings.refresh() }
             .onChange(of: draft.service) { _ in key = ""; saved = false }
+            .onChange(of: draft.aliyunModel) { _ in saved = false }
         }
     }
 }

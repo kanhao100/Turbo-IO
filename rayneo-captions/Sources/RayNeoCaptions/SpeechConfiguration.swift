@@ -2,7 +2,7 @@ import Foundation
 
 public typealias SpeechService = CaptionService
 
-/// Qwen3-ASR-Flash-Realtime workspace endpoints supported by the subtitle path.
+/// Alibaba Cloud workspace endpoints supported by both subtitle protocols.
 /// API keys and workspaces are region-scoped, so callers must keep the complete
 /// workspace host instead of selecting a region independently.
 public enum AliyunRealtimeRegion: String, Codable, CaseIterable {
