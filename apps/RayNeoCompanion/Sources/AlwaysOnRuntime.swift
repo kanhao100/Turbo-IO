@@ -180,10 +180,10 @@ private struct AlwaysOnActiveMarker: Codable {
     func prepare() {
         settings.refresh()
         refreshLegacyDiagnostics()
+        let archive = archive
         Task { [weak self] in
-            guard let self else { return }
-            await self.archive.load()
-            self.restoreTodayCounters()
+            await archive.load()
+            self?.restoreTodayCounters()
         }
         connectionChanged()
     }
@@ -579,9 +579,10 @@ private struct AlwaysOnActiveMarker: Codable {
             error = "全天智记文字存储失败，已立即停止；最后一段可能不完整。"
             status = error!
         }
-        Task {
+        let archive = archive
+        Task { [weak self] in
             await archive.load()
-            restoreTodayCounters()
+            self?.restoreTodayCounters()
         }
     }
 
