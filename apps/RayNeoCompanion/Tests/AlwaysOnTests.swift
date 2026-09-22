@@ -169,6 +169,33 @@ import RayNeoCaptions
         f.runtime.setEnabled(false)
     }
 
+    func testTaskEndingBeforeCloudReadyRecordsUntranscribedBuffer() async throws {
+        let f = fixture(); f.provider.autoReady = false
+        f.runtime.setEnabled(true); f.feed(13, type: 161)
+        f.feed(13, type: 163, json: ["taskId": try f.taskID(), "frameCount": 1],
+               bytes: Data(repeating: 2, count: 240))
+        XCTAssertTrue(f.provider.audio.isEmpty)
+        f.feed(13, type: 165)
+        XCTAssertEqual(f.runtime.phase, .waitingForA1)
+        XCTAssertEqual(f.runtime.gaps, 1)
+        let entries = try await f.archive.entries(for: f.archive.dayKey(for: f.clock.date))
+        XCTAssertTrue(entries.contains { $0.kind == .gap && $0.text.contains("内存缓冲") })
+        f.runtime.setEnabled(false)
+    }
+
+    func testImmediateSettingsApplyPreservesExistingReconnectBuffer() throws {
+        let f = fixture(); f.provider.autoReady = false
+        f.runtime.setEnabled(true); f.feed(13, type: 161)
+        f.feed(13, type: 163, json: ["taskId": try f.taskID(), "frameCount": 1],
+               bytes: Data(repeating: 2, count: 240))
+        XCTAssertTrue(f.provider.audio.isEmpty)
+        XCTAssertTrue(f.runtime.setLanguage(.fixed(localeIdentifier: "zh-CN"), policy: .immediately))
+        f.provider.onReady?()
+        XCTAssertEqual(f.provider.audio.count, 1)
+        XCTAssertEqual(f.runtime.gaps, 0)
+        f.runtime.setEnabled(false)
+    }
+
     func testServiceSettingsCancelNextTaskAndImmediateApply() throws {
         let f = fixture(); f.runtime.setEnabled(true); f.feed(13, type: 161)
         var eleven = f.settings.options

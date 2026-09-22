@@ -405,6 +405,9 @@ private struct AlwaysOnActiveMarker: Codable {
         guard let taskID, activeTask, phase == .transcribing || phase == .reconnectingASR else { return }
         let frames = try AlwaysOnWire.frames(wire, taskID: taskID)
         for frame in frames {
+            // A provider can fail synchronously while accepting a frame. Never
+            // decode or queue later frames after that callback ended this run.
+            guard activeTask else { return }
             guard let pcm = decoder?.decode(frame), pcm.count == 640 else { throw DeviceFeatureError.invalidPacket }
             if cloudReady, phase == .transcribing { provider?.append(pcm) }
             else { bufferDuringReconnect(pcm) }
