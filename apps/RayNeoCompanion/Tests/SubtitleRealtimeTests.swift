@@ -72,6 +72,8 @@ final class SubtitleRealtimeTests: XCTestCase {
         f.feed(1, sid: "duplicate-start") // Same physical tap duplicate is inside debounce.
         XCTAssertEqual(f.runtime.phase, .openingDisplay)
         f.clock.now += 2
+        f.runtime.receive(device: "glasses", packet: try packet(1, sid: "delayed-old-duplicate"), arrival: 100.5)
+        XCTAssertEqual(f.runtime.phase, .openingDisplay)
         f.feed(1, sid: "second-double-tap-new-sid")
         XCTAssertEqual(f.runtime.phase, .idle)
         XCTAssertFalse(f.device.subtitleOwnsDisplay)
@@ -128,10 +130,11 @@ final class SubtitleRealtimeTests: XCTestCase {
         XCTAssertEqual(f.runtime.phase, .idle)
         XCTAssertEqual(try f.types(), [2, 7])
 
-        f.feed(1, sid: "tail-after-stop")
+        let tailArrival = f.clock.now + 0.2
+        f.clock.now += 2
+        f.runtime.receive(device: "glasses", packet: try packet(1, sid: "tail-after-stop"), arrival: tailArrival)
         XCTAssertEqual(f.runtime.phase, .idle)
         XCTAssertEqual(try f.types(), [2, 7])
-        f.clock.now += 2
         let nextStarted = expectation(description: "new shortcut after cooldown starts")
         f.runtime.onShortcutStart = { nextStarted.fulfill() }
         f.feed(1, sid: "new-deliberate-shortcut")

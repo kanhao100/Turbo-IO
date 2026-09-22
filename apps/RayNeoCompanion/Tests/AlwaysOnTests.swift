@@ -83,9 +83,11 @@ import RayNeoCaptions
         f.runtime.receive(device: "fixture", business: 19,
             packet: try DeviceBusinessWire.encode(type: 8, json: ["sid": sid, "code": 1]))
         f.provider.onText?("镜片上的字幕", true)
-        XCTAssertEqual(try f.subtitleTypes(), [7, 5])
+        // The ACK flushes the initial listening prompt; the final ASR result is a
+        // second text update. Both must stay on the display-only type-5 path.
+        XCTAssertEqual(try f.subtitleTypes(), [7, 5, 5])
         f.runtime.setEnabled(false)
-        XCTAssertEqual(try f.subtitleTypes(), [7, 5, 3])
+        XCTAssertEqual(try f.subtitleTypes(), [7, 5, 5, 3])
         XCTAssertFalse(try f.subtitleTypes().contains(1))
     }
 

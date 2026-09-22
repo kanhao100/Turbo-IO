@@ -229,7 +229,7 @@ enum AlwaysOnArchiveError: Error { case invalidDay, invalidEntry, corruptArchive
     /// completed line and truncate that one tail before appending new events, so
     /// the recovery marker cannot make the whole day's archive unreadable.
     nonisolated private static func repairTornTail(_ file: URL) throws {
-        let data = try Data(contentsOf: file, options: .mappedIfSafe)
+        let data = try Data(contentsOf: file)
         guard !data.isEmpty, data.last != 0x0a else { return }
         let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
         let boundary = data.lastIndex(of: 0x0a).map { data.index(after: $0) } ?? data.startIndex

@@ -491,8 +491,9 @@ private struct AlwaysOnActiveMarker: Codable {
         }
         provider?.stop(); provider = nil; phase = .reconnectingASR
         status = "ASR 连接中断，\(Int(delay)) 秒后重试；眼镜采音保持不变"
-        guard appendRequired(kind: .system,
+        guard appendRequired(kind: .gap,
               text: "ASR 连接中断，开始第 \(retryBudget.attempts) 次重连") else { return }
+        gaps += 1
         let token = generation
         retryTask?.cancel()
         retryTask = Task { @MainActor [weak self] in
@@ -523,7 +524,6 @@ private struct AlwaysOnActiveMarker: Codable {
         }
         guard appendRequired(kind: .system, text: reason) else { return }
         generation = UUID(); retryTask?.cancel(); provider?.stop(); cloudReady = false
-        reconnectBuffer.removeAll(); reconnectBytes = 0; reconnectGapOpen = false
         retryBudget = CaptionRetryBudget(); optionsSnapshot = config.options; keySnapshot = config.key
         detectedLanguage = config.options.cloudLanguage
         provider = config.provider; phase = .reconnectingASR; status = "正在按新设置重启 ASR；眼镜采音保持不变"
@@ -551,6 +551,12 @@ private struct AlwaysOnActiveMarker: Codable {
             catch { storageSucceeded = false }
             partial = ""
         }
+        if !reconnectBuffer.isEmpty || reconnectGapOpen {
+            do {
+                try append(kind: .gap, text: "本轮在 ASR 恢复前结束；内存缓冲尚未完成转写")
+                gaps += 1
+            } catch { storageSucceeded = false }
+        }
         do { try append(kind: .stopped, text: reason) }
         catch { storageSucceeded = false }
         presenter.close(notifyGlasses: notifyLens)
@@ -570,7 +576,10 @@ private struct AlwaysOnActiveMarker: Codable {
             error = "全天智记文字存储失败，已立即停止；最后一段可能不完整。"
             status = error!
         }
-        Task { await archive.load() }
+        Task {
+            await archive.load()
+            restoreTodayCounters()
+        }
     }
 
     private func stopEverything(reason: String, sendOff: Bool) {

@@ -211,7 +211,7 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
         // current firmware. Handle it before strict SID filtering: its new SID is a gesture
         // identifier and must never replace the active caption SID.
         if active, event.type == 1, source == target, arrival >= acceptedAt {
-            guard now - acceptedAt >= 1.5 else {
+            guard arrival - acceptedAt >= 1.5 else {
                 lastEvent = "忽略字幕启动后的重复 type=1（防抖）"
                 return
             }
@@ -222,7 +222,7 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
         }
         if phase == .idle, event.type == 1 {
             guard shortcutEnabled else { return }
-            guard !saving, now >= shortcutSuppressedUntil else {
+            guard !saving, arrival >= shortcutSuppressedUntil else {
                 status = "上一段正在保存或仍在防抖期；请稍后再次双击"
                 return
             }
