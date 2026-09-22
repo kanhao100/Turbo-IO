@@ -62,6 +62,19 @@ import RayNeoCaptions
         f.runtime.setEnabled(false)
     }
 
+    func testInvalidDecodedFrameStopsOnlyTheCurrentTaskWithExplicitError() throws {
+        let f = fixture(); f.runtime.setEnabled(true); f.feed(13, type: 161)
+        f.decoder.acceptsPackets = false
+        f.feed(13, type: 163, json: ["taskId": try f.taskID(), "frameCount": 1],
+               bytes: Data(repeating: 1, count: 240))
+        XCTAssertFalse(f.runtime.activeTask)
+        XCTAssertEqual(f.runtime.phase, .error)
+        XCTAssertTrue(f.runtime.error?.contains("Opus") == true)
+        XCTAssertEqual(f.provider.stops, 1)
+        XCTAssertTrue(try f.businessTypes(13).contains(166))
+        XCTAssertTrue(try f.businessTypes(13).contains(168))
+    }
+
     func testDisplayPathEmitsOnlySevenFiveThree() throws {
         let f = fixture(); f.runtime.setEnabled(true); f.feed(13, type: 161)
         XCTAssertEqual(try f.subtitleTypes(), [7])
@@ -74,6 +87,20 @@ import RayNeoCaptions
         f.runtime.setEnabled(false)
         XCTAssertEqual(try f.subtitleTypes(), [7, 5, 3])
         XCTAssertFalse(try f.subtitleTypes().contains(1))
+    }
+
+    func testLensFailureDoesNotStopTextTranscription() throws {
+        let f = fixture(); f.subtitleSendFails = true
+        f.runtime.setEnabled(true); f.feed(13, type: 161)
+        XCTAssertTrue(f.runtime.activeTask)
+        XCTAssertTrue(f.runtime.error?.contains("镜片") == true)
+        f.feed(13, type: 163, json: ["taskId": try f.taskID(), "frameCount": 1],
+               bytes: Data(repeating: 1, count: 240))
+        XCTAssertEqual(f.provider.audio.count, 1)
+        f.provider.onText?("镜片失败也要保存文字", true)
+        XCTAssertEqual(f.runtime.todaySentences, 1)
+        XCTAssertTrue(f.runtime.activeTask)
+        f.runtime.setEnabled(false)
     }
 
     func testEnableAndTargetPersistButAnotherDeviceDoesNotAutoStart() throws {
@@ -106,6 +133,138 @@ import RayNeoCaptions
         XCTAssertEqual(f.provider.starts, 0)
     }
 
+    func testApplyPoliciesGenerationIsolationAndTwoSecondReconnectBuffer() async throws {
+        let f = fixture(); f.runtime.setEnabled(true); f.feed(13, type: 161)
+        XCTAssertEqual(f.provider.starts, 1)
+        XCTAssertEqual(f.provider.startedOptions.last?.languageMode, .automatic)
+
+        XCTAssertFalse(f.runtime.setLanguage(.fixed(localeIdentifier: "zh-CN"), policy: .cancel))
+        XCTAssertEqual(f.runtime.languageMode, .automatic)
+        XCTAssertTrue(f.runtime.setLanguage(.fixed(localeIdentifier: "zh-CN"), policy: .nextTask))
+        XCTAssertEqual(f.provider.starts, 1)
+        XCTAssertEqual(f.provider.startedOptions.last?.languageMode, .automatic)
+
+        let staleText = f.provider.onText
+        f.provider.autoReady = false
+        XCTAssertTrue(f.runtime.setLanguage(.fixed(localeIdentifier: "en-US"), policy: .immediately))
+        XCTAssertEqual(f.provider.starts, 2); XCTAssertEqual(f.provider.stops, 1)
+        XCTAssertEqual(f.provider.startedOptions.last?.languageMode, .fixed(localeIdentifier: "en-US"))
+        staleText?("迟到的旧代结果", true)
+        XCTAssertTrue(f.runtime.recent.isEmpty)
+
+        let task = try f.taskID()
+        for _ in 0..<101 {
+            f.feed(13, type: 163, json: ["taskId": task, "frameCount": 1],
+                   bytes: Data(repeating: 2, count: 240))
+        }
+        XCTAssertTrue(f.provider.audio.isEmpty)
+        f.provider.onReady?()
+        XCTAssertEqual(f.provider.audio.count, 100)
+        XCTAssertEqual(f.runtime.gaps, 1)
+        let entries = try await f.archive.entries(for: f.archive.dayKey(for: f.clock.date))
+        XCTAssertEqual(entries.filter { $0.kind == .gap }.count, 1)
+        XCTAssertTrue(entries.contains { $0.kind == .system && $0.text.contains("立即生效") })
+        f.runtime.setEnabled(false)
+    }
+
+    func testServiceSettingsCancelNextTaskAndImmediateApply() throws {
+        let f = fixture(); f.runtime.setEnabled(true); f.feed(13, type: 161)
+        var eleven = f.settings.options
+        eleven.service = .elevenLabs
+        XCTAssertFalse(f.runtime.applySpeechSettings(eleven, key: "synthetic-eleven-key", policy: .cancel))
+        XCTAssertEqual(f.settings.options.service, .aliyun)
+        XCTAssertTrue(f.runtime.applySpeechSettings(eleven, key: "synthetic-eleven-key", policy: .nextTask))
+        XCTAssertEqual(f.settings.options.service, .elevenLabs)
+        XCTAssertEqual(f.provider.starts, 1)
+        XCTAssertEqual(f.provider.startedOptions.last?.service, .aliyun)
+
+        var azure = eleven
+        azure.service = .azure; azure.region = "eastus"
+        XCTAssertTrue(f.runtime.applySpeechSettings(azure, key: "synthetic-azure-key", policy: .immediately))
+        XCTAssertEqual(f.settings.options.service, .azure)
+        XCTAssertEqual(f.provider.starts, 2)
+        XCTAssertEqual(f.provider.startedOptions.last?.service, .azure)
+        XCTAssertEqual(f.provider.startedOptions.last?.languageMode, .automatic)
+        f.runtime.setEnabled(false)
+    }
+
+    func testStorageFailureDisablesPersistentRuntimeAndSendsAllOffCommands() throws {
+        let f = fixture()
+        try Data("not a directory".utf8).write(to: f.root, options: .atomic)
+        f.runtime.setEnabled(true); f.feed(13, type: 161)
+        XCTAssertFalse(f.runtime.enabled)
+        XCTAssertFalse(f.runtime.activeTask)
+        XCTAssertEqual(f.runtime.phase, .error)
+        XCTAssertTrue(f.runtime.error?.contains("存储失败") == true)
+        let lifeLog = try f.businessTypes(15)
+        XCTAssertGreaterThanOrEqual(lifeLog.filter { $0 == 20 }.count, 4)
+        XCTAssertTrue(try f.businessTypes(13).contains(168))
+    }
+
+    func testInterruptedMarkerIsRecoveredAsGapOnNextLaunch() async throws {
+        let f = fixture(); f.runtime.setEnabled(true); f.feed(13, type: 161)
+        let restored = f.makeAdditionalRuntime()
+        let entries = try await f.archive.entries(for: f.archive.dayKey(for: f.clock.date))
+        XCTAssertTrue(entries.contains { $0.kind == .gap && $0.text.contains("App 上次运行被中断") })
+        XCTAssertTrue(restored.enabled)
+        restored.setEnabled(false); f.runtime.setEnabled(false)
+    }
+
+    func testTornJSONLTailIsRemovedBeforeRecoveryAppend() async throws {
+        let f = fixture(), run = UUID(), day = f.archive.dayKey(for: f.clock.date)
+        try f.archive.append(AlwaysOnTranscriptEntry(timestamp: f.clock.date, runID: run, kind: .final,
+            text: "崩溃前完整句", service: "fixture", model: "fixture", languageMode: .automatic))
+        let file = f.root.appendingPathComponent(day, isDirectory: true)
+            .appendingPathComponent("entries-\(run.uuidString.lowercased()).jsonl")
+        let handle = try FileHandle(forWritingTo: file)
+        try handle.seekToEnd(); try handle.write(contentsOf: Data(#"{"incomplete":"#.utf8)); try handle.close()
+        f.clock.date.addTimeInterval(1)
+        try f.archive.append(AlwaysOnTranscriptEntry(timestamp: f.clock.date, runID: run, kind: .gap,
+            text: "恢复后的缺口", service: "fixture", model: "fixture", languageMode: .automatic))
+        let entries = try await f.archive.entries(for: day)
+        XCTAssertEqual(entries.map(\.text), ["崩溃前完整句", "恢复后的缺口"])
+    }
+
+    func testTimeZoneChangeKeepsUnfinishedTextInPreviouslyActiveDay() async throws {
+        let start = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-01-02T00:30:00Z"))
+        let f = fixture(date: start, timeZone: try XCTUnwrap(TimeZone(secondsFromGMT: 0)))
+        f.runtime.setEnabled(true); f.feed(13, type: 161)
+        f.provider.onText?("跨时区前尚未定稿", false)
+        f.clock.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: -7_200))
+        f.runtime.tick()
+        let oldEntries = try await f.archive.entries(for: "2026-01-02")
+        let newEntries = try await f.archive.entries(for: "2026-01-01")
+        XCTAssertTrue(oldEntries.contains { $0.kind == .unfinished && $0.text == "跨时区前尚未定稿" })
+        XCTAssertTrue(newEntries.contains { $0.kind == .system && $0.text.contains("自然日") })
+        f.runtime.setEnabled(false)
+    }
+
+    func testMidnightRollsFinalsIntoNewLocalDay() async throws {
+        let start = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-01-01T23:59:00Z"))
+        let f = fixture(date: start, timeZone: try XCTUnwrap(TimeZone(secondsFromGMT: 0)))
+        f.runtime.setEnabled(true); f.feed(13, type: 161)
+        f.provider.onText?("午夜前临时稿", false)
+        f.clock.date.addTimeInterval(120); f.runtime.tick()
+        f.provider.onText?("午夜后定稿", true)
+        let oldEntries = try await f.archive.entries(for: "2026-01-01")
+        let newEntries = try await f.archive.entries(for: "2026-01-02")
+        XCTAssertTrue(oldEntries.contains { $0.kind == .unfinished && $0.text == "午夜前临时稿" })
+        XCTAssertTrue(newEntries.contains { $0.kind == .final && $0.text == "午夜后定稿" })
+        XCTAssertEqual(f.runtime.todaySentences, 1)
+        f.runtime.setEnabled(false)
+    }
+
+    func testOrdinarySubtitleShortcutIsLoggedButCannotPreemptAlwaysOn() throws {
+        let f = fixture(); f.runtime.setEnabled(true)
+        let before = f.businessPackets.count
+        f.runtime.receive(device: "fixture", business: 19,
+            packet: try DeviceBusinessWire.encode(type: 1, json: ["sid": "ordinary-caption-shortcut"]))
+        XCTAssertEqual(f.businessPackets.count, before)
+        XCTAssertTrue(f.runtime.events.contains { $0.contains("全天智记占用") })
+        XCTAssertEqual(f.runtime.phase, .waitingForA1)
+        f.runtime.setEnabled(false)
+    }
+
     func testArchiveExportAndDeleteAreTextOnly() async throws {
         let f = fixture(), run = UUID(), now = Date()
         try f.archive.append(AlwaysOnTranscriptEntry(timestamp: now, runID: run, kind: .final,
@@ -119,10 +278,13 @@ import RayNeoCaptions
         await f.archive.delete(day: day); XCTAssertTrue(f.archive.days.isEmpty)
     }
 
-    private func fixture() -> Fixture { Fixture() }
+    private func fixture(date: Date = Date(), timeZone: TimeZone = .autoupdatingCurrent) -> Fixture {
+        Fixture(date: date, timeZone: timeZone)
+    }
 
     private final class Decoder: SubtitlePCMDecoder {
-        func decode(_ packet: Data) -> Data? { packet.count == 240 ? Data(repeating: 1, count: 640) : nil }
+        var acceptsPackets = true
+        func decode(_ packet: Data) -> Data? { acceptsPackets && packet.count == 240 ? Data(repeating: 1, count: 640) : nil }
         func reset() {}
     }
     @MainActor private final class Provider: CaptionASRProvider {
@@ -130,8 +292,12 @@ import RayNeoCaptions
         var onEndpoint: (() -> Void)?
         var onReady: (() -> Void)?
         var onFailure: ((CaptionConnectionFailure) -> Void)?
-        var starts = 0, stops = 0, audio: [Data] = []
-        func start(options: CaptionOptions, key: String) { starts += 1; onReady?() }
+        var starts = 0, stops = 0, audio: [Data] = [], startedOptions: [CaptionOptions] = []
+        var autoReady = true
+        func start(options: CaptionOptions, key: String) {
+            starts += 1; startedOptions.append(options)
+            if autoReady { onReady?() }
+        }
         func append(_ pcm: Data) { audio.append(pcm) }
         func stop() { stops += 1 }
     }
@@ -141,27 +307,52 @@ import RayNeoCaptions
         func save(_ key: String, for options: CaptionOptions) throws { keys[options.credentialService + options.credentialAccount] = key }
         func remove(for options: CaptionOptions) throws { keys.removeValue(forKey: options.credentialService + options.credentialAccount) }
     }
+    private final class Clock {
+        var date: Date
+        var uptime: TimeInterval = 100
+        var timeZone: TimeZone
+        init(date: Date, timeZone: TimeZone) { self.date = date; self.timeZone = timeZone }
+    }
     @MainActor private final class Fixture {
         let name = "AlwaysOnTests.\(UUID())"
         let defaults: UserDefaults, root: URL, archive: AlwaysOnTranscriptArchive
-        let settings: SubtitleSettingsStore, provider = Provider(), vault = Vault()
+        let settings: SubtitleSettingsStore, provider = Provider(), vault = Vault(), decoder = Decoder(), clock: Clock
         var currentDevice: String? = "fixture"
         var businessPackets: [(UInt8, Data)] = [], subtitlePackets: [Data] = []
+        var subtitleSendFails = false
         lazy var runtime = AlwaysOnRuntime(defaults: defaults, archive: archive, settings: settings,
             device: { [unowned self] in currentDevice }, supportsDevice: { true }, available: { true },
             suspendVoice: {}, claimDisplay: { _ in },
             sendBusiness: { [unowned self] in businessPackets.append(($0, $1)) },
-            sendSubtitle: { [unowned self] _, packet in try SubtitleDisplayWire.validateOutbound(packet); subtitlePackets.append(packet) },
-            makeDecoder: { Decoder() }, scheduleTimers: false)
-        init() {
+            sendSubtitle: { [unowned self] _, packet in
+                if subtitleSendFails { throw DeviceFeatureError.disconnected }
+                try SubtitleDisplayWire.validateOutbound(packet); subtitlePackets.append(packet)
+            }, makeDecoder: { [unowned self] in decoder },
+            uptime: { [unowned self] in clock.uptime }, dateNow: { [unowned self] in clock.date },
+            scheduleTimers: false)
+        init(date: Date, timeZone: TimeZone) {
+            let runtimeClock = Clock(date: date, timeZone: timeZone)
+            clock = runtimeClock
             defaults = UserDefaults(suiteName: name)!
             root = FileManager.default.temporaryDirectory.appendingPathComponent(name)
-            archive = AlwaysOnTranscriptArchive(root: root)
+            archive = AlwaysOnTranscriptArchive(root: root, calendar: Calendar(identifier: .gregorian),
+                timeZone: { runtimeClock.timeZone })
             let provider = provider, vault = vault
             settings = SubtitleSettingsStore(defaults: defaults, credentials: vault, allowsChanges: true, factory: { _ in provider })
             var options = CaptionOptions(); options.service = .aliyun
             options.aliyunHost = "workspace-a.cn-beijing.maas.aliyuncs.com"
             XCTAssertTrue(settings.save(options, key: "synthetic-test-only"))
+        }
+        func makeAdditionalRuntime() -> AlwaysOnRuntime {
+            AlwaysOnRuntime(defaults: defaults, archive: archive, settings: settings,
+                device: { [unowned self] in currentDevice }, supportsDevice: { true }, available: { true },
+                suspendVoice: {}, claimDisplay: { _ in },
+                sendBusiness: { [unowned self] in businessPackets.append(($0, $1)) },
+                sendSubtitle: { [unowned self] _, packet in
+                    try SubtitleDisplayWire.validateOutbound(packet); subtitlePackets.append(packet)
+                }, makeDecoder: { [unowned self] in decoder },
+                uptime: { [unowned self] in clock.uptime }, dateNow: { [unowned self] in clock.date },
+                scheduleTimers: false)
         }
         func feed(_ business: UInt8, type: UInt32, json: [String: Any] = [:], bytes: Data = Data()) {
             runtime.receive(device: "fixture", business: business,

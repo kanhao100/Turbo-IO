@@ -49,8 +49,7 @@ private final class AzureCaptionWorker {
                     config.speechRecognitionLanguage = language
                     reco = try SPXSpeechRecognizer(speechConfiguration: config, audioConfiguration: audio)
                 } else {
-                    guard let detection = SPXAutoDetectSourceLanguageConfiguration(["zh-CN", "en-US", "en-GB"])
-                    else { failure(); return }
+                    let detection = try SPXAutoDetectSourceLanguageConfiguration(["zh-CN", "en-US", "en-GB"])
                     reco = try SPXSpeechRecognizer(speechConfiguration: config,
                         autoDetectSourceLanguageConfiguration: detection, audioConfiguration: audio)
                 }

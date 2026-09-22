@@ -116,6 +116,29 @@ final class SubtitleRealtimeTests: XCTestCase {
         XCTAssertEqual(try f.types(), [2,7,3,2,7])
         f.writer.deferFinish = false
     }
+    @MainActor func testMatchingTypeThreeStopsWithoutEchoAndTailTypeOneWaitsForCooldown() async throws {
+        let f = fixture(); f.runtime.setShortcut(true)
+        let firstStarted = expectation(description: "first shortcut starts")
+        f.runtime.onShortcutStart = { firstStarted.fulfill() }
+        f.feed(1, sid: "first-shortcut")
+        await fulfillment(of: [firstStarted], timeout: 3)
+        let activeSID = try f.sid()
+        f.clock.now += 2
+        f.feed(3, sid: activeSID)
+        XCTAssertEqual(f.runtime.phase, .idle)
+        XCTAssertEqual(try f.types(), [2, 7])
+
+        f.feed(1, sid: "tail-after-stop")
+        XCTAssertEqual(f.runtime.phase, .idle)
+        XCTAssertEqual(try f.types(), [2, 7])
+        f.clock.now += 2
+        let nextStarted = expectation(description: "new shortcut after cooldown starts")
+        f.runtime.onShortcutStart = { nextStarted.fulfill() }
+        f.feed(1, sid: "new-deliberate-shortcut")
+        await fulfillment(of: [nextStarted], timeout: 3)
+        XCTAssertEqual(f.runtime.phase, .openingDisplay)
+        XCTAssertEqual(try f.types(), [2, 7, 2, 7])
+    }
     @MainActor func testLatencyExperimentReceivesRealRuntimeBoundaries() async throws {
         let f = fixture(); f.runtime.latency.setEnabled(true)
         await f.runtime.start()?.value

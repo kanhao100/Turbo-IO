@@ -340,7 +340,8 @@ private struct AlwaysOnActiveMarker: Codable {
         if let archivedDay, archivedDay != day {
             if !partial.isEmpty {
                 guard appendRequired(kind: .unfinished, text: partial,
-                                     timestamp: lastDayCheckAt ?? runStartedAt ?? nowDate) else { return }
+                                     timestamp: lastDayCheckAt ?? runStartedAt ?? nowDate,
+                                     day: archivedDay) else { return }
                 partial = ""
             }
             self.archivedDay = day; todaySentences = 0
@@ -490,9 +491,8 @@ private struct AlwaysOnActiveMarker: Codable {
         }
         provider?.stop(); provider = nil; phase = .reconnectingASR
         status = "ASR 连接中断，\(Int(delay)) 秒后重试；眼镜采音保持不变"
-        guard appendRequired(kind: .gap,
+        guard appendRequired(kind: .system,
               text: "ASR 连接中断，开始第 \(retryBudget.attempts) 次重连") else { return }
-        gaps += 1
         let token = generation
         retryTask?.cancel()
         retryTask = Task { @MainActor [weak self] in
@@ -521,8 +521,7 @@ private struct AlwaysOnActiveMarker: Codable {
             failTask("新 ASR 设置缺少有效配置或密钥，当前任务已停止。")
             return
         }
-        guard appendRequired(kind: .gap, text: reason) else { return }
-        gaps += 1
+        guard appendRequired(kind: .system, text: reason) else { return }
         generation = UUID(); retryTask?.cancel(); provider?.stop(); cloudReady = false
         reconnectBuffer.removeAll(); reconnectBytes = 0; reconnectGapOpen = false
         retryBudget = CaptionRetryBudget(); optionsSnapshot = config.options; keySnapshot = config.key
@@ -606,16 +605,17 @@ private struct AlwaysOnActiveMarker: Codable {
         }
     }
 
-    private func append(kind: AlwaysOnTranscriptKind, text: String, timestamp: Date? = nil) throws {
+    private func append(kind: AlwaysOnTranscriptKind, text: String, timestamp: Date? = nil,
+                        day: String? = nil) throws {
         guard let runID, let options = optionsSnapshot else { throw AlwaysOnArchiveError.invalidEntry }
         try archive.append(AlwaysOnTranscriptEntry(timestamp: timestamp ?? dateNow(), runID: runID, kind: kind, text: text,
             service: options.service.name, model: options.selectedModel,
-            languageMode: options.languageMode, detectedLanguage: detectedLanguage ?? options.cloudLanguage))
+            languageMode: options.languageMode, detectedLanguage: detectedLanguage ?? options.cloudLanguage), to: day)
     }
 
     @discardableResult private func appendRequired(kind: AlwaysOnTranscriptKind, text: String,
-                                                   timestamp: Date? = nil) -> Bool {
-        do { try append(kind: kind, text: text, timestamp: timestamp); return true }
+                                                   timestamp: Date? = nil, day: String? = nil) -> Bool {
+        do { try append(kind: kind, text: text, timestamp: timestamp, day: day); return true }
         catch { storageFailed(); return false }
     }
 

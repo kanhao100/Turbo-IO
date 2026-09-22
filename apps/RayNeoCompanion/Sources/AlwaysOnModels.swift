@@ -54,25 +54,26 @@ enum AlwaysOnArchiveError: Error { case invalidDay, invalidEntry, corruptArchive
     @Published var error: String?
     let root: URL
     private let calendar: Calendar
-    private let timeZone: TimeZone
+    private let timeZone: () -> TimeZone
 
     init(root: URL? = nil, calendar: Calendar = .autoupdatingCurrent,
-         timeZone: TimeZone = .autoupdatingCurrent) {
+         timeZone: @escaping () -> TimeZone = { .autoupdatingCurrent }) {
         self.root = root ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("AlwaysOnTranscriptsV1", isDirectory: true)
         self.calendar = calendar; self.timeZone = timeZone
     }
 
     func dayKey(for date: Date) -> String {
-        var calendar = calendar; calendar.timeZone = timeZone
+        var calendar = calendar; calendar.timeZone = timeZone()
         let components = calendar.dateComponents([.year, .month, .day], from: date)
         return String(format: "%04d-%02d-%02d", components.year ?? 0, components.month ?? 0, components.day ?? 0)
     }
 
-    func append(_ entry: AlwaysOnTranscriptEntry) throws {
+    func append(_ entry: AlwaysOnTranscriptEntry, to requestedDay: String? = nil) throws {
         guard entry.text.utf8.count <= 32_768,
               !entry.text.unicodeScalars.contains(where: { $0.value == 0 }) else { throw AlwaysOnArchiveError.invalidEntry }
-        let day = dayKey(for: entry.timestamp)
+        let day = requestedDay ?? dayKey(for: entry.timestamp)
+        guard Self.validDay(day) else { throw AlwaysOnArchiveError.invalidDay }
         let directory = try dayDirectory(day, create: true)
         try ensureManifest(day: day, directory: directory, date: entry.timestamp)
         let file = directory.appendingPathComponent("entries-\(entry.runID.uuidString.lowercased()).jsonl")
@@ -86,6 +87,7 @@ enum AlwaysOnArchiveError: Error { case invalidDay, invalidEntry, corruptArchive
         let info = try file.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
         guard info.isRegularFile == true, info.isSymbolicLink != true,
               (info.fileSize ?? 0) + line.count <= 32 * 1_024 * 1_024 else { throw AlwaysOnArchiveError.limit }
+        try Self.repairTornTail(file)
         let handle = try FileHandle(forWritingTo: file)
         defer { try? handle.close() }
         try handle.seekToEnd(); try handle.write(contentsOf: line); try handle.synchronize()
@@ -221,6 +223,26 @@ enum AlwaysOnArchiveError: Error { case invalidDay, invalidEntry, corruptArchive
             }
         }
         return result.sorted { $0.timestamp < $1.timestamp }
+    }
+
+    /// A crash can leave only the final JSONL record incomplete. Validate every
+    /// completed line and truncate that one tail before appending new events, so
+    /// the recovery marker cannot make the whole day's archive unreadable.
+    nonisolated private static func repairTornTail(_ file: URL) throws {
+        let data = try Data(contentsOf: file, options: .mappedIfSafe)
+        guard !data.isEmpty, data.last != 0x0a else { return }
+        let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
+        let boundary = data.lastIndex(of: 0x0a).map { data.index(after: $0) } ?? data.startIndex
+        let complete = data[..<boundary]
+        for line in complete.split(separator: 0x0a) {
+            guard (try? decoder.decode(AlwaysOnTranscriptEntry.self, from: Data(line))) != nil else {
+                throw AlwaysOnArchiveError.corruptArchive
+            }
+        }
+        let handle = try FileHandle(forWritingTo: file)
+        defer { try? handle.close() }
+        try handle.truncate(atOffset: UInt64(complete.count))
+        try handle.synchronize()
     }
 
     nonisolated private static func catalog(root: URL) throws -> [AlwaysOnDaySummary] {
