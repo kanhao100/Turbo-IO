@@ -10,8 +10,15 @@ final class RealtimeSubtitlesUITests:XCTestCase {
         capture(app,"realtime-subtitles-history")
         app.buttons["realtime-settings"].tap()
         XCTAssertTrue(app.secureTextFields["subtitle-api-key"].waitForExistence(timeout:5))
-        XCTAssertFalse(app.buttons["subtitle-save-settings"].isEnabled)
         capture(app,"realtime-subtitles-settings")
+        let saveButton = app.buttons["subtitle-save-settings"]
+        // Form rows below the viewport are absent from the accessibility tree.
+        for _ in 0..<10 {
+            if saveButton.exists { break }
+            app.swipeUp()
+        }
+        XCTAssertTrue(saveButton.exists)
+        XCTAssertFalse(saveButton.isEnabled)
     }
     private func capture(_ app:XCUIApplication,_ name:String) {
         let item=XCTAttachment(screenshot:app.screenshot());item.name=name;item.lifetime = .keepAlways;add(item)
