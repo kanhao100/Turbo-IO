@@ -171,7 +171,7 @@ Turbo-IO 的协议层现已定义仅接受 `around/ahead` 的方向类型；type
 python -B .\scripts\analyze-pickup-direction.py .\pickup-manifest.json --output .\pickup-result.json
 ```
 
-也可用 `python -B .\scripts\analyze-pickup-direction.py --example-manifest` 查看脚本当前自带的一轮示例。输出包含逐块 RMS/转写错误数、固定配对的 `delta_r_db`/`delta_f_db`/`delta_text_error_rate`，以及 `summary.full_design_evidence` 和四项量化门槛。一次示例轮次只能得到预分析结果；六轮各自有效且各有独立 ZIP/会话时才能满足完整实验设计。`summary.device_effect_confirmed` 始终为空，仍需现场核对 type 10、type 4 连续性、声源布置、往返复现和安静语音质量，不能把脚本数值当作眼镜已应用指令的证明。
+也可用 `python -B .\scripts\analyze-pickup-direction.py --example-manifest` 查看脚本当前自带的一轮示例。输出包含逐块 RMS/转写错误数、固定配对的 `delta_r_db`/`delta_f_db`/`delta_text_error_rate`，以及 `summary.full_design_evidence` 和四项量化门槛。汇总统计只纳入四块完整、且 ZIP 与归档会话 ID 均独立的有效轮次；失败旧轮次仍保留在原始 `blocks/pairs` 中，并显示 `included_in_quantification=false`，`raw_valid_blocks/raw_valid_pairs` 另列原始计数。一次示例轮次只能得到预分析结果；六轮各自有效且各有独立 ZIP/会话时才能满足完整实验设计。`summary.device_effect_confirmed` 始终为空，仍需现场核对 type 10、type 4 连续性、声源布置、往返复现和安静语音质量，不能把脚本数值当作眼镜已应用指令的证明。
 
 每个有效区块至少记录：轮次/区块号、固定配对号、A/B 顺序、App/系统/固件版本、眼镜电量、声源角度/距离/声压级、三个源文件的素材 ID、ASR 服务/模型/语言、方向操作与提交时间、等待时长、type 10 发送/异步结果、区块开始/结束时的累计 type 4 包计数与检测到的缺口数、播放时间、三个声学标记及其 WAV 文件和样本区间、预定分析窗口、目标/干扰单独 RMS、混合段原始转写/参考文本/归属判断与替换/删除/插入数。区块边界的累计计数需现场截图或抄录；现有导出文件不保存逐块包数。汇总配对数、中位 `ΔR/ΔF/ΔCER` 及各对的正负号，保存所有原始值与排除原因，不能只报最佳一次。
 

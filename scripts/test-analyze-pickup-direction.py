@@ -236,6 +236,41 @@ class PickupDirectionAnalysisTests(unittest.TestCase):
         self.assertGreaterEqual(summary["valid_pairs"], 12)
         self.assertFalse(summary["full_design_evidence"])
 
+    def test_failed_extra_round_pair_cannot_contaminate_full_design_summary(self) -> None:
+        manifest = self.multi_zip_fixture(["ABBA", "BAAB"] * 3)
+        baseline = analysis.analyze(None, manifest, manifest_dir=self.directory)["summary"]
+        extra_manifest, _ = fixture(["ABBA"])
+        extra = extra_manifest["rounds"][0]
+        extra["round_id"] = "failed-old-round"
+        extra["export_zip"] = "failed-old-round.zip"
+        for block_index, block in enumerate(extra["blocks"]):
+            block["material_id"] = "material-0-0" if block_index < 2 else "failed-old-material-1"
+        extra["blocks"][0]["recognized"] = extra["blocks"][0]["reference"]
+        extra["blocks"][1]["recognized"] = ""
+        extra["blocks"][2] = {
+            "direction": "ahead", "material_id": "failed-old-material-1",
+            "geometry_id": "target-0-interferer-90", "valid": False,
+            "invalid_reason": "type 4 gap",
+        }
+        _, bad_wav = fixture(["ABBA"], ahead_interferer=16_000)
+        extra_zip = self.directory / extra["export_zip"]
+        manifest["rounds"].append(extra)
+        for copied_session_id in (uuid.UUID(int=7), uuid.UUID(int=1)):
+            # The second case is another export of an already counted session.
+            self.write_zip(bad_wav, path=extra_zip, session_id=copied_session_id)
+            result = analysis.analyze(None, manifest, manifest_dir=self.directory)
+            summary = result["summary"]
+            self.assertTrue(summary["full_design_evidence"])
+            self.assertEqual(summary["valid_pairs"], 12)
+            self.assertEqual(summary["raw_valid_pairs"], 13)
+            self.assertEqual(summary["valid_blocks"], 24)
+            self.assertEqual(summary["raw_valid_blocks"], 27)
+            self.assertEqual(summary["median_delta_r_db"], baseline["median_delta_r_db"])
+            self.assertEqual(summary["positive_delta_r_pairs"], baseline["positive_delta_r_pairs"])
+            self.assertEqual(summary["pooled_mixed_text"], baseline["pooled_mixed_text"])
+            self.assertTrue(result["pairs"][-2]["valid"])
+            self.assertFalse(result["pairs"][-2]["included_in_quantification"])
+
     def test_mixed_geometry_and_reused_windows_are_rejected(self) -> None:
         manifest, wav = fixture(["ABBA"])
         changed = copy.deepcopy(manifest)
@@ -260,8 +295,10 @@ class PickupDirectionAnalysisTests(unittest.TestCase):
             "valid": False, "invalid_reason": "audio gap during playback",
         }
         result = self.run_analysis(changed, wav)
-        self.assertEqual(result["summary"]["valid_blocks"], 3)
-        self.assertEqual(result["summary"]["valid_pairs"], 1)
+        self.assertEqual(result["summary"]["raw_valid_blocks"], 3)
+        self.assertEqual(result["summary"]["raw_valid_pairs"], 1)
+        self.assertEqual(result["summary"]["valid_blocks"], 0)
+        self.assertEqual(result["summary"]["valid_pairs"], 0)
         changed = copy.deepcopy(manifest)
         changed["rounds"][0]["blocks"][0]["windows"]["interferer"] = changed["rounds"][0]["blocks"][0]["windows"]["target"]
         with self.assertRaisesRegex(analysis.AnalysisError, "windows overlap"):

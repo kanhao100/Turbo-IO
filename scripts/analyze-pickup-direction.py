@@ -243,7 +243,6 @@ def analyze(archive_path: Path | None, manifest: dict[str, Any], *, manifest_dir
     round_counts = {"ABBA": 0, "BAAB": 0}
     geometry_ids: set[str] = set()
     claimed_windows: dict[tuple[str, str], list[tuple[int, int, str]]] = {}
-    paired_material_ids: set[str] = set()
     round_archive_keys: dict[str, str] = {}
     round_session_ids: dict[str, str] = {}
     archives: dict[str, WAVArchive] = {}
@@ -369,9 +368,6 @@ def analyze(archive_path: Path | None, manifest: dict[str, Any], *, manifest_dir
                     "valid": first["valid"] and second["valid"],
                 }
                 if pair["valid"]:
-                    if first["material_id"] in paired_material_ids:
-                        raise AnalysisError(f"{pair_where}: valid paired material_id {first['material_id']!r} is reused")
-                    paired_material_ids.add(first["material_id"])
                     for kind in ("target", "interferer"):
                         if first["windows"][kind]["sample_count"] != second["windows"][kind]["sample_count"]:
                             raise AnalysisError(f"{pair_where}: paired {kind} windows must have equal sample counts")
@@ -408,9 +404,8 @@ def analyze(archive_path: Path | None, manifest: dict[str, Any], *, manifest_dir
             if previous[1] > current[0]:
                 raise AnalysisError(f"ZIP {Path(archive_key).name!r}, WAV {name!r}: {previous[2]} overlaps {current[2]} across blocks")
 
-    valid_blocks = sum(block["valid"] for block in output_blocks)
-    valid_pairs = [pair for pair in output_pairs if pair["valid"]]
-    count_pairs = len(valid_pairs)
+    raw_valid_blocks = sum(block["valid"] for block in output_blocks)
+    raw_valid_pairs = sum(pair["valid"] for pair in output_pairs)
     valid_round_counts = {"ABBA": 0, "BAAB": 0}
     complete_rounds = [round_item for round_item in output_rounds if round_item["complete_valid_round"]]
     archive_uses = Counter(round_archive_keys[round_item["round_id"]] for round_item in complete_rounds)
@@ -425,6 +420,20 @@ def analyze(archive_path: Path | None, manifest: dict[str, Any], *, manifest_dir
         round_item["independent_session"] = independent
         if independent:
             independent_valid_round_counts[round_item["sequence"]] += 1
+    quantified_round_ids = {round_item["round_id"] for round_item in output_rounds if round_item["independent_session"]}
+    for block in output_blocks:
+        block["included_in_quantification"] = block["valid"] and block["round_id"] in quantified_round_ids
+    for pair in output_pairs:
+        pair["included_in_quantification"] = pair["valid"] and pair["round_id"] in quantified_round_ids
+    valid_blocks = sum(block["included_in_quantification"] for block in output_blocks)
+    valid_pairs = [pair for pair in output_pairs if pair["included_in_quantification"]]
+    paired_material_ids: set[str] = set()
+    for pair in valid_pairs:
+        material_id = pair["material_id"]
+        if material_id in paired_material_ids:
+            raise AnalysisError(f"quantified pairs: material_id {material_id!r} is reused")
+        paired_material_ids.add(material_id)
+    count_pairs = len(valid_pairs)
     full_design = all(independent_valid_round_counts[sequence] >= 3 for sequence in round_counts) and valid_blocks >= 24 and count_pairs >= 12
     median_delta_r = statistics.median(pair["delta_r_db"] for pair in valid_pairs) if valid_pairs else None
     median_delta_f = statistics.median(pair["delta_f_db"] for pair in valid_pairs) if valid_pairs else None
@@ -468,8 +477,11 @@ def analyze(archive_path: Path | None, manifest: dict[str, Any], *, manifest_dir
             "valid_round_counts": valid_round_counts,
             "independent_valid_round_counts": independent_valid_round_counts,
             "planned_blocks": len(output_blocks),
+            "raw_valid_blocks": raw_valid_blocks,
+            "raw_valid_pairs": raw_valid_pairs,
             "valid_blocks": valid_blocks,
             "valid_pairs": count_pairs,
+            "quantification_scope": "complete valid rounds with a unique export ZIP and archive session ID; incomplete or duplicate rounds remain in raw blocks and pairs only",
             "full_design_evidence": full_design,
             "full_design_scope": "quantity and independence of valid rounds only; wire, audio continuity, and firmware behavior remain external checks",
             "evidence_level": "full_design_quantification" if full_design else "preanalysis_insufficient",
