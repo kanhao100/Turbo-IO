@@ -43,26 +43,6 @@ jobs:
       - name: Install XcodeGen
         run: brew install xcodegen
 
-      - name: Test subtitle display runtime and tab in simulator
-        run: node scripts/test-subtitle-display.mjs
-
-      - name: Export simulator screenshots
-        if: always()
-        continue-on-error: true
-        run: >-
-          xcrun xcresulttool export attachments
-          --path apps/RayNeoCompanion/build-subtitle-simulator/Tests.xcresult
-          --output-path apps/RayNeoCompanion/build-subtitle-simulator/screenshots
-
-      - name: Upload simulator test evidence
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: TurboIO-subtitle-display-tests
-          path: apps/RayNeoCompanion/build-subtitle-simulator/screenshots
-          if-no-files-found: warn
-          retention-days: 7
-
       - name: Generate device project
         run: |
           SDK_PATH=$(xcrun --sdk iphoneos --show-sdk-path)
@@ -128,4 +108,35 @@ jobs:
             ${{ steps.package.outputs.ipa_path }}
             apps/RayNeoCompanion/ipa-realtime-subtitles/SHA256SUMS.txt
           if-no-files-found: error
+          retention-days: 7
+
+      - name: Test subtitle display runtime and tab in simulator
+        run: |
+          set -o pipefail
+          node scripts/test-subtitle-display.mjs 2>&1 | tee apps/RayNeoCompanion/subtitle-simulator-test.log
+
+      - name: Upload simulator test log
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: TurboIO-subtitle-simulator-log
+          path: apps/RayNeoCompanion/subtitle-simulator-test.log
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Export simulator screenshots
+        if: always()
+        continue-on-error: true
+        run: >-
+          xcrun xcresulttool export attachments
+          --path apps/RayNeoCompanion/build-subtitle-simulator/Tests.xcresult
+          --output-path apps/RayNeoCompanion/build-subtitle-simulator/screenshots
+
+      - name: Upload simulator test evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: TurboIO-subtitle-display-tests
+          path: apps/RayNeoCompanion/build-subtitle-simulator/screenshots
+          if-no-files-found: warn
           retention-days: 7
