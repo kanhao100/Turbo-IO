@@ -1,6 +1,7 @@
 import Foundation
 import Combine
 import RayNeoCaptions
+import RayNeoProtocol
 
 protocol SubtitleCredentialStorage {
     func key(for options: CaptionOptions) -> String?
@@ -17,7 +18,9 @@ struct SubtitleKeychainStorage: SubtitleCredentialStorage {
 /// ASR settings for native subtitles. Saving never opens a device or cloud session.
 @MainActor final class SubtitleSettingsStore: ObservableObject {
     static let preferencesKey = "companion.realtimeSubtitles.options.v1"
+    static let pickupDirectionKey = "companion.realtimeSubtitles.pickupDirection.v1"
     @Published private(set) var options: CaptionOptions
+    @Published private(set) var pickupDirection: SubtitleTranslateWire.PickupDirection
     @Published private(set) var hasKey = false
     @Published var error: String?
     var isBusy: (() -> Bool)?
@@ -35,6 +38,8 @@ struct SubtitleKeychainStorage: SubtitleCredentialStorage {
         #else
         self.allowsChanges = allowsChanges ?? false
         #endif
+        pickupDirection = SubtitleTranslateWire.PickupDirection(
+            rawValue: defaults.string(forKey: Self.pickupDirectionKey) ?? "") ?? .around
         if let saved = defaults.data(forKey: Self.preferencesKey),
            let decoded = try? JSONDecoder().decode(CaptionOptions.self, from: saved) {
             options = decoded
@@ -60,6 +65,12 @@ struct SubtitleKeychainStorage: SubtitleCredentialStorage {
         SpeechConfiguration(options: options).missingRequirements(asrKey: hasKey, modelKey: false, conversation: false)
     }
     func refresh() { hasKey = credentials.key(for: options).map { !$0.isEmpty } ?? false }
+    @discardableResult func savePickupDirection(_ direction: SubtitleTranslateWire.PickupDirection) -> Bool {
+        guard allowsChanges else { error = "当前设备不能修改字幕收音方向。"; return false }
+        defaults.set(direction.rawValue, forKey: Self.pickupDirectionKey)
+        pickupDirection = direction; error = nil
+        return true
+    }
     func hasKey(for value: CaptionOptions) -> Bool { credentials.key(for: value).map { !$0.isEmpty } ?? false }
     @discardableResult func save(_ draft: CaptionOptions, key: String = "", allowActiveAlwaysOn: Bool = false) -> Bool {
         guard allowsChanges, allowActiveAlwaysOn || isBusy?() != true else { error = "请先结束字幕或语音会话，再修改设置。"; return false }

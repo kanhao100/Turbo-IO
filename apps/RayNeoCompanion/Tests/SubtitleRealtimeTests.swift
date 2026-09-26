@@ -228,6 +228,122 @@ final class SubtitleRealtimeTests: XCTestCase {
         f.settings.isBusy = { true }
         XCTAssertFalse(f.settings.save(changed,key:"synthetic-second-key"))
     }
+    @MainActor func testPickupDirectionUsesAheadAtStartAndCurrentSIDForLiveSwitch() async throws {
+        let f = fixture()
+        f.runtime.setPickupDirection(.ahead)
+        XCTAssertEqual(f.settings.pickupDirection, .ahead)
+        await f.runtime.start()?.value
+        let sid = try f.sid()
+        let startJSON = try XCTUnwrap(JSONSerialization.jsonObject(with:
+            XCTUnwrap(BusinessEnvelopeMetadata.messageJSON(XCTUnwrap(f.device.sent.first)))) as? [String: Any])
+        XCTAssertEqual((startJSON["settings"] as? [String: Any])?["direction"] as? String, "ahead")
+
+        f.feed(2, sid: sid, code: 1); f.feed(8, sid: sid, code: 1)
+        XCTAssertEqual(f.runtime.phase, .listening)
+        f.runtime.setPickupDirection(.around)
+        XCTAssertEqual(try f.types(), [1, 7, 10])
+        let sync = try XCTUnwrap(f.device.sent.last)
+        let syncJSON = try XCTUnwrap(JSONSerialization.jsonObject(with:
+            XCTUnwrap(BusinessEnvelopeMetadata.messageJSON(sync))) as? [String: Any])
+        XCTAssertEqual(syncJSON["sid"] as? String, sid)
+        XCTAssertEqual((syncJSON["settings"] as? [String: Any])?["direction"] as? String, "around")
+        XCTAssertFalse(f.runtime.diagnosticText.contains(sid))
+        XCTAssertTrue(f.runtime.diagnosticText.contains("sid=current"))
+        f.feed(10, sid: sid, code: 2) // Observe a possible type-10 response without assuming it is an apply ACK.
+        XCTAssertTrue(f.runtime.controlEvents.contains { $0.contains("type=10 sid=current") && $0.contains("code=2") })
+        XCTAssertEqual(f.provider.starts, 1)
+        XCTAssertEqual(f.runtime.phase, .listening)
+        f.feed(4, sid: sid, seq: 1, bytes: Data([1]))
+        XCTAssertEqual(f.runtime.packets, 1)
+
+        f.runtime.setPickupDirection(.ahead)
+        XCTAssertEqual(try f.types(), [1, 7, 10, 10])
+        XCTAssertEqual(f.settings.pickupDirection, .ahead)
+        let provider = f.provider
+        let reloaded = SubtitleSettingsStore(defaults: f.defaults, credentials: f.vault,
+                                             allowsChanges: true, factory: { _ in provider })
+        XCTAssertEqual(reloaded.pickupDirection, .ahead)
+    }
+    @MainActor func testPickupDirectionUsesAheadForGlassesStartAndDoesNotStopOnSwitchFailure() async throws {
+        let f = fixture()
+        f.runtime.setShortcut(true)
+        f.runtime.setPickupDirection(.ahead)
+        let started = expectation(description: "glasses subtitle start")
+        f.runtime.onShortcutStart = { started.fulfill() }
+        f.feed(1, sid: "glasses-direction")
+        await fulfillment(of: [started], timeout: 3)
+        let result = try XCTUnwrap(f.device.sent.first)
+        let resultJSON = try XCTUnwrap(JSONSerialization.jsonObject(with:
+            XCTUnwrap(BusinessEnvelopeMetadata.messageJSON(result))) as? [String: Any])
+        XCTAssertEqual((resultJSON["final_settings"] as? [String: Any])?["direction"] as? String, "ahead")
+        f.runtime.setPickupDirection(.around) // Wait for the display handshake before changing the live session.
+        XCTAssertEqual(f.settings.pickupDirection, .ahead)
+        XCTAssertEqual(try f.types(), [2, 7])
+        f.feed(8, sid: "glasses-direction", code: 1)
+
+        f.device.failType10 = true
+        f.runtime.setPickupDirection(.around)
+        XCTAssertEqual(f.runtime.phase, .listening)
+        XCTAssertEqual(f.provider.stops, 0)
+        XCTAssertEqual(f.settings.pickupDirection, .ahead)
+        XCTAssertEqual(try f.types(), [2, 7])
+        XCTAssertNotNil(f.runtime.error)
+        XCTAssertTrue(f.runtime.pickupDirectionNeedsRetry)
+
+        f.device.failType10 = false
+        f.runtime.retryPickupDirection()
+        let submitted = try XCTUnwrap(f.device.sent.last)
+        XCTAssertEqual(try BusinessEnvelopeMetadata.inspect(submitted).messageType, 10)
+        f.runtime.transportFailed(device: "glasses", packet: submitted, code: 42,
+                                  messageID: try XCTUnwrap(f.device.sentMessageIDs.last))
+        XCTAssertEqual(f.runtime.phase, .listening)
+        XCTAssertEqual(f.provider.stops, 0)
+        f.runtime.retryPickupDirection()
+        XCTAssertEqual(try f.types(), [2, 7, 10, 10])
+    }
+    @MainActor func testLateIdenticalDirectionFailureDoesNotMarkLatestSwitchFailed() async throws {
+        let f = fixture()
+        await f.runtime.start()?.value
+        let sid = try f.sid()
+        f.feed(2, sid: sid, code: 1); f.feed(8, sid: sid, code: 1)
+
+        f.runtime.setPickupDirection(.ahead)
+        let firstPacket = try XCTUnwrap(f.device.sent.last)
+        let firstID = try XCTUnwrap(f.device.sentMessageIDs.last)
+        f.runtime.setPickupDirection(.around)
+        f.runtime.setPickupDirection(.ahead)
+        let latestPacket = try XCTUnwrap(f.device.sent.last)
+        let latestID = try XCTUnwrap(f.device.sentMessageIDs.last)
+        XCTAssertEqual(firstPacket, latestPacket)
+        XCTAssertNotEqual(firstID, latestID)
+
+        f.runtime.transportFailed(device: "glasses", packet: firstPacket, code: 42,
+                                  messageID: firstID)
+        XCTAssertFalse(f.runtime.pickupDirectionNeedsRetry)
+        XCTAssertNil(f.runtime.error)
+        XCTAssertEqual(f.runtime.phase, .listening)
+
+        f.runtime.transportFailed(device: "glasses", packet: latestPacket, code: 42,
+                                  messageID: latestID)
+        XCTAssertTrue(f.runtime.pickupDirectionNeedsRetry)
+        f.runtime.retryPickupDirection()
+        let retryID = try XCTUnwrap(f.device.sentMessageIDs.last)
+        XCTAssertNotEqual(retryID, latestID)
+        XCTAssertFalse(f.runtime.pickupDirectionNeedsRetry)
+        f.runtime.transportFailed(device: "glasses", packet: latestPacket, code: 43,
+                                  messageID: latestID)
+        XCTAssertFalse(f.runtime.pickupDirectionNeedsRetry)
+        XCTAssertNil(f.runtime.error)
+
+        f.device.failType10 = true
+        f.runtime.setPickupDirection(.around)
+        let synchronousError = f.runtime.error
+        XCTAssertNotNil(synchronousError)
+        f.runtime.transportFailed(device: "glasses", packet: latestPacket, code: 44,
+                                  messageID: retryID)
+        XCTAssertTrue(f.runtime.pickupDirectionNeedsRetry)
+        XCTAssertEqual(f.runtime.error, synchronousError)
+    }
     private func packet(_ type:UInt32,sid:String,code:Int?=nil,seq:Int?=nil,bytes:Data=Data()) throws -> Data {
         var j:[String:Any] = ["sid":sid]; if let code {j["code"]=code}; if let seq {j["seq"]=seq}
         return try DeviceBusinessWire.encode(type:type,json:j,bytes:bytes)
@@ -298,12 +414,22 @@ final class SubtitleRealtimeTests: XCTestCase {
     @MainActor private final class Device:SubtitleRealtimeDevice {
         var supportsDevice=true,deviceID:String?="glasses",subtitleOwnsDisplay=false
         var featureIsBusy:(()->Bool)?
-        var sent:[Data]=[]
+        var sent:[Data]=[], sentMessageIDs:[String]=[]
+        var failType10=false
         func prepare(){}
         func ownDisplayForSubtitles(_ owns:Bool){subtitleOwnsDisplay=owns}
-        func sendRealtimeSubtitle(target:String,payload:Data)throws {
+        @discardableResult func sendRealtimeSubtitle(target:String,payload:Data)throws -> String {
             XCTAssertTrue(subtitleOwnsDisplay);XCTAssertEqual(target,deviceID)
-            try SubtitleTranslateWire.validateOutbound(payload);sent.append(payload)
+            if failType10 {
+                let metadata = try BusinessEnvelopeMetadata.inspect(payload)
+                if metadata.messageType == 10 {
+                    throw NSError(domain: "SyntheticDirectionSendFailure", code: 1)
+                }
+            }
+            try SubtitleTranslateWire.validateOutbound(payload)
+            let messageID = UUID().uuidString
+            sent.append(payload);sentMessageIDs.append(messageID)
+            return messageID
         }
     }
 }

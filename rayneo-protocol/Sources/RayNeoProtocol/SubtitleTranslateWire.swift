@@ -6,6 +6,11 @@ import CoreFoundation
 public enum SubtitleTranslateWire {
     public static let business: UInt8 = 19
     public enum Failure: Error { case invalidPacket, invalidSession, invalidAudio, invalidMessage }
+    /// Caption pickup direction values used on the business 19 wire.
+    public enum PickupDirection: String, CaseIterable, Sendable {
+        case around
+        case ahead
+    }
     public struct Event {
         public let type: UInt32
         public let sid: String
@@ -20,20 +25,27 @@ public enum SubtitleTranslateWire {
             (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0) || $0 == 45 || $0 == 95
         }
     }
-    public static func settings(language: String, saveAudio: Bool) throws -> [String: Any] {
+    public static func settings(language: String, saveAudio: Bool,
+                                direction: PickupDirection = .around) throws -> [String: Any] {
         guard ["zh-CN", "en-GB", "en-US"].contains(language) else { throw Failure.invalidMessage }
         return ["mode": "classic", "source_language": language, "target_language": language,
-                "save_audio": saveAudio, "direction": "around"]
+                "save_audio": saveAudio, "direction": direction.rawValue]
     }
-    public static func start(sid: String, language: String, saveAudio: Bool) throws -> Data {
+    public static func start(sid: String, language: String, saveAudio: Bool,
+                             direction: PickupDirection = .around) throws -> Data {
         // Dart's tagged 2 decodes to wire integer 1 (phone trigger). No forced takeover.
         try encode(type: 1, sid: sid, fields: ["trigger": 1, "code": 0,
-            "settings": settings(language: language, saveAudio: saveAudio)])
+            "settings": settings(language: language, saveAudio: saveAudio, direction: direction)])
     }
-    public static func startResult(sid: String, language: String, saveAudio: Bool, code: Int = 1) throws -> Data {
+    public static func startResult(sid: String, language: String, saveAudio: Bool, code: Int = 1,
+                                   direction: PickupDirection = .around) throws -> Data {
         guard [1, 4, 5, 6, 7, 9, 10, 34].contains(code) else { throw Failure.invalidMessage }
         return try encode(type: 2, sid: sid, fields: ["code": code,
-            "final_settings": settings(language: language, saveAudio: saveAudio)])
+            "final_settings": settings(language: language, saveAudio: saveAudio, direction: direction)])
+    }
+    /// Change pickup direction in an active caption session, preserving its SID.
+    public static func syncServiceSettings(sid: String, direction: PickupDirection) throws -> Data {
+        try encode(type: 10, sid: sid, fields: ["settings": ["direction": direction.rawValue]])
     }
     public static func stop(sid: String) throws -> Data {
         try encode(type: 3, sid: sid, fields: ["reason_code": 2, "text": ""])
@@ -74,9 +86,17 @@ public enum SubtitleTranslateWire {
         case 1, 2:
             let name = value.type == 1 ? "settings" : "final_settings"
             guard let fields = body[name] as? [String: Any], let language = fields["source_language"] as? String,
-                  let saveAudio = boolean(fields["save_audio"]) else { throw Failure.invalidPacket }
-            expected = try value.type == 1 ? start(sid: value.sid, language: language, saveAudio: saveAudio)
-                : startResult(sid: value.sid, language: language, saveAudio: saveAudio, code: value.code ?? -1)
+                  let saveAudio = boolean(fields["save_audio"]),
+                  let rawDirection = fields["direction"] as? String,
+                  let direction = PickupDirection(rawValue: rawDirection) else { throw Failure.invalidPacket }
+            expected = try value.type == 1 ? start(sid: value.sid, language: language, saveAudio: saveAudio, direction: direction)
+                : startResult(sid: value.sid, language: language, saveAudio: saveAudio,
+                              code: value.code ?? -1, direction: direction)
+        case 10:
+            guard let fields = body["settings"] as? [String: Any],
+                  let rawDirection = fields["direction"] as? String,
+                  let direction = PickupDirection(rawValue: rawDirection) else { throw Failure.invalidPacket }
+            expected = try syncServiceSettings(sid: value.sid, direction: direction)
         case 3: expected = try stop(sid: value.sid)
         case 7: expected = try display(sid: value.sid)
         case 5:

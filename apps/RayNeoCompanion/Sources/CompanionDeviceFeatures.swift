@@ -46,7 +46,7 @@ import CryptoKit
         voice.onSubtitleLoss = { [weak self] in self?.store?.realtimeSubtitles.inputLost() }
         voice.onSubtitleSendError = { [weak self] in
             self?.store?.subtitleDisplay.transportFailed(device: $0, packet: $1, code: $2)
-            self?.store?.realtimeSubtitles.transportFailed(device: $0, packet: $1, code: $2)
+            self?.store?.realtimeSubtitles.transportFailed(device: $0, packet: $1, code: $2, messageID: $3)
             self?.store?.alwaysOn.displayTransportFailed(device: $0, packet: $1, code: $2)
         }
         voice.onSubtitleEnvelope = { [weak self] in self?.store?.realtimeSubtitles.receive(device: $0, packet: $1, arrival: $2) }

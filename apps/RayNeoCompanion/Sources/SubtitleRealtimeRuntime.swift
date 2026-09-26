@@ -11,7 +11,7 @@ import RayNeoCaptions
     var featureIsBusy: (() -> Bool)? { get }
     func prepare()
     func ownDisplayForSubtitles(_ owns: Bool)
-    func sendRealtimeSubtitle(target: String, payload: Data) throws
+    @discardableResult func sendRealtimeSubtitle(target: String, payload: Data) throws -> String
 }
 
 protocol SubtitlePCMDecoder: AnyObject {
@@ -64,6 +64,8 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
     @Published private(set) var saving = false
     @Published private(set) var shortcutEnabled = false
     @Published private(set) var cloudReady = false
+    @Published private(set) var pickupDirectionMessage: String?
+    @Published private(set) var pickupDirectionNeedsRetry = false
     @Published private(set) var controlEvents: [String] = []
     let settings: SubtitleSettingsStore
     let archive: SubtitleArchiveStore
@@ -81,6 +83,9 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
     private var provider: CaptionASRProvider?, decoder: SubtitlePCMDecoder?, writer: SubtitleSessionWriting?
     private var record: SubtitleSessionRecord?, options = CaptionOptions(), key = ""
     private var target: String?, sid: String?, generation = UUID()
+    private var sessionPickupDirection: SubtitleTranslateWire.PickupDirection = .around
+    private var lastPickupDirectionMessageID: String?
+    private var pendingPickupDirection: SubtitleTranslateWire.PickupDirection?
     private var deadline: TimeInterval = 0, began: TimeInterval = 0, lastAudioAt: TimeInterval = 0
     private var lastSequence: Int?, gapOpen = false, displayReady = false, cloudStarted = false
     private(set) var sequenceJumps = 0
@@ -98,6 +103,9 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
     var active: Bool { phase != .idle }
     var canStart: Bool { !active && !saving && device.supportsDevice && device.deviceID != nil && !device.subtitleOwnsDisplay && device.featureIsBusy?() != true }
     var canStop: Bool { [.preparing, .startingAudio, .openingDisplay, .listening].contains(phase) }
+    var canChangePickupDirection: Bool {
+        settings.allowsChanges && ((phase == .idle && !saving) || phase == .listening)
+    }
     var audioSeconds: TimeInterval { Double(audioBytes) / 32_000 }
 
     init(voice: any SubtitleRealtimeDevice, settings: SubtitleSettingsStore, archive: SubtitleArchiveStore,
@@ -133,6 +141,53 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
     func prepare() {
         device.prepare(); settings.refresh()
     }
+    func setPickupDirection(_ direction: SubtitleTranslateWire.PickupDirection) {
+        guard canChangePickupDirection else {
+            error = "请等待字幕开始完成或本次保存结束，再切换收音方向。"
+            return
+        }
+        guard direction != settings.pickupDirection else { return }
+        if phase == .idle {
+            if settings.savePickupDirection(direction) {
+                pickupDirectionMessage = "已保存；下次字幕会话将请求\(direction == .ahead ? "前方" : "四周")收音。"
+                error = nil
+            }
+            return
+        }
+        submitPickupDirection(direction)
+    }
+    func retryPickupDirection() {
+        guard phase == .listening, pickupDirectionNeedsRetry else { return }
+        submitPickupDirection(pendingPickupDirection ?? settings.pickupDirection)
+    }
+    private func submitPickupDirection(_ direction: SubtitleTranslateWire.PickupDirection) {
+        guard let sid, let target, device.deviceID == target else {
+            connectionChanged()
+            pickupDirectionMessage = "眼镜已断开，切换指令未发送。"
+            error = "眼镜已断开，收音方向切换指令未发送。"
+            return
+        }
+        do {
+            let packet = try SubtitleTranslateWire.syncServiceSettings(sid: sid, direction: direction)
+            let messageID = try device.sendRealtimeSubtitle(target: target, payload: packet)
+            if settings.savePickupDirection(direction) {
+                sessionPickupDirection = direction
+                lastPickupDirectionMessageID = messageID
+                pendingPickupDirection = nil
+                pickupDirectionNeedsRetry = false
+                pickupDirectionMessage = "已发送\(direction == .ahead ? "前方" : "四周")收音切换指令；眼镜是否生效待真机确认。"
+                controlEvents.append("t=\(String(format: "%.3f", now)) business=19 type=10 direction=\(direction.rawValue) state=submitted packets=\(packets) gaps=\(gaps)")
+                controlEvents = Array(controlEvents.suffix(80))
+                error = nil
+            }
+        } catch {
+            lastPickupDirectionMessageID = nil
+            pendingPickupDirection = direction
+            pickupDirectionNeedsRetry = true
+            pickupDirectionMessage = "切换到\(direction == .ahead ? "前方" : "四周")的指令未能发送；眼镜当前收音方向未确认。"
+            self.error = "收音方向切换失败，请确认眼镜连接后重试。"
+        }
+    }
     @discardableResult func start() -> Task<Void, Never>? {
         prepare()
         guard canStart else { error = "请先连接眼镜并结束其他眼镜任务。"; return nil }
@@ -146,6 +201,8 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
         generation = UUID(); let token = generation
         let id = UUID(), protocolID = incomingSID ?? UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
         target = deviceID; sid = protocolID; sessionID = id; options = config.options; key = config.key
+        sessionPickupDirection = settings.pickupDirection; pickupDirectionMessage = nil
+        pickupDirectionNeedsRetry = false; lastPickupDirectionMessageID = nil; pendingPickupDirection = nil
         provider = config.provider; self.decoder = decoder; phase = .preparing; status = "正在准备本次字幕与音频存储"
         partial = ""; recent = []; elapsed = 0; audioBytes = 0; audioLevel = 0; packets = 0; gaps = 0
         lastSequence = nil; gapOpen = false; displayReady = false; cloudReady = false; cloudStarted = false
@@ -177,12 +234,19 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
                 phase = .startingAudio; deadline = now + 10; lastAudioAt = now
                 installTimer()
                 if incomingSID != nil {
-                    guard send(try SubtitleTranslateWire.startResult(sid: protocolID, language: options.language, saveAudio: options.recordAudio)) else { return }
+                    guard send(try SubtitleTranslateWire.startResult(sid: protocolID, language: options.language,
+                                                                     saveAudio: options.recordAudio, direction: sessionPickupDirection)) else { return }
+                    controlEvents.append("t=\(String(format: "%.3f", now)) business=19 type=2 direction=\(sessionPickupDirection.rawValue) state=submitted")
+                    controlEvents = Array(controlEvents.suffix(80))
                     guard generation == token, phase == .startingAudio else { return }
                     acceptedStart(); onShortcutStart?()
                 } else {
                     status = "已请求字幕收音，等待眼镜确认"
-                    _ = send(try SubtitleTranslateWire.start(sid: protocolID, language: options.language, saveAudio: options.recordAudio))
+                    if send(try SubtitleTranslateWire.start(sid: protocolID, language: options.language,
+                                                            saveAudio: options.recordAudio, direction: sessionPickupDirection)) {
+                        controlEvents.append("t=\(String(format: "%.3f", now)) business=19 type=1 direction=\(sessionPickupDirection.rawValue) state=submitted")
+                        controlEvents = Array(controlEvents.suffix(80))
+                    }
                 }
             } catch { guard generation == token else { return }; fail("字幕准备失败，未完成启动。") }
         }
@@ -202,9 +266,11 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
         guard let event = try? SubtitleTranslateWire.event(packet) else {
             if active, source == target { fail("字幕消息格式或音频长度不匹配，已停止本次会话。") }; return
         }
-        if [1, 2, 3, 7, 8].contains(event.type) {
+        if [1, 2, 3, 7, 8, 10].contains(event.type) {
             let state = active ? phase.rawValue : (saving ? "saving" : "idle")
-            controlEvents.append("t=\(String(format: "%.3f", arrival)) business=19 type=\(event.type) sid=\(String(event.sid.prefix(24))) state=\(state)")
+            let sidMatch = event.sid == sid ? "current" : "other"
+            let code = event.code.map { " code=\($0)" } ?? ""
+            controlEvents.append("t=\(String(format: "%.3f", arrival)) business=19 type=\(event.type) sid=\(sidMatch) state=\(state)\(code)")
             controlEvents = Array(controlEvents.suffix(80))
         }
         // A second glasses shortcut uses the same type-1 control event as the first one on
@@ -346,8 +412,21 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
         guard active, let target, device.deviceID != target else { return }
         stop(reason: "连接中断，本次字幕已停止并保存", interrupted: true, notifyGlasses: false)
     }
-    func transportFailed(device source: String, packet: Data, code: Int) {
+    func transportFailed(device source: String, packet: Data, code: Int, messageID: String) {
         guard source == target, let event = try? SubtitleTranslateWire.event(packet), event.sid == sid else { return }
+        if event.type == 10 {
+            let latest = !messageID.isEmpty && messageID == lastPickupDirectionMessageID
+            let state = latest ? "send_failed" : "stale_send_failed"
+            controlEvents.append("t=\(String(format: "%.3f", now)) business=19 type=10 state=\(state) code=\(code) packets=\(packets) gaps=\(gaps)")
+            controlEvents = Array(controlEvents.suffix(80))
+            if latest {
+                pendingPickupDirection = sessionPickupDirection
+                pickupDirectionNeedsRetry = true
+                pickupDirectionMessage = "切换指令异步发送失败；眼镜当前收音方向未确认。"
+                error = "收音方向切换失败，code=\(code)。可重试或结束后重新启动字幕。"
+            }
+            return
+        }
         if event.type != 3 { fail("字幕命令异步发送失败，code=\(code)") }
     }
     private func send(_ packet: Data) -> Bool {
@@ -395,6 +474,8 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
     }
     private func release() {
         timer?.invalidate(); timer = nil; phase = .idle; target = nil; sid = nil
+        lastPickupDirectionMessageID = nil; pickupDirectionNeedsRetry = false; pickupDirectionMessage = nil
+        pendingPickupDirection = nil
         record = nil; device.ownDisplayForSubtitles(false)
         if !saving { sessionID = nil }
     }
@@ -423,6 +504,7 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
     var diagnosticText: String {
         let steps = sequenceStepCounts.keys.sorted().map { "\($0):\(sequenceStepCounts[$0] ?? 0)" }.joined(separator: ",")
         let controls = controlEvents.isEmpty ? "none" : controlEvents.joined(separator: "\n")
-        return "Turbo IO 实时字幕\nphase=\(phase.rawValue) packets=\(packets) pcmBytes=\(audioBytes) gaps=\(gaps)\nseqStrideChanges=\(sequenceJumps) maxSeqStep=\(maximumSequenceStep) discardedSeq=\(discardedSequencePackets)\nseqSteps=\(steps.isEmpty ? "none" : steps) otherSteps=\(otherSequenceSteps)\nmaxArrivalMs=\(maximumArrivalIntervalMilliseconds) maxDispatchMs=\(maximumDispatchDelayMilliseconds)\nASR=\(options.service.name) model=\(options.selectedModel) ready=\(cloudReady)\n\(status)\n\(error ?? "")\ncontrolEvents:\n\(controls)\n不包含音频、正文、密钥、原始序号或设备标识。"
+        let requestedDirection = active ? sessionPickupDirection : settings.pickupDirection
+        return "Turbo IO 实时字幕\nphase=\(phase.rawValue) packets=\(packets) pcmBytes=\(audioBytes) gaps=\(gaps)\nseqStrideChanges=\(sequenceJumps) maxSeqStep=\(maximumSequenceStep) discardedSeq=\(discardedSequencePackets)\nseqSteps=\(steps.isEmpty ? "none" : steps) otherSteps=\(otherSequenceSteps)\nmaxArrivalMs=\(maximumArrivalIntervalMilliseconds) maxDispatchMs=\(maximumDispatchDelayMilliseconds)\nASR=\(options.service.name) model=\(options.selectedModel) ready=\(cloudReady) directionRequested=\(requestedDirection.rawValue)\n\(status)\n\(error ?? "")\n\(pickupDirectionMessage ?? "")\ncontrolEvents:\n\(controls)\n不包含音频、正文、密钥、原始序号或设备标识。"
     }
 }

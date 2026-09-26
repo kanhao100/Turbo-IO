@@ -21,7 +21,7 @@ import Combine
     var onSubtitleEnvelope: ((String, Data, TimeInterval) -> Void)?
     var onBusinessLoss: (() -> Void)?
     var onSubtitleLoss: (() -> Void)?
-    var onSubtitleSendError: ((String, Data, Int) -> Void)?
+    var onSubtitleSendError: ((String, Data, Int, String) -> Void)?
     @Published private(set) var subtitleOwnsDisplay = false
     func ownDisplayForSubtitles(_ owns: Bool) {
         #if COMPANION_DEVICE
@@ -36,9 +36,9 @@ import Combine
         throw DeviceFeatureError.disconnected
         #endif
     }
-    func sendRealtimeSubtitle(target: String, payload: Data) throws {
+    @discardableResult func sendRealtimeSubtitle(target: String, payload: Data) throws -> String {
         #if COMPANION_DEVICE
-        try controller.companionSendRealtimeSubtitle(target: target, payload: payload)
+        return try controller.companionSendRealtimeSubtitle(target: target, payload: payload)
         #else
         throw DeviceFeatureError.disconnected
         #endif
@@ -106,7 +106,7 @@ import Combine
         }
         controller.companionBusinessLoss = { [weak self] in self?.onBusinessLoss?() }
         controller.companionSubtitleLoss = { [weak self] in self?.onSubtitleLoss?() }
-        controller.companionSubtitleSendError = { [weak self] in self?.onSubtitleSendError?($0, $1, $2) }
+        controller.companionSubtitleSendError = { [weak self] in self?.onSubtitleSendError?($0, $1, $2, $3) }
         controller.companionLog = { [weak self] line in self?.latestEvent = String(line.prefix(200)) }
         controller.companionTranscript = { [weak self] id, text, final in
             guard let self, !text.isEmpty else { return }

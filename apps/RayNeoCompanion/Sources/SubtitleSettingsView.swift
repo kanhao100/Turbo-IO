@@ -1,5 +1,6 @@
 import SwiftUI
 import RayNeoCaptions
+import RayNeoProtocol
 
 struct SubtitleSettingsView: View {
     @Environment(\.dismiss) private var dismiss
@@ -60,6 +61,27 @@ struct SubtitleSettingsView: View {
                     SecureField(settings.hasKey(for: draft) ? "已保存密钥，留空保留" : "填写自己的 API Key", text: $key)
                         .textInputAutocapitalization(.never).autocorrectionDisabled().accessibilityIdentifier("subtitle-api-key")
                 }.disabled(busy)
+                Section("实时字幕收音方向") {
+                    Picker("收音范围", selection: Binding(
+                        get: { settings.pickupDirection },
+                        set: { runtime.setPickupDirection($0) }
+                    )) {
+                        Text("四周").tag(SubtitleTranslateWire.PickupDirection.around)
+                        Text("前方").tag(SubtitleTranslateWire.PickupDirection.ahead)
+                    }
+                    .pickerStyle(.segmented)
+                    .disabled(!runtime.canChangePickupDirection)
+                    .accessibilityIdentifier("subtitle-pickup-direction")
+                    Text("空闲时记住下次启动方向；字幕运行时提交切换指令。前方模式需面向说话者，实际效果待真机确认。")
+                        .font(.caption).foregroundStyle(.secondary)
+                    if let message = runtime.pickupDirectionMessage {
+                        Text(message).font(.caption).foregroundStyle(Palette.amber)
+                    }
+                    if runtime.pickupDirectionNeedsRetry {
+                        Button("重试收音切换") { runtime.retryPickupDirection() }
+                            .accessibilityIdentifier("subtitle-pickup-direction-retry")
+                    }
+                }
                 Section("本机保存") {
                     Toggle("同时保存音频", isOn: $draft.recordAudio).accessibilityIdentifier("subtitle-save-audio")
                     Text("文本总会保存。音频为处理后的 16 kHz 单声道 WAV，每 60 秒分段；已知断流另起一段，不补静音。约 115 MB/小时，仅存此 App，不自动上传网盘。")

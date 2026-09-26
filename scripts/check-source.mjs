@@ -40,7 +40,7 @@ export function audit(root){
   ];
   function walk(p){
     if(path.basename(p)==='.git')return; // Also support Git worktree pointer files.
-    const s=fs.lstatSync(p),relative=path.relative(root,p);
+    const s=fs.lstatSync(p),relative=path.relative(root,p).split(path.sep).join('/');
     if(s.isSymbolicLink()){findings.push({file:relative,rule:'symlink'});return;}
     if(s.isDirectory()){
       if(['.git','.build','node_modules','build'].includes(path.basename(p)))return;
@@ -57,9 +57,11 @@ export function audit(root){
     if(dependency)return; // Explicit binary build dependencies; reviewed via the hash inventory.
     if(/\.(?:ipa|apk|hap|har|app|dex|jar|jks|keystore|a|o|dylib|so|p12|p7b|cer|pem|key|mobileprovision|wav|ogg|pcm|mp3|m4a|png|jpg|zip|log|jsonl)$/i.test(p))findings.push({file:relative,rule:'non-source-artifact'});
     if(relative==='harmony-sdk/build-profile.json5')findings.push({file:relative,rule:'local-signing-config'});
-    if(s.size>2*1024*1024 && (!reviewedLargeSources.has(relative)||createHash('sha256').update(fs.readFileSync(p)).digest('hex')!==reviewedLargeSources.get(relative))){findings.push({file:relative,rule:'oversize-review'});return;}
     const b=fs.readFileSync(p);if(b.includes(0)){findings.push({file:relative,rule:'binary-content'});return;}
-    b.toString('utf8').split('\n').forEach((line,i)=>{for(const [rule,re]of rules){
+    // Git may check text sources out with CRLF on Windows; compare their canonical LF bytes.
+    const canonical=b.toString('utf8').replaceAll('\r\n','\n');
+    if(s.size>2*1024*1024 && (!reviewedLargeSources.has(relative)||createHash('sha256').update(canonical).digest('hex')!==reviewedLargeSources.get(relative))){findings.push({file:relative,rule:'oversize-review'});return;}
+    canonical.split('\n').forEach((line,i)=>{for(const [rule,re]of rules){
       // One synthetic host in mocked HTTP tests; still scan the rest of that line.
       const checked=rule==='dedicated-weather-tenant' && relative==='harmony-sdk/tests/remote-services.test.mjs'
         ? line.replaceAll("'test." + "re.qweatherapi.com'", "'mock-weather-host'") : line;

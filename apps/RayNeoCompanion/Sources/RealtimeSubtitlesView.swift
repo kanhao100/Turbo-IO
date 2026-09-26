@@ -1,5 +1,6 @@
 import SwiftUI
 import RayNeoCaptions
+import RayNeoProtocol
 
 struct RealtimeSubtitlesView: View {
     @EnvironmentObject private var store: CompanionStore
@@ -80,6 +81,29 @@ struct RealtimeSubtitlesView: View {
                     }
                 }
                 if runtime.gaps > 0 { Label("检测到 \(runtime.gaps) 处音频缺口，已记录到历史", systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(Palette.amber) }
+            }
+            Card {
+                Label("眼镜收音方向", systemImage: "mic.circle").font(.subheadline.weight(.semibold))
+                Picker("收音范围", selection: Binding(
+                    get: { settings.pickupDirection },
+                    set: { runtime.setPickupDirection($0) }
+                )) {
+                    Text("四周").tag(SubtitleTranslateWire.PickupDirection.around)
+                    Text("前方").tag(SubtitleTranslateWire.PickupDirection.ahead)
+                }
+                .pickerStyle(.segmented)
+                .disabled(!runtime.canChangePickupDirection)
+                .accessibilityIdentifier("realtime-pickup-direction")
+                if let message = runtime.pickupDirectionMessage {
+                    Text(message).font(.caption).foregroundStyle(Palette.amber)
+                } else if runtime.active {
+                    Text(runtime.canChangePickupDirection ? "切换会沿当前字幕会话发送指令。" : "字幕启动完成后可切换。")
+                        .font(.caption).foregroundStyle(Palette.muted)
+                }
+                if runtime.pickupDirectionNeedsRetry {
+                    Button("重试收音切换") { runtime.retryPickupDirection() }
+                        .accessibilityIdentifier("realtime-pickup-direction-retry")
+                }
             }
             if runtime.canStop {
                 PrimaryButton(title: "停止并保存", icon: "stop.fill") { runtime.stop() }.accessibilityIdentifier("realtime-stop")

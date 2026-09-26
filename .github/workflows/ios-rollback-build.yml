@@ -31,6 +31,9 @@ jobs:
           node --test scripts/check-source.test.mjs
           node scripts/check-source.mjs
 
+      - name: Test directional pickup analysis
+        run: python3 -B scripts/test-analyze-pickup-direction.py
+
       - name: Test glasses protocol
         run: swift test --package-path rayneo-protocol
 
@@ -97,7 +100,7 @@ jobs:
           IPA_VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Info.plist")
           IPA_BUILD=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Info.plist")
           test "$IPA_VERSION" = "0.3.5"
-          test "$IPA_BUILD" = "11"
+          test "$IPA_BUILD" = "12"
           IPA_NAME="TurboIO-realtime-subtitles-v${IPA_VERSION}-build${IPA_BUILD}-unsigned.ipa"
           IPA_PATH="$OUTPUT/$IPA_NAME"
 

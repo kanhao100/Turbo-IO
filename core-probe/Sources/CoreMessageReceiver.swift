@@ -20,7 +20,7 @@ final class CoreMessageReceiver: RNMessageDelegate {
     var onSubtitleEnvelope: ((String, Data, TimeInterval) -> Void)?
     var onBusinessLoss: (() -> Void)?
     var onSubtitleLoss: (() -> Void)?
-    var onSubtitleSendError: ((String, Data, Int) -> Void)?
+    var onSubtitleSendError: ((String, Data, Int, String) -> Void)?
     private let businessSlots = DispatchSemaphore(value: 128)
     private var businessLossQueued = false
     private func reportBusinessLoss() {
@@ -116,8 +116,8 @@ final class CoreMessageReceiver: RNMessageDelegate {
         emit("SDK sendError code=\(code)（不记录原始错误正文）")
         let handle = unsafeBitCast(sendError, to: MessageHandle.self)
         if handle.businessIndex() == SubtitleDisplayWire.business, let payload = handle.payload(), payload.count <= 4096 {
-            let device = handle.deviceID()
-            DispatchQueue.main.async { [weak self] in self?.onSubtitleSendError?(device, payload, code) }
+            let device = handle.deviceID(), messageID = handle.messageID()
+            DispatchQueue.main.async { [weak self] in self?.onSubtitleSendError?(device, payload, code, messageID) }
         }
     }
     func messageDecryptFail(_ core: RNCoreConnect, device: RNDevice, sourceData: Data, sourceLen: Int, destLen: Int) {
