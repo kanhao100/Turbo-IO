@@ -18,6 +18,13 @@ struct RayNeoCompanionApp: App {
                 .environmentObject(store.recordingASR)
                 .environmentObject(store.features)
                 .environmentObject(store.subtitleDisplay)
+                .environmentObject(store.realtimeSubtitles)
+                .environmentObject(store.subtitleSettings)
+                .environmentObject(store.subtitleArchive)
+                .environmentObject(store.alwaysOn)
+                .environmentObject(store.alwaysOnArchive)
+                .environmentObject(store.subtitlePlayback)
+                .environmentObject(store.realtimeSubtitles.latency)
                 .environmentObject(store.notifications)
                 .environmentObject(store.headControlTest)
                 .environmentObject(store.automaticWeather)
@@ -42,7 +49,9 @@ struct RootView: View {
             case 1: ConversationView()
             case 2: ArchiveView()
             case 3: ToolsView()
-            case 4: SubtitleDisplayTestView()
+            case 4:
+                if ProcessInfo.processInfo.arguments.contains("--ui-subtitle-display-test") { SubtitleDisplayTestView() }
+                else { RealtimeSubtitlesView() }
             default: DeviceView()
             }
         }
@@ -85,6 +94,11 @@ struct RootView: View {
         .onAppear {
             guard !didApplyLaunchArguments else { return }
             didApplyLaunchArguments = true
+            // Install device callbacks and reconnection maintenance at launch. Persistent
+            // glasses shortcuts must not depend on the user first opening the subtitles tab.
+            store.features.prepare()
+            store.realtimeSubtitles.prepare()
+            store.alwaysOn.prepare()
             let arguments = ProcessInfo.processInfo.arguments
             if let index = arguments.firstIndex(of: "--ui-tab"), arguments.indices.contains(index + 1) {
                 store.selectedTab = Int(arguments[index + 1]) ?? 0

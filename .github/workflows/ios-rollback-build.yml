@@ -1,4 +1,4 @@
-name: iOS subtitle display test
+name: iOS realtime subtitles
 
 on:
   pull_request:
@@ -31,31 +31,25 @@ jobs:
           node --test scripts/check-source.test.mjs
           node scripts/check-source.mjs
 
+      - name: Test directional pickup analysis
+        run: |
+          python3 -B scripts/test-analyze-pickup-direction.py
+          python3 -B scripts/test-analyze-pickup-angular-pilot.py
+
+      - name: Test acoustic marker helper
+        run: |
+          python3 -m venv "$RUNNER_TEMP/pickup-cue-venv"
+          "$RUNNER_TEMP/pickup-cue-venv/bin/python" -m pip install --disable-pip-version-check --only-binary=:all: 'numpy>=2.2,<3'
+          "$RUNNER_TEMP/pickup-cue-venv/bin/python" -B scripts/test-pickup-cue.py
+
       - name: Test glasses protocol
         run: swift test --package-path rayneo-protocol
 
+      - name: Test ASR adapters and subtitle storage
+        run: swift test --package-path rayneo-captions
+
       - name: Install XcodeGen
         run: brew install xcodegen
-
-      - name: Test subtitle display runtime and tab in simulator
-        run: node scripts/test-subtitle-display.mjs
-
-      - name: Export simulator screenshots
-        if: always()
-        continue-on-error: true
-        run: >-
-          xcrun xcresulttool export attachments
-          --path apps/RayNeoCompanion/build-subtitle-simulator/Tests.xcresult
-          --output-path apps/RayNeoCompanion/build-subtitle-simulator/screenshots
-
-      - name: Upload simulator test evidence
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: TurboIO-subtitle-display-tests
-          path: apps/RayNeoCompanion/build-subtitle-simulator/screenshots
-          if-no-files-found: warn
-          retention-days: 7
 
       - name: Generate device project
         run: |
@@ -82,9 +76,10 @@ jobs:
           build
 
       - name: Package unsigned IPA
+        id: package
         run: |
           APP="apps/RayNeoCompanion/build-subtitle-device/Build/Products/Debug-iphoneos/RayNeoCompanion.app"
-          OUTPUT="apps/RayNeoCompanion/ipa-subtitle-display"
+          OUTPUT="apps/RayNeoCompanion/ipa-realtime-subtitles"
 
           test -d "$APP"
           test -f "$APP/RayNeoCompanion"
@@ -92,28 +87,65 @@ jobs:
           test "$IPA_PLATFORM" = "iPhoneOS"
           IPA_VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Info.plist")
           IPA_BUILD=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Info.plist")
-          test "$IPA_VERSION" = "0.2.1"
-          test "$IPA_BUILD" = "5"
+          test "$IPA_VERSION" = "0.3.5"
+          test "$IPA_BUILD" = "13"
+          IPA_NAME="TurboIO-realtime-subtitles-v${IPA_VERSION}-build${IPA_BUILD}-unsigned.ipa"
+          IPA_PATH="$OUTPUT/$IPA_NAME"
 
           rm -rf "$OUTPUT"
           mkdir -p "$OUTPUT/Payload"
           cp -R "$APP" "$OUTPUT/Payload/"
           /usr/bin/ditto -c -k --sequesterRsrc --keepParent \
-            "$OUTPUT/Payload" "$OUTPUT/TurboIO-subtitle-display-unsigned.ipa"
-          shasum -a 256 "$OUTPUT/TurboIO-subtitle-display-unsigned.ipa" | tee "$OUTPUT/SHA256SUMS.txt"
+            "$OUTPUT/Payload" "$IPA_PATH"
+          (cd "$OUTPUT" && shasum -a 256 "$IPA_NAME") | tee "$OUTPUT/SHA256SUMS.txt"
+          (cd "$OUTPUT" && shasum -a 256 -c SHA256SUMS.txt)
+          echo "ipa_path=$IPA_PATH" >> "$GITHUB_OUTPUT"
+          echo "artifact_name=TurboIO-realtime-subtitles-v${IPA_VERSION}-build${IPA_BUILD}-unsigned-ipa" >> "$GITHUB_OUTPUT"
 
           {
             echo "Unsigned iPhoneOS IPA"
             echo "Version: $IPA_VERSION ($IPA_BUILD)"
+            echo "Filename: $IPA_NAME"
             echo "Source commit: $GITHUB_SHA"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload unsigned IPA
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: TurboIO-subtitle-display-unsigned-ipa
+          name: ${{ steps.package.outputs.artifact_name }}
           path: |
-            apps/RayNeoCompanion/ipa-subtitle-display/TurboIO-subtitle-display-unsigned.ipa
-            apps/RayNeoCompanion/ipa-subtitle-display/SHA256SUMS.txt
+            ${{ steps.package.outputs.ipa_path }}
+            apps/RayNeoCompanion/ipa-realtime-subtitles/SHA256SUMS.txt
           if-no-files-found: error
+          retention-days: 7
+
+      - name: Test subtitle display runtime and tab in simulator
+        run: |
+          set -o pipefail
+          node scripts/test-subtitle-display.mjs 2>&1 | tee apps/RayNeoCompanion/subtitle-simulator-test.log
+
+      - name: Upload simulator test log
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: TurboIO-subtitle-simulator-log
+          path: apps/RayNeoCompanion/subtitle-simulator-test.log
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Export simulator screenshots
+        if: always()
+        continue-on-error: true
+        run: >-
+          xcrun xcresulttool export attachments
+          --path apps/RayNeoCompanion/build-subtitle-simulator/Tests.xcresult
+          --output-path apps/RayNeoCompanion/build-subtitle-simulator/screenshots
+
+      - name: Upload simulator test evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: TurboIO-subtitle-display-tests
+          path: apps/RayNeoCompanion/build-subtitle-simulator/screenshots
+          if-no-files-found: warn
           retention-days: 7

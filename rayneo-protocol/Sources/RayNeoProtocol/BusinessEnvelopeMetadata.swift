@@ -34,6 +34,11 @@ public struct BusinessEnvelopeMetadata: Equatable {
               range.count <= 4096 else { return nil }
         return Data(packet).subdata(in:range)
     }
+    public static func subtitleAudio(_ packet: Data) throws -> Data? {
+        let (metadata, range, _) = try parse(packet)
+        guard metadata.messageType == 4, let range, !range.isEmpty, range.count <= 4096 else { return nil }
+        return Data(packet).subdata(in: range)
+    }
 
     /// Bounded business JSON extraction; callers still validate the business and schema.
     public static func messageJSON(_ packet: Data) throws -> Data? {
