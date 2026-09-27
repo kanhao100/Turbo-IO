@@ -50,7 +50,8 @@ import Speech
     private var setupTask: Task<Void, Never>?
     private var resultsTask: Task<Void, Never>?
     private var analyzer: SpeechAnalyzer?
-    private var converter: AnalyzerInputConverter?
+    private var converter: AVAudioConverter?
+    private var analyzerFormat: AVAudioFormat?
     private var inputBuilder: AsyncStream<AnalyzerInput>.Continuation?
     private var pendingPCM: [Data] = []
     private var pendingPCMBytes = 0
@@ -159,7 +160,15 @@ import Speech
                     await analyzer.cancelAndFinishNow()
                     return
                 }
-                self.converter = AnalyzerInputConverter(analyzerFormat: analyzerFormat)
+                guard let converter = AVAudioConverter(from: self.inputFormat, to: analyzerFormat) else {
+                    builder.finish()
+                    resultsTask.cancel()
+                    await analyzer.cancelAndFinishNow()
+                    throw PreparationError.unavailable
+                }
+                converter.primeMethod = .none
+                self.converter = converter
+                self.analyzerFormat = analyzerFormat
                 self.analyzer = analyzer
                 self.inputBuilder = builder
                 self.resultsTask = resultsTask
@@ -235,7 +244,7 @@ import Speech
             onFailure?(.configuration)
             return
         }
-        guard let converter, let inputBuilder else {
+        guard let converter, let analyzerFormat, let inputBuilder else {
             guard setupTask != nil else { return }
             guard pendingPCMBytes + pcm.count <= 160_000 else {
                 onDiagnostic?("asr_startup_backpressure")
@@ -258,11 +267,35 @@ import Speech
         pcm.withUnsafeBytes { bytes in
             if let source = bytes.baseAddress { _ = memcpy(destination, source, pcm.count) }
         }
-        do {
-            // nil time means each buffer follows the previous one. The glasses
-            // decoder and phone microphone adapter both supply contiguous PCM.
-            for input in try converter.convert(buffer, at: nil) {
-                switch inputBuilder.yield(input) {
+        var supplied = false
+        let outputFrames = max(256, Int(ceil(Double(buffer.frameLength) *
+            analyzerFormat.sampleRate / inputFormat.sampleRate)) + 128)
+        for _ in 0..<16 {
+            guard let output = AVAudioPCMBuffer(pcmFormat: analyzerFormat,
+                                                frameCapacity: AVAudioFrameCount(outputFrames)) else {
+                onDiagnostic?("asr_conversion_allocation_failed")
+                onFailure?(.configuration)
+                return
+            }
+            var conversionError: NSError?
+            let status = converter.convert(to: output, error: &conversionError) { _, inputStatus in
+                if supplied {
+                    inputStatus.pointee = .noDataNow
+                    return nil
+                }
+                supplied = true
+                inputStatus.pointee = .haveData
+                return buffer
+            }
+            if status == .error {
+                onDiagnostic?("asr_conversion_failed")
+                onFailure?(.configuration)
+                return
+            }
+            if output.frameLength > 0 {
+                // AnalyzerInput(buffer:) timestamps each contiguous buffer after
+                // the previous one. Both microphone routes supply ordered PCM.
+                switch inputBuilder.yield(AnalyzerInput(buffer: output)) {
                 case .enqueued: break
                 case .dropped:
                     droppedAnalyzerInputs += 1
@@ -273,11 +306,13 @@ import Speech
                 @unknown default: return
                 }
             }
-            acceptedPCMBytes += pcm.count
-        } catch {
-            onDiagnostic?("asr_conversion_failed")
-            onFailure?(.configuration)
+            if status == .inputRanDry || status == .endOfStream || output.frameLength == 0 {
+                acceptedPCMBytes += pcm.count
+                return
+            }
         }
+        onDiagnostic?("asr_conversion_backpressure")
+        onFailure?(.backpressure)
     }
 
     func stop() {
@@ -286,6 +321,7 @@ import Speech
         resultsTask?.cancel(); resultsTask = nil
         inputBuilder?.finish(); inputBuilder = nil
         converter = nil
+        analyzerFormat = nil
         pendingPCM = []
         pendingPCMBytes = 0
         volatilePhrases = []
