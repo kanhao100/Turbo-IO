@@ -33,7 +33,7 @@ import AVFAudio
         player?.stop(); playing = false
         var remaining = min(max(0, seconds), max(0, duration - 0.01)), index = 0
         while index < files.count - 1 && remaining >= files[index].duration { remaining -= files[index].duration; index += 1 }
-        do { try openSegment(index); player?.currentTime = remaining; updatePosition(); if resume { toggle() } }
+        do { try openSegment(index); player?.currentTime = remaining; updatePosition(); error = nil; if resume { toggle() } }
         catch { self.error = "无法定位此音频片段。" }
     }
     func stop() {

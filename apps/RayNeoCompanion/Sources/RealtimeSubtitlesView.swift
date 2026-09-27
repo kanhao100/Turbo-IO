@@ -14,6 +14,9 @@ struct RealtimeSubtitlesView: View {
     @State private var showSettings = false
     @State private var showDisplayTest = false
     @State private var search = ""
+    @State private var selectedHistoryDate: Date?
+    @State private var calendarDate = Date()
+    @State private var showHistoryCalendar = false
     var body: some View {
         NavigationStack {
             ScrollView {
@@ -164,6 +167,13 @@ struct RealtimeSubtitlesView: View {
             if latency.enabled { latencyCard }
             DisclosureGroup("显示测试与诊断") {
                 Button("打开已验证的上屏测试") { showDisplayTest = true }.disabled(runtime.active || runtime.saving)
+                NavigationLink {
+                    LocalAudioTranscriptionExperimentView()
+                } label: {
+                    Label("导入录音测试 Apple 本机识别", systemImage: "waveform.badge.magnifyingglass")
+                }
+                .disabled(runtime.active || runtime.saving)
+                .accessibilityIdentifier("subtitle-imported-audio-experiment")
                 ShareLink("分享脱敏诊断", item: runtime.diagnosticText)
                 ShareLink("分享延迟实验报告", item: latency.report)
             }.font(.subheadline)
@@ -218,11 +228,49 @@ struct RealtimeSubtitlesView: View {
     private var historyContent: some View {
         VStack(alignment: .leading, spacing: 16) {
             TextField("搜索会话名称或最近字幕", text: $search).textFieldStyle(.roundedBorder).accessibilityIdentifier("subtitle-history-search")
+            HStack(spacing: 12) {
+                Button {
+                    showHistoryCalendar.toggle()
+                } label: {
+                    Label(selectedHistoryDate.map { "日期：\($0.formatted(date: .abbreviated, time: .omitted))" } ?? "按日期筛选", systemImage: "calendar")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .accessibilityIdentifier("subtitle-history-calendar-toggle")
+                if selectedHistoryDate != nil {
+                    Button("清除日期") { selectedHistoryDate = nil; showHistoryCalendar = false }
+                        .accessibilityIdentifier("subtitle-history-clear-date")
+                }
+            }
+            if showHistoryCalendar {
+                Card {
+                    DatePicker("选择会话日期", selection: $calendarDate, displayedComponents: .date)
+                        .datePickerStyle(.graphical)
+                        .onChange(of: calendarDate) { _, date in
+                            selectedHistoryDate = date
+                            showHistoryCalendar = false
+                        }
+                        .accessibilityIdentifier("subtitle-history-calendar")
+                    Button("筛选所选日期") {
+                        selectedHistoryDate = calendarDate
+                        showHistoryCalendar = false
+                    }
+                    .accessibilityIdentifier("subtitle-history-apply-date")
+                    Button("筛选今天") {
+                        let today = Date()
+                        calendarDate = today
+                        selectedHistoryDate = today
+                        showHistoryCalendar = false
+                    }
+                    .accessibilityIdentifier("subtitle-history-today")
+                }
+            }
             if archive.loading { ProgressView("正在读取会话…") }
             if archive.sessions.isEmpty {
                 Card { EmptyState(icon: "text.book.closed", title: "每次对话，都有迹可循", detail: "结束字幕后，文本与音频会保存在同一会话中。可回听、改名、导出或删除。") }
+            } else if filteredHistorySessions.isEmpty && !archive.loading {
+                Card { EmptyState(icon: "calendar.badge.exclamationmark", title: "没有找到会话", detail: "试试其他日期或搜索词，也可以清除日期筛选。") }
             }
-            ForEach(archive.sessions.filter { search.isEmpty || $0.title.localizedCaseInsensitiveContains(search) || ($0.preview ?? "").localizedCaseInsensitiveContains(search) }) { record in
+            ForEach(filteredHistorySessions) { record in
                 NavigationLink { SubtitleSessionDetailView(id: record.id) } label: {
                     Card {
                         HStack(alignment: .top) {
@@ -240,6 +288,14 @@ struct RealtimeSubtitlesView: View {
             if let error = archive.error { Text(error).font(.caption).foregroundStyle(Palette.amber) }
             Button("刷新会话") { Task { await archive.load() } }
         }.task { await archive.load() }
+    }
+    private var filteredHistorySessions: [SubtitleSessionRecord] {
+        archive.sessions.filter { record in
+            let matchesSearch = search.isEmpty || record.title.localizedCaseInsensitiveContains(search)
+                || (record.preview ?? "").localizedCaseInsensitiveContains(search)
+            let matchesDate = selectedHistoryDate.map { Calendar.current.isDate(record.createdAt, inSameDayAs: $0) } ?? true
+            return matchesSearch && matchesDate
+        }
     }
 }
 

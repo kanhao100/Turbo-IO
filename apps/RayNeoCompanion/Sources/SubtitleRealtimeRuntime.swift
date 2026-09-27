@@ -109,6 +109,7 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
     private var translationQueue: Task<Void, Never>?
     private var translatedRecent: [String] = []
     private var sentenceNumber = 0, displayedSentenceNumber = 0
+    private var firstPartialAudioBytes: Int?
     private var lastExpiredSentenceNumber = 0
     private var hasCompletedDisplayPair = false
     private var displayExpiresAt: TimeInterval?
@@ -264,6 +265,7 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
         partial = ""; translatedText = ""; translatedRecent = []; microphoneRoute = nil; inputRouteType = nil
         displaySourceText = ""; displayTranslationText = ""; displayText = ""; displayIsPartial = false
         sentenceNumber = 0; displayedSentenceNumber = 0; lastExpiredSentenceNumber = 0
+        firstPartialAudioBytes = nil
         hasCompletedDisplayPair = false
         displayExpiresAt = nil; displayPreferencesSignature = currentDisplayPreferencesSignature
         lastASRDiagnosticSummary = ""
@@ -760,7 +762,11 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
         cloudReady = true; partial = value
         if final {
             if !value.isEmpty {
-                let entry = CaptionEntry(kind: .final, text: value); recent.append(entry)
+                // Recognition callbacks trail the spoken words. Keep a short lead-in
+                // from the first partial so tapping a sentence does not skip its start.
+                let seekBytes = firstPartialAudioBytes ?? max(0, audioBytes - 96_000)
+                let audioOffset = Double(seekBytes) / 32_000
+                let entry = CaptionEntry(kind: .final, text: value, audioOffset: audioOffset); recent.append(entry)
                 if recent.count > 200 { recent.removeFirst(recent.count - 200) }
                 record?.finalSentences += 1; record?.preview = String(value.prefix(180)); writer?.event(entry)
                 sentenceNumber += 1
@@ -769,16 +775,22 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
                     showDisplay(source: value, translation: "", partial: false,
                                 completed: true, sentence: sentence)
                 }
-                queueTranslation(value, sentence: sentence)
+                queueTranslation(value, sentence: sentence, audioOffset: audioOffset)
             }
+            firstPartialAudioBytes = nil
             partial = ""
-        } else if !value.isEmpty, sourceCanShowWithoutTranslation,
+        } else if !value.isEmpty {
+            if firstPartialAudioBytes == nil {
+                firstPartialAudioBytes = max(0, audioBytes - 96_000)
+            }
+            if sourceCanShowWithoutTranslation,
                   (!hasCompletedDisplayPair || !displayNeedsTranslationBeforeCommit),
                   (!displayNeedsTranslationBeforeCommit || pendingTranslations == 0) {
-            // Translation-dependent displays hold the completed pair until the next
-            // translation is ready. Source-only displays can advance with live speech.
-            showDisplay(source: value, translation: "", partial: true,
-                        completed: false, sentence: sentenceNumber + 1)
+                // Translation-dependent displays hold the completed pair until the next
+                // translation is ready. Source-only displays can advance with live speech.
+                showDisplay(source: value, translation: "", partial: true,
+                            completed: false, sentence: sentenceNumber + 1)
+            }
         }
     }
     private func showTranslationFallback(source: String, sentence: Int) {
@@ -797,7 +809,7 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
                         completed: true, sentence: sentence)
         }
     }
-    private func queueTranslation(_ source: String, sentence: Int) {
+    private func queueTranslation(_ source: String, sentence: Int, audioOffset: TimeInterval) {
         #if COMPANION_DEVICE
         guard settings.translationEnabled else { return }
         guard translator != nil else {
@@ -843,7 +855,8 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
                 if self.translatedRecent.count > 200 {
                     self.translatedRecent.removeFirst(self.translatedRecent.count - 200)
                 }
-                self.writer?.event(CaptionEntry(kind: .translation, text: translated))
+                self.writer?.event(CaptionEntry(kind: .translation, text: translated,
+                                                audioOffset: audioOffset))
                 self.appendControl("translation_state=ready source=\(self.options.language) target=\(Self.translationTarget(for: self.options.language))")
                 self.showDisplay(source: source, translation: translated, partial: false,
                                  completed: true, sentence: sentence)
@@ -881,6 +894,7 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
     }
     private func markGap(_ note: String) {
         guard !gapOpen else { return }; gapOpen = true; gaps += 1; record?.gaps = gaps
+        firstPartialAudioBytes = nil
         writer?.gap(); decoder?.reset(); writer?.event(CaptionEntry(kind: .gap, text: note))
     }
     func inputLost() { if sessionInputSource == .glasses, cloudStarted { markGap("手机接收队列丢包") } }

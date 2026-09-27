@@ -6,8 +6,13 @@ public struct CaptionEntry: Codable, Identifiable, Equatable {
     public let date: Date
     public let kind: Kind
     public let text: String
-    public init(kind: Kind, text: String, date: Date = Date(), id: UUID = UUID()) {
+    /// Approximate seek target in the concatenated saved PCM timeline, if known.
+    /// Older journals omit this field; ASR results are not word-level audio alignment.
+    public let audioOffset: TimeInterval?
+    public init(kind: Kind, text: String, date: Date = Date(), id: UUID = UUID(),
+                audioOffset: TimeInterval? = nil) {
         self.id = id; self.date = date; self.kind = kind; self.text = text
+        self.audioOffset = audioOffset
     }
 }
 
