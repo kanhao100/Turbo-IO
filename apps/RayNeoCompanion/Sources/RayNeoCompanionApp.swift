@@ -17,6 +17,14 @@ struct RayNeoCompanionApp: App {
                 .environmentObject(store.timeline)
                 .environmentObject(store.recordingASR)
                 .environmentObject(store.features)
+                .environmentObject(store.subtitleDisplay)
+                .environmentObject(store.realtimeSubtitles)
+                .environmentObject(store.subtitleSettings)
+                .environmentObject(store.subtitleArchive)
+                .environmentObject(store.alwaysOn)
+                .environmentObject(store.alwaysOnArchive)
+                .environmentObject(store.subtitlePlayback)
+                .environmentObject(store.realtimeSubtitles.latency)
                 .environmentObject(store.notifications)
                 .environmentObject(store.headControlTest)
                 .environmentObject(store.automaticWeather)
@@ -41,6 +49,9 @@ struct RootView: View {
             case 1: ConversationView()
             case 2: ArchiveView()
             case 3: ToolsView()
+            case 4:
+                if ProcessInfo.processInfo.arguments.contains("--ui-subtitle-display-test") { SubtitleDisplayTestView() }
+                else { RealtimeSubtitlesView() }
             default: DeviceView()
             }
         }
@@ -48,6 +59,7 @@ struct RootView: View {
             if !hideTabBar {
             HStack(spacing: 0) {
                 tabButton(0, "设备", "eyeglasses")
+                tabButton(4, "字幕", "captions.bubble")
                 tabButton(1, "会话", "bubble.left")
                 tabButton(2, "归档", "folder")
                 tabButton(3, "工具", "case")
@@ -82,6 +94,11 @@ struct RootView: View {
         .onAppear {
             guard !didApplyLaunchArguments else { return }
             didApplyLaunchArguments = true
+            // Install device callbacks and reconnection maintenance at launch. Persistent
+            // glasses shortcuts must not depend on the user first opening the subtitles tab.
+            store.features.prepare()
+            store.realtimeSubtitles.prepare()
+            store.alwaysOn.prepare()
             let arguments = ProcessInfo.processInfo.arguments
             if let index = arguments.firstIndex(of: "--ui-tab"), arguments.indices.contains(index + 1) {
                 store.selectedTab = Int(arguments[index + 1]) ?? 0
@@ -96,7 +113,7 @@ struct RootView: View {
                 Text(title).font(.system(size: 11, weight: store.selectedTab == index ? .semibold : .regular))
             }
             .foregroundStyle(store.selectedTab == index ? Color.white : Palette.muted)
-            .frame(width: 70, height: 54)
+            .frame(minWidth: 44, maxWidth: .infinity, minHeight: 54)
             .background(store.selectedTab == index ? Palette.ink : .clear, in: RoundedRectangle(cornerRadius: 16))
             .frame(maxWidth: .infinity)
         }.accessibilityIdentifier("tab-\(index)").accessibilityLabel(title)

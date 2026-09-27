@@ -1,7 +1,7 @@
 import SwiftUI
 import Combine
 
-@MainActor final class CompanionVoiceRuntime: ObservableObject {
+@MainActor final class CompanionVoiceRuntime: ObservableObject, SubtitleRealtimeDevice {
     @Published private(set) var ready = false
     @Published private(set) var enabled = false
     @Published private(set) var phase = "disabled"
@@ -18,7 +18,31 @@ import Combine
     weak var codex: CodexCompanion?
     private var activeTurn: UUID?
     var onBusiness: ((String, UInt8, Data) -> Void)?
+    var onSubtitleEnvelope: ((String, Data, TimeInterval) -> Void)?
     var onBusinessLoss: (() -> Void)?
+    var onSubtitleLoss: (() -> Void)?
+    var onSubtitleSendError: ((String, Data, Int, String) -> Void)?
+    @Published private(set) var subtitleOwnsDisplay = false
+    func ownDisplayForSubtitles(_ owns: Bool) {
+        #if COMPANION_DEVICE
+        prepare(); controller.companionOwnDisplayForSubtitles(owns)
+        #endif
+        subtitleOwnsDisplay = owns; refresh()
+    }
+    func sendSubtitle(target: String, payload: Data) throws {
+        #if COMPANION_DEVICE
+        try controller.companionSendSubtitle(target: target, payload: payload)
+        #else
+        throw DeviceFeatureError.disconnected
+        #endif
+    }
+    @discardableResult func sendRealtimeSubtitle(target: String, payload: Data) throws -> String {
+        #if COMPANION_DEVICE
+        return try controller.companionSendRealtimeSubtitle(target: target, payload: payload)
+        #else
+        throw DeviceFeatureError.disconnected
+        #endif
+    }
     var featureIsBusy: (() -> Bool)?
     var onConnectionChange: ((String?) -> Void)?
     var onRuntimeRefresh: (() -> Void)?
@@ -74,12 +98,15 @@ import Combine
         #if COMPANION_DEVICE
         guard poll == nil else { refresh(); return }
         controller.companionBusiness = { [weak self] in self?.onBusiness?($0,$1,$2) }
+        controller.companionSubtitleEnvelope = { [weak self] in self?.onSubtitleEnvelope?($0,$1,$2) }
         controller.companionTools = { [weak self] in self?.codex?.toolDefinitions ?? [] }
         controller.companionExecuteTool = { [weak self] name, arguments, id in
             guard let codex = self?.codex else { return "Codex工具未配置，未执行。" }
             return await codex.executeTool(name: name, arguments: arguments, requestID: id)
         }
         controller.companionBusinessLoss = { [weak self] in self?.onBusinessLoss?() }
+        controller.companionSubtitleLoss = { [weak self] in self?.onSubtitleLoss?() }
+        controller.companionSubtitleSendError = { [weak self] in self?.onSubtitleSendError?($0, $1, $2, $3) }
         controller.companionLog = { [weak self] line in self?.latestEvent = String(line.prefix(200)) }
         controller.companionTranscript = { [weak self] id, text, final in
             guard let self, !text.isEmpty else { return }
@@ -139,7 +166,7 @@ import Combine
         #endif
     }
     func start(cloud: Bool, continuous: Bool) {
-        guard featureIsBusy?() != true else { error = "请先结束眼镜录音或提词器任务，再开启语音待命。"; return }
+        guard !subtitleOwnsDisplay, featureIsBusy?() != true else { error = "请先结束字幕显示、眼镜录音或提词器任务，再开启语音待命。"; return }
         #if COMPANION_DEVICE
         prepare()
         guard controller.companionStart(cloud: cloud, continuous: continuous) else {

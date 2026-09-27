@@ -46,8 +46,9 @@ import Combine
     }
     func packet(_ data: Data, business: UInt8, inbound: Bool) {
         guard enabled, connected, data.count <= 131_100,
-              [13,14,15,20,21,22].contains(business), let wire = try? DeviceBusinessWire(data) else { return }
+              [13,14,15,19,20,21,22].contains(business), let wire = try? DeviceBusinessWire(data) else { return }
         if business == 13, [3,163,164].contains(wire.type) { return } // Never retain audio.
+        if business == 19, wire.type == 4 || !wire.bytes.isEmpty { return }
         if business == 14, !wire.bytes.isEmpty { return }
         let now = Date().timeIntervalSince1970
         if inbound { lastInbound = now }
