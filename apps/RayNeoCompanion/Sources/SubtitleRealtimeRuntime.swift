@@ -782,10 +782,20 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
         }
     }
     private func showTranslationFallback(source: String, sentence: Int) {
-        guard effectiveDisplayMode == .bilingual else { return }
-        appendControl("display_state=source_fallback translation_unavailable=1")
-        showDisplay(source: source, translation: "", partial: false,
-                    completed: true, sentence: sentence)
+        switch effectiveDisplayMode {
+        case .bilingual:
+            appendControl("display_state=source_fallback translation_unavailable=1")
+            showDisplay(source: source, translation: "", partial: false,
+                        completed: true, sentence: sentence)
+        case .chineseOnly, .englishOnly:
+            guard !sourceCanShowWithoutTranslation else { return }
+            let placeholder = effectiveDisplayMode == .chineseOnly
+                ? "本句翻译暂不可用" : "Translation unavailable"
+            appendControl("display_state=translation_placeholder mode=\(effectiveDisplayMode.rawValue)")
+            // This is display state only. Never archive it as a fabricated translation.
+            showDisplay(source: source, translation: placeholder, partial: false,
+                        completed: true, sentence: sentence)
+        }
     }
     private func queueTranslation(_ source: String, sentence: Int) {
         #if COMPANION_DEVICE
@@ -793,7 +803,7 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
         guard translator != nil else {
             error = effectiveDisplayMode == .bilingual
                 ? "本机翻译尚未就绪，此句仅显示原文；原文已保存。"
-                : "本机翻译尚未就绪，此句无法按所选语言显示；原文已保存。"
+                : "本机翻译尚未就绪，此句翻译暂不可用；原文已保存。"
             appendControl("translation_state=unavailable")
             showTranslationFallback(source: source, sentence: sentence)
             return
@@ -803,7 +813,7 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
             appendControl("translation_state=backpressure skipped=\(skippedTranslations)")
             error = effectiveDisplayMode == .bilingual
                 ? "本机翻译处理积压，此句仅显示原文；原文已保存。"
-                : "本机翻译处理积压，此句无法按所选语言显示；原文已保存。"
+                : "本机翻译处理积压，此句翻译暂不可用；原文已保存。"
             showTranslationFallback(source: source, sentence: sentence)
             return
         }
@@ -824,7 +834,7 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
                     self.appendControl("translation_state=empty_or_oversize")
                     self.error = self.effectiveDisplayMode == .bilingual
                         ? "本机翻译未返回可用内容，此句仅显示原文；原文已保存。"
-                        : "本机翻译未返回可用内容，此句无法按所选语言显示；原文已保存。"
+                        : "本机翻译未返回可用内容，此句翻译暂不可用；原文已保存。"
                     self.showTranslationFallback(source: source, sentence: sentence)
                     return
                 }
@@ -842,7 +852,7 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
                 self.appendControl("translation_state=failed")
                 self.error = self.effectiveDisplayMode == .bilingual
                     ? "本机翻译失败，此句仅显示原文；原文已保存。"
-                    : "本机翻译失败，此句无法按所选语言显示；原文已保存。"
+                    : "本机翻译失败，此句翻译暂不可用；原文已保存。"
                 self.showTranslationFallback(source: source, sentence: sentence)
             }
         }

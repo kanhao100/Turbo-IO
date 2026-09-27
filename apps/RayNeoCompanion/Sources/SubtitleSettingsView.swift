@@ -2,6 +2,7 @@ import SwiftUI
 import RayNeoCaptions
 import RayNeoProtocol
 import Translation
+import Combine
 
 struct SubtitleSettingsView: View {
     @Environment(\.dismiss) private var dismiss
@@ -146,6 +147,13 @@ struct SubtitleSettingsView: View {
                         if !translationStatus.isEmpty { Text(translationStatus).font(.caption).foregroundStyle(.secondary) }
                     }
                 }.disabled(!settings.allowsChanges)
+                Section("显示预览") {
+                    SubtitleDisplayPreview(language: draft.language,
+                                           translationEnabled: draftTranslationEnabled,
+                                           mode: draftDisplayMode,
+                                           order: draftBilingualOrder,
+                                           retention: draftDisplayRetention)
+                }
                 if draftInputSource == .glasses { Section("实时字幕收音方向") {
                     Picker("收音范围", selection: Binding(
                         get: { settings.pickupDirection },
@@ -396,5 +404,260 @@ struct SubtitleSettingsView: View {
             showSaveError = true
         }
         dismissAfterSave = false
+    }
+}
+
+/// Local sample-only preview. It follows the display rules but never opens an
+/// audio input, recognition provider, or TranslationSession.
+private struct SubtitleDisplayPreview: View {
+    let language: String
+    let translationEnabled: Bool
+    let mode: SubtitleDisplayMode
+    let order: SubtitleBilingualOrder
+    let retention: SubtitleDisplayRetention
+
+    private enum Scenario: String, CaseIterable {
+        case normal, secondTranslationFails
+
+        var name: String {
+            switch self {
+            case .normal: return "正常翻译"
+            case .secondTranslationFails: return "第二句翻译失败"
+            }
+        }
+    }
+
+    private struct PreviewState {
+        let caption: String
+        let status: String
+        let explanation: String
+        let isPartial: Bool
+    }
+
+    @State private var scenario: Scenario = .normal
+    @State private var playhead: Double = 8.6
+    @State private var playing = false
+    @State private var lastTick: Date?
+    private let duration: Double = 29
+
+    var body: some View {
+        let state = previewState(at: playhead)
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Label("手机字幕画面", systemImage: "iphone.gen3")
+                    .font(.subheadline.weight(.semibold))
+                Spacer()
+                Text("示例文字")
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(.secondary)
+            }
+            Picker("预览情景", selection: $scenario) {
+                ForEach(Scenario.allCases, id: \.self) { item in
+                    Text(item.name).tag(item)
+                }
+            }
+            .pickerStyle(.segmented)
+            .disabled(!translationEnabled)
+            .accessibilityIdentifier("subtitle-preview-scenario")
+            if !translationEnabled && mode != sourceOnlyMode {
+                Text("翻译关闭时无法保存此语言模式。预览按识别语言显示；请开启翻译或选择\(sourceOnlyMode.name)。")
+                    .font(.caption)
+                    .foregroundStyle(Palette.amber)
+            }
+
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Image(systemName: "text.bubble.fill")
+                    Text("此刻的字幕")
+                    Spacer()
+                    Text(state.status)
+                        .font(.caption2.weight(.semibold))
+                        .padding(.horizontal, 9).padding(.vertical, 4)
+                        .background(.white.opacity(0.12), in: Capsule())
+                }
+                .font(.caption)
+                .foregroundStyle(.white.opacity(0.76))
+                Text(state.caption.isEmpty ? " " : state.caption)
+                    .font(.system(size: 18, weight: .medium, design: .rounded))
+                    .foregroundStyle(state.isPartial ? Color.green : .white)
+                    .multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, minHeight: 104, alignment: .leading)
+                    .accessibilityIdentifier("subtitle-preview-caption")
+            }
+            .padding(16)
+            .frame(maxWidth: .infinity)
+            .background(Color(red: 0.08, green: 0.13, blue: 0.18), in: RoundedRectangle(cornerRadius: 16))
+
+            Text(state.explanation)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityIdentifier("subtitle-preview-phase")
+            Slider(value: $playhead, in: 0...duration)
+                .accessibilityLabel("预览进度")
+                .accessibilityIdentifier("subtitle-preview-scrub")
+            HStack {
+                Text(timeLabel(playhead))
+                Spacer()
+                Text(timeLabel(duration))
+            }
+            .font(.caption.monospacedDigit())
+            .foregroundStyle(.secondary)
+            HStack(spacing: 10) {
+                Button {
+                    togglePlayback()
+                } label: {
+                    Label(playing ? "暂停" : "播放", systemImage: playing ? "pause.fill" : "play.fill")
+                }
+                .buttonStyle(.borderedProminent)
+                .accessibilityIdentifier("subtitle-preview-play-pause")
+                Button {
+                    playhead = 0
+                    playing = true
+                    lastTick = Date()
+                } label: {
+                    Label("从头播放", systemImage: "arrow.counterclockwise")
+                }
+                .buttonStyle(.bordered)
+                .accessibilityIdentifier("subtitle-preview-replay")
+            }
+            Text("预览仅演示语言选择、顺序和停留时间；眼镜排版以真机为准。不会启动麦克风、转写或翻译服务。")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+        .onReceive(Timer.publish(every: 0.1, on: .main, in: .common).autoconnect()) { tick in
+            guard playing else { return }
+            let elapsed = max(0, min(0.25, lastTick.map { tick.timeIntervalSince($0) } ?? 0.1))
+            lastTick = tick
+            playhead = min(duration, playhead + elapsed)
+            if playhead >= duration { playing = false; lastTick = nil }
+        }
+    }
+
+    private var sourceIsChinese: Bool { language.lowercased().hasPrefix("zh") }
+    private var sourceOnlyMode: SubtitleDisplayMode { sourceIsChinese ? .chineseOnly : .englishOnly }
+    private var effectiveMode: SubtitleDisplayMode { translationEnabled ? mode : sourceOnlyMode }
+    private var sourceOnly: Bool { effectiveMode == sourceOnlyMode }
+    private var bilingual: Bool { effectiveMode == .bilingual }
+
+    private var firstSource: String {
+        sourceIsChinese
+            ? "今天我们沿着河边慢慢走，前面的路口有一家刚开门的书店。"
+            : "Today we are walking slowly along the river, and a bookstore has just opened at the next corner."
+    }
+    private var firstTranslation: String {
+        sourceIsChinese
+            ? "Today we are walking slowly along the river, and a bookstore has just opened at the next corner."
+            : "今天我们沿着河边慢慢走，前面的路口有一家刚开门的书店。"
+    }
+    private var secondSource: String {
+        sourceIsChinese ? "等一下，左边那辆车正在转弯。" : "Wait, the car on the left is turning."
+    }
+    private var secondTranslation: String {
+        sourceIsChinese ? "Wait, the car on the left is turning." : "等一下，左边那辆车正在转弯。"
+    }
+
+    private func previewState(at time: Double) -> PreviewState {
+        if time < 0.8 {
+            return PreviewState(caption: "", status: "待播放", explanation: "播放或拖动进度，查看长句识别、翻译延迟及下一句切换。", isPartial: false)
+        }
+        if time < 6 {
+            let caption = sourceOnly || bilingual
+                ? partial(firstSource, progress: (time - 0.8) / 5.2) : ""
+            return PreviewState(caption: caption, status: caption.isEmpty ? "等待译文" : "临时识别",
+                                explanation: "第一位说话者说出较长的句子；临时识别会逐步修订。", isPartial: !caption.isEmpty)
+        }
+        if time < 8.4 {
+            if sourceOnly {
+                return finalized(firstSource, completedAt: 6, now: time,
+                                 explanation: "第一句识别完成；所选语言就是识别原文。")
+            }
+            let caption = bilingual ? partial(firstSource, progress: 0.98) : ""
+            return PreviewState(caption: caption, status: caption.isEmpty ? "等待译文" : "翻译中",
+                                explanation: "第一句已识别，译文还未生成；只看译文时不会闪出原文。",
+                                isPartial: !caption.isEmpty)
+        }
+        let firstCompleted = composed(source: firstSource, translation: firstTranslation)
+        if time < 10 {
+            return sourceOnly
+                ? finalized(firstSource, completedAt: 6, now: time,
+                            explanation: "第一句已完成，按所选停留时间显示。")
+                : finalized(firstCompleted, completedAt: 8.4, now: time,
+                            explanation: "第一句译文生成，按所选语言和混合顺序显示。")
+        }
+        if time < 14 {
+            if sourceOnly {
+                return PreviewState(caption: partial(secondSource, progress: (time - 10) / 4),
+                                    status: "临时识别",
+                                    explanation: "第二位说话者开始；只看识别原文时立即跟随新一句。", isPartial: true)
+            }
+            return finalized(firstCompleted, completedAt: 8.4, now: time,
+                             explanation: "第二位说话者开始；当前模式保留上一句，等待新译文。")
+        }
+        if time < 16.4 {
+            return sourceOnly
+                ? finalized(secondSource, completedAt: 14, now: time,
+                            explanation: "第二句识别完成，开始按所选时长停留。")
+                : finalized(firstCompleted, completedAt: 8.4, now: time,
+                            explanation: "第二句已识别，新译文仍在生成；上一句继续停留或到时清空。")
+        }
+        if sourceOnly {
+            return finalized(secondSource, completedAt: 14, now: time,
+                             explanation: scenario == .secondTranslationFails && translationEnabled
+                                ? "第二句翻译失败；所选识别原文仍正常显示。"
+                                : "第二句识别原文继续显示，直到下一句或停留时间结束。")
+        }
+        if scenario == .secondTranslationFails {
+            let fallback = bilingual ? secondSource :
+                (effectiveMode == .chineseOnly ? "本句翻译暂不可用" : "Translation unavailable")
+            return finalized(fallback, completedAt: 16.4, now: time,
+                             explanation: bilingual
+                                ? "第二句翻译失败；混合模式只显示已识别原文。"
+                                : "第二句翻译失败；仅用所选语言显示状态，不闪出原文。")
+        }
+        return finalized(composed(source: secondSource, translation: secondTranslation),
+                         completedAt: 16.4, now: time,
+                         explanation: "第二句译文已生成；可继续拖动观察 3、5、10 秒清空或持续显示。")
+    }
+
+    private func finalized(_ caption: String, completedAt: Double, now: Double,
+                           explanation: String) -> PreviewState {
+        if let seconds = retention.seconds, now >= completedAt + seconds {
+            return PreviewState(caption: "", status: "已清空",
+                                explanation: "最终字幕显示 \(Int(seconds)) 秒后清空；下一句生成时会重新显示。",
+                                isPartial: false)
+        }
+        return PreviewState(caption: caption, status: "最终字幕", explanation: explanation, isPartial: false)
+    }
+
+    private func composed(source: String, translation: String) -> String {
+        if sourceOnly { return source }
+        if bilingual {
+            return order == .sourceFirst ? source + "\n" + translation : translation + "\n" + source
+        }
+        return translation
+    }
+
+    private func partial(_ text: String, progress: Double) -> String {
+        let fraction = max(0.05, min(1, progress))
+        if sourceIsChinese {
+            let characters = Array(text)
+            return String(characters.prefix(max(1, Int(ceil(Double(characters.count) * fraction)))))
+        }
+        let words = text.split(separator: " ")
+        return words.prefix(max(1, Int(ceil(Double(words.count) * fraction)))).joined(separator: " ")
+    }
+
+    private func togglePlayback() {
+        if playhead >= duration {
+            playhead = 0
+            playing = true
+        } else { playing.toggle() }
+        lastTick = playing ? Date() : nil
+    }
+
+    private func timeLabel(_ value: Double) -> String {
+        let whole = Int(value)
+        return String(format: "%02d:%02d", whole / 60, whole % 60)
     }
 }
