@@ -1,0 +1,39 @@
+{
+  "media": {
+    "docs/screenshots/focus-design-20260925.png": "ad097f6043520c278f2f91d6ef4dc135e87364f5312d342350038288e7657a20",
+    "docs/screenshots/focus-home-ui-20260925.png": "32cbffe71a21d5ba0e1983542712dfd30e1dec34ede481ca86db38cf41ec6560",
+    "docs/screenshots/midautumn-update-20260925.png": "da8d2434d7c056a75c320e2970d190641916031730fe0c22db3960518262e021",
+    "docs/screenshots/midautumn-update-wide-20260925.png": "8d9380ab0f52ad3f7781201ef33a410977e8ed9b79c4080d17469377a350ba50",
+    "docs/screenshots/music-design-20260925.png": "7a7dcd1eaf971880a0ea5961eed7ac0cdbed785a858c792d0401fdff725049e2",
+    "docs/screenshots/weread-ui-concept.jpg": "7934d92d310e4d2f293ec209064dc22d31fd404d3e2a59dac6ac8858855e6860",
+    "official-addon/focus-edition/TurboIOArt/music.png": "fd839eb8b849fe56a90ed5d8c6e3ade38ea6216cd8a6f666559fbf2c0ea3fc28",
+    "official-addon/focus-edition/TurboIOArt/reading.png": "1badf2985bb7b903e5e579e1b32a31ce1a537a2991c0e23aa88a6498358ba7ff",
+    "official-addon/focus-edition/TurboIOArt/navigation.png": "ab925edd3ff6918b7c6a3c9813687bba60487d591deaade3e66dc078725afcb1",
+    "official-addon/focus-edition/TurboIOArt/focus.png": "10c1efcf90b5c053b77dac15acae7303f66b1e809a75efe86ea380ccef76c056",
+    "official-addon/focus-edition/TurboIOArt/news.png": "e9a8e2401edbd0d86c3aee7c9af8c6789acdc177245e3feefeda55bb74ae7b68",
+    "official-addon/focus-edition/TurboIOArt/settings.png": "14a91644e1b6b042c4b7dba1e9326d90f5eacd2066b7e55d2435a208c57f2ccf",
+    "official-addon/focus-edition/TurboIOArt/focus-tomato-v2.png": "e8b3fceb63f1d19138c256a1d108ca8a2e33c132cf79f6313cd0c88d40bb553a",
+    "official-addon/focus-edition/TurboIOArt/hero-glass-v5.png": "f2f7de2f59eb97ac3910d10ac3220d8fbb14ac6013d7cde5611205f84501d623",
+    "official-addon/focus-edition/TurboIOArt/hero-sequence-v5.png": "ddd8e15f4c56ead5df8b54838b2a99a47f801a29eb8387b1bba028b295f0b269",
+    "firmware-research/strix-1.0.4.12/native-navigation/focus/src/official-addon/research/animation-runtime-v1/assets/PROMPT.txt": "aabbf19cd3d1fb44fce585f34d58fb2593ce4912a97dd95f2a5758cb761f2df0",
+    "firmware-research/strix-1.0.4.12/native-navigation/focus/src/official-addon/research/animation-runtime-v1/assets/anime-idle-atlas-v1.png": "c64ceebed83e304631ca45e7751a82d77f379120f399d30f521715ce37b0642d",
+    "firmware-research/strix-1.0.4.12/native-navigation/focus/src/official-addon/research/animation-runtime-v1/assets/encoded-v1/anime-idle-192x176-l8.bin": "f758dd6e3cdf5fc6550238df26e46111e9d45d098b9d95f649626ea58210ee1d",
+    "firmware-research/strix-1.0.4.12/native-navigation/focus/src/official-addon/research/animation-runtime-v1/assets/encoded-v1/frame-00.png": "901283e8d2641c391d05634a85697f55648207c2c3df58104834f3549c5695bc",
+    "firmware-research/strix-1.0.4.12/native-navigation/focus/src/official-addon/research/animation-runtime-v1/assets/encoded-v1/frame-01.png": "3eb3b50e7182348b33ecb1c8824de22a469468b3c33f97dc79cb8bb62f4d64a9",
+    "firmware-research/strix-1.0.4.12/native-navigation/focus/src/official-addon/research/animation-runtime-v1/assets/encoded-v1/frame-02.png": "741e0cb1f1701da5a06f90ded24fbdb1e987ad8d4fd2b0924e270487bcde6ba3",
+    "firmware-research/strix-1.0.4.12/native-navigation/focus/src/official-addon/research/animation-runtime-v1/assets/encoded-v1/frame-03.png": "d64fce0e575cff7b7efb50244cebf7dad3f20b050115a23c309c3b6be79a60d7",
+    "firmware-research/strix-1.0.4.12/native-navigation/focus/src/official-addon/research/animation-runtime-v1/assets/encoded-v1/frame-04.png": "3ae2970a21e3b6d4cd111bc4c002f007bf06a8703c6a2ed68f7e13e374b922ee",
+    "firmware-research/strix-1.0.4.12/native-navigation/focus/src/official-addon/research/animation-runtime-v1/assets/encoded-v1/frame-05.png": "16b6c0a664387ddca5c0b0b309c63657a1a8c3af454cdbc7f2214748b3921ac0",
+    "firmware-research/strix-1.0.4.12/native-navigation/focus/src/official-addon/research/animation-runtime-v1/assets/encoded-v1/frame-06.png": "452d4c9e55d01649f5043252b64dd54e3ea4445178e8f816796015f602776d2e",
+    "firmware-research/strix-1.0.4.12/native-navigation/focus/src/official-addon/research/animation-runtime-v1/assets/encoded-v1/frame-07.png": "a0ea2ea913fe2f904a573d15ebcbd4fe81e6a79a7685f410dbfb0ffc19ebcfe0",
+    "firmware-research/strix-1.0.4.12/native-navigation/focus/src/official-addon/research/animation-runtime-v1/assets/encoded-v1/frame-08.png": "4f74c831706df25c0620231096c881c578ab263d11fb38fbad8becd78f55ed2a",
+    "firmware-research/strix-1.0.4.12/native-navigation/focus/src/official-addon/research/animation-runtime-v1/assets/encoded-v1/frame-09.png": "451b42738d292026e7d6581c565b3026af09336132bc48f85f27bd9397f5c85e",
+    "firmware-research/strix-1.0.4.12/native-navigation/focus/src/official-addon/research/animation-runtime-v1/assets/encoded-v1/frame-10.png": "f78140ce949619405c17d97f3b4d3fd6d1e7a64971604807d23a9d1809a4c8b8",
+    "firmware-research/strix-1.0.4.12/native-navigation/focus/src/official-addon/research/animation-runtime-v1/assets/encoded-v1/frame-11.png": "e69a80814c8674b5f915bbdbf69f4ba6634ea6f3ce08b7636d03519489639764",
+    "firmware-research/strix-1.0.4.12/native-navigation/focus/src/official-addon/research/animation-runtime-v1/assets/encoded-v1/manifest.json": "942c5fbb151118c7cb414b048bf819e93ecc331d902070f3c3faaf6c04d0b61b",
+    "firmware-research/strix-1.0.4.12/native-navigation/focus/src/official-addon/research/animation-runtime-v1/assets/encoded-v1/preview-approx-8fps.gif": "4d64a763ee9e34634bfa7b4713287429d97173b51fdc55262f947c3cc345402f"
+  },
+  "largeText": {
+    "firmware-research/strix-1.0.4.12/native-navigation/focus/symbols.json": "de51551708e403dffccc18490990b32f3252f750ac12358e02641dd5fa468dae"
+  }
+}

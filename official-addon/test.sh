@@ -2,6 +2,8 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 mkdir -p build
+xcrun clang -fobjc-arc -fmodules -Wall -Wextra -Wno-unused-parameter -framework Foundation NavigationBackgroundTests.m -o build/navigation-background-tests
+./build/navigation-background-tests
 xcrun clang -fobjc-arc -fmodules -Wall -Wextra -framework Foundation HostCompatibilityTests.m -o build/host-compatibility-tests
 ./build/host-compatibility-tests
 node --test host-compatibility.test.mjs
@@ -15,6 +17,8 @@ xcrun clang -fobjc-arc -fmodules -Wall -Wextra -framework Foundation HomeTabLayo
 ./build/home-tab-layout-tests
 xcrun clang -fobjc-arc -fmodules -Wall -Wextra -framework Foundation ResearchCatalog.m ResearchCatalogTests.m -o build/research-catalog-tests
 ./build/research-catalog-tests
+xcrun clang -fobjc-arc -fmodules -Wall -Wextra -framework Foundation VoiceTTSCore.m VoiceTTSTests.m -o build/voice-tts-tests
+./build/voice-tts-tests
 xcrun clang -fobjc-arc -fmodules -Wall -Wextra -framework Foundation NewsPresentation.m NewsPresentationTests.m -o build/news-presentation-tests
 ./build/news-presentation-tests
 xcrun clang -fobjc-arc -fmodules -Wall -Wextra -Wno-unused-parameter -Wno-incompatible-pointer-types -framework Foundation Core.m Profile.m Tests.m -o build/core-tests

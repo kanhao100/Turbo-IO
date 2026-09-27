@@ -1,6 +1,8 @@
 # 源码发布说明
 
-发布目标：拿到源码后按说明配置、自己签名/构建，不需要用户复盘逆向过程。不提供IPA、预签名App、开发者云凭据或绑定数据。
+发布目标：拿到源码后按说明配置、构建，不需要用户复盘逆向过程。不提供个人开发者云凭据或绑定数据。
+
+**2026-09-27 发行例外：** [Android GUARD-07 Release](https://github.com/Turbo1123/Turbo-IO/releases/tag/android-105-guard07-tap1-test01) 提供独立研究签名的完整非官方修改 APK、TAP1-TEST-01 实验固件及摘要。APK 不含作者账号、Key、Cookie、签名私钥或微信读书网页正文适配；公开派生 APK 尚未再次进行真机刷机验收。iOS 仍不提供合并后的 IPA，原厂砸壳 IPA 仅为明确列出的宿主输入；鸿蒙不提供 HAP 且已停止更新。以下通用源码导出排除项不表示这些单独列明的 Release 附件不存在。
 
 ## 两个目录，不混在一起
 
@@ -41,3 +43,7 @@ node scripts/check-source.mjs /absolute/new/turbo-io-source
 5. 再经所有者确认公开仓库位置后提交/发布。生成候选目录不代表已经公开。
 
 当前原创内容采用 PolyForm Noncommercial 1.0.0，仅在许可允许的非商业范围内使用。历史 MIT 已授予权利不追溯撤销，详见[许可与历史版本说明](LICENSING.md)。此源码包没有Apple签名，也不包含对第三方组件的额外许可授权。
+
+## 单独标注的固件研究附件
+
+除首页列出的原厂1.0.5（201）砸壳IPA输入外，Release单独提供R3及TNV1高风险固件研究附件。TNV1包含独立原生导航应用及Turbo Display**测试工具**，配套手机端源码可自行编译签名；不提供合并后IPA。仅AP内容改变不意味着只刷AP或能保证回滚。下载前阅读[TNV1风险、构建与使用](../firmware-research/strix-1.0.4.12/native-navigation/README.md)。原厂代码/资源版权不变，原创部分仍为非商业研究许可。未公开任何个人Key、账号、签名材料或原始设备日志。

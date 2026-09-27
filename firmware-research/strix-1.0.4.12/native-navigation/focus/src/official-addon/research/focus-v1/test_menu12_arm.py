@@ -1,0 +1,23 @@
+"""Real ARM wheel/index math, twelve menu rows and allocation-failure sweep."""
+from pathlib import Path
+p=Path(__file__).resolve().parents[1]/'weread-v1/test_menu11_arm.py'
+exec(compile(p.read_text().split('exec(compile(s,')[0],str(p),'exec'))
+change('menu11-native-arm.json','menu12-real-sync-arm.json')
+change('native-eleven-TDP1-TNV1-TMU1-TWR1','native-twelve-TFP1')
+change('reader=[False];SLOT','reader=[False];focus=[False];SLOT')
+change('READER=SLOT+256','READER=SLOT+256;FOCUS=SLOT+384')
+change("for name in ['stock_ctor'","for name in ['tf_slot_create','tf_slot_destroy','tf_slot_hidden','tf_slot_visible','tf_slot_open','tf_slot_wheel']:calls[syms[name]&~1]=name\n for name in ['stock_ctor'")
+change("for name in ['stock_ctor'","for name in ['fm_show','fm_hide','fm_destroy']:calls[syms[name]&~1]=name\n for name in ['stock_ctor'")
+change("elif name=='wr_slot_create':","elif name=='tf_slot_create':u.mem_write(FOCUS,bytes(24));ret(FOCUS)\n  elif name=='tf_slot_visible':ret(focus[0])\n  elif name=='tf_slot_open':focus[0]=fail_at!='focuspage';ret(focus[0])\n  elif name in ['tf_slot_destroy','tf_slot_hidden']:focus[0]=False;ret()\n  elif name=='tf_slot_wheel':assert focus[0];ret()\n  elif name=='wr_slot_create':")
+change("elif name=='tf_slot_create':","elif name in ['fm_show','fm_hide','fm_destroy']:ret() # View allocations tested separately; sync executes real code\n  elif name=='tf_slot_create':")
+change('min(10,n)','min(11,n)');change('min(329,n)','min(359,n)')
+change('==11\n','==12\n');change('range(330)','range(360)');change('range(329,-1,-1)','range(359,-1,-1)')
+change('for start in range(11):',"selected(10);call(0x1079a310,APP,600);assert word(APP+0x88)==11\n selected(11);call(0x1079a310,APP,-600);assert word(APP+0x88)==10\n for start in range(12):")
+change('word(APP+0x88)<=10','word(APP+0x88)<=11')
+change('10.46<readfp(APP+0xa8)<10.47','11.46<readfp(APP+0xa8)<11.47')
+change("call(0x10799896,APP);assert word(APP+0xe8)==0", "call(0x1079a784,APP);selected(11);call(0x1079a890,APP,0);assert focus[0]==(fail_at!='focuspage')\n if focus[0]:call(0x1079a310,APP,-600);assert word(APP+0x88)==11\n call(0x1079a7b8,APP);assert not focus[0]\n call(0x10799896,APP);assert word(APP+0xe8)==0")
+change('if frame==315:',"if frame==345:\n    assert objects[word(FOCUS)]['opa']==255 and not objects[word(FOCUS)]['hidden']\n    assert objects[word(FOCUS+8)]['opa']==255 and not objects[word(FOCUS+8)]['hidden']\n    assert objects[word(READER+8)]['hidden']\n    assert objects[word(FOCUS+12)]['size']==(12,4)\n   if frame==315:")
+change("'frameSweep':660","'frameSweep':720,'nativeWheelIndex11':True,'twelfthMenuDistinct':True")
+change('range(1,90)','range(1,115)')
+change("scenario('readerpage')]","scenario('readerpage'),scenario('focuspage')]")
+exec(compile(s,str(source),'exec'),{'__file__':str(source),'__name__':'__main__'})

@@ -1,0 +1,225 @@
+{
+  "flash": "0x10190000",
+  "segments": [
+    [
+      1048576,
+      1135360,
+      27540
+    ],
+    [
+      537920768,
+      537937392,
+      114324
+    ],
+    [
+      1135360,
+      1246176,
+      130948
+    ],
+    [
+      537950592,
+      537960172,
+      241764
+    ],
+    [
+      1246176,
+      1246784,
+      251344
+    ],
+    [
+      599785472,
+      599786288,
+      9465292
+    ],
+    [
+      402653184,
+      406294528,
+      251960
+    ]
+  ],
+  "entryPointScope": "All source symbol entry points within 16 bytes of the five fixed hook sites; only used for the original overlap check.",
+  "entryPoints": [
+    276403808,
+    276407056,
+    276408196,
+    276408248,
+    276408464
+  ],
+  "entries": [
+    {
+      "name": "lv_image_decoder_open",
+      "address": 274656025,
+      "tableOffset": 3661652
+    },
+    {
+      "name": "lv_image_decoder_close",
+      "address": 274656223,
+      "tableOffset": 3661668
+    },
+    {
+      "name": "lv_event_get_code",
+      "address": 274676425,
+      "tableOffset": 3663068
+    },
+    {
+      "name": "lv_label_create",
+      "address": 274727793,
+      "tableOffset": 3665556
+    },
+    {
+      "name": "lv_label_set_text",
+      "address": 274730241,
+      "tableOffset": 3665620
+    },
+    {
+      "name": "lv_obj_create_ex",
+      "address": 275075293,
+      "tableOffset": 3676252
+    },
+    {
+      "name": "lv_obj_remove_flag",
+      "address": 275075385,
+      "tableOffset": 3676260
+    },
+    {
+      "name": "lv_obj_has_flag",
+      "address": 275075587,
+      "tableOffset": 3676292
+    },
+    {
+      "name": "lv_obj_add_flag",
+      "address": 275076607,
+      "tableOffset": 3676348
+    },
+    {
+      "name": "lv_event_get_key",
+      "address": 275080593,
+      "tableOffset": 3676620
+    },
+    {
+      "name": "lv_obj_set_size",
+      "address": 275081567,
+      "tableOffset": 3676732
+    },
+    {
+      "name": "lv_obj_align",
+      "address": 275081729,
+      "tableOffset": 3676772
+    },
+    {
+      "name": "lv_obj_get_width",
+      "address": 275081901,
+      "tableOffset": 3676820
+    },
+    {
+      "name": "lv_obj_get_height",
+      "address": 275081915,
+      "tableOffset": 3676828
+    },
+    {
+      "name": "lv_obj_set_style_pad_top",
+      "address": 275096401,
+      "tableOffset": 3677660
+    },
+    {
+      "name": "lv_obj_set_style_pad_bottom",
+      "address": 275096423,
+      "tableOffset": 3677668
+    },
+    {
+      "name": "lv_obj_set_style_pad_left",
+      "address": 275096445,
+      "tableOffset": 3677676
+    },
+    {
+      "name": "lv_obj_set_style_pad_right",
+      "address": 275096467,
+      "tableOffset": 3677684
+    },
+    {
+      "name": "lv_obj_set_style_bg_color",
+      "address": 275096621,
+      "tableOffset": 3677740
+    },
+    {
+      "name": "lv_obj_set_style_bg_opa",
+      "address": 275096653,
+      "tableOffset": 3677748
+    },
+    {
+      "name": "lv_obj_set_style_border_width",
+      "address": 275096893,
+      "tableOffset": 3677828
+    },
+    {
+      "name": "lv_obj_set_style_text_color",
+      "address": 275097133,
+      "tableOffset": 3677908
+    },
+    {
+      "name": "lv_obj_set_style_radius",
+      "address": 275097297,
+      "tableOffset": 3677964
+    },
+    {
+      "name": "lv_obj_delete",
+      "address": 275098545,
+      "tableOffset": 3678164
+    },
+    {
+      "name": "lv_image_create_ex",
+      "address": 275149489,
+      "tableOffset": 3680540
+    },
+    {
+      "name": "lv_image_get_src",
+      "address": 275149549,
+      "tableOffset": 3680556
+    },
+    {
+      "name": "lv_image_set_src",
+      "address": 275150585,
+      "tableOffset": 3680612
+    },
+    {
+      "name": "lv_rayneo_display_report_activity",
+      "address": 276070249,
+      "tableOffset": 3725188
+    },
+    {
+      "name": "rayneo::app::launcher::AppListView::adjustedRawWheelDelta",
+      "address": 276402705,
+      "tableOffset": 3741316
+    },
+    {
+      "name": "rayneo::app::launcher::AppListView::unregisterRawWheelListener",
+      "address": 276402749,
+      "tableOffset": 3741332
+    },
+    {
+      "name": "rayneo::app::launcher::AppListView::isRawWheelSlideSettled",
+      "address": 276402989,
+      "tableOffset": 3741364
+    },
+    {
+      "name": "rayneo::app::launcher::AppListView::AppListView",
+      "address": 276403421,
+      "tableOffset": 3741380
+    },
+    {
+      "name": "rayneo::app::launcher::AppListView::AppListView",
+      "address": 276403421,
+      "tableOffset": 3741388
+    },
+    {
+      "name": "rayneo::app::launcher::isLauncherEncoderWakeOverlayVisible",
+      "address": 276431445,
+      "tableOffset": 3742572
+    },
+    {
+      "name": "logger_log",
+      "address": 276651225,
+      "tableOffset": 3752212
+    }
+  ]
+}
