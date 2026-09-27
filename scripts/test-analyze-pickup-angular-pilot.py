@@ -175,6 +175,14 @@ class AngularPilotTests(unittest.TestCase):
         with self.assertRaisesRegex(pilot.AnalysisError, "paired front windows"):
             self.analyze(changed)
 
+    def test_whole_blocks_must_follow_recording_order(self) -> None:
+        manifest = self.fixture(["ABBA"])
+        blocks = manifest["rounds"][0]["blocks"]
+        for field in ("windows", "playback_order"):
+            blocks[0][field], blocks[1][field] = blocks[1][field], blocks[0][field]
+        with self.assertRaisesRegex(pilot.AnalysisError, "blocks must follow playback order"):
+            self.analyze(manifest)
+
     def test_invalid_review_pending_block_keeps_round_visible_but_excluded(self) -> None:
         manifest = self.fixture(["ABBA", "BAAB"])
         block = manifest["rounds"][0]["blocks"][0]

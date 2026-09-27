@@ -88,7 +88,7 @@ jobs:
           IPA_VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Info.plist")
           IPA_BUILD=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Info.plist")
           test "$IPA_VERSION" = "0.3.5"
-          test "$IPA_BUILD" = "12"
+          test "$IPA_BUILD" = "13"
           IPA_NAME="TurboIO-realtime-subtitles-v${IPA_VERSION}-build${IPA_BUILD}-unsigned.ipa"
           IPA_PATH="$OUTPUT/$IPA_NAME"
 
@@ -97,7 +97,8 @@ jobs:
           cp -R "$APP" "$OUTPUT/Payload/"
           /usr/bin/ditto -c -k --sequesterRsrc --keepParent \
             "$OUTPUT/Payload" "$IPA_PATH"
-          shasum -a 256 "$IPA_PATH" | tee "$OUTPUT/SHA256SUMS.txt"
+          (cd "$OUTPUT" && shasum -a 256 "$IPA_NAME") | tee "$OUTPUT/SHA256SUMS.txt"
+          (cd "$OUTPUT" && shasum -a 256 -c SHA256SUMS.txt)
           echo "ipa_path=$IPA_PATH" >> "$GITHUB_OUTPUT"
           echo "artifact_name=TurboIO-realtime-subtitles-v${IPA_VERSION}-build${IPA_BUILD}-unsigned-ipa" >> "$GITHUB_OUTPUT"
 

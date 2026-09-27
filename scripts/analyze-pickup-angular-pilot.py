@@ -184,6 +184,21 @@ def analyze(manifest: dict[str, Any], *, manifest_dir: Path | None = None) -> di
                 computed_blocks.append(computed)
                 blocks.append(computed)
 
+            previous_valid: dict[str, Any] | None = None
+            for current in computed_blocks:
+                if not current["valid"]:
+                    continue
+                first = current["windows"][current["playback_order"][0]]
+                if previous_valid is not None:
+                    last = previous_valid["windows"][previous_valid["playback_order"][1]]
+                    last_end = (int(last["wav"][6:10]), last["end_sample"])
+                    if last_end > window_position(first):
+                        raise AnalysisError(
+                            f"{where}: block {current['block_number']} windows precede or overlap "
+                            f"block {previous_valid['block_number']}; blocks must follow playback order"
+                        )
+                previous_valid = current
+
             first_pair_index = len(pairs)
             for first_index in (0, 2):
                 first = computed_blocks[first_index]

@@ -186,6 +186,8 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
             pickupDirectionNeedsRetry = true
             pickupDirectionMessage = "切换到\(direction == .ahead ? "前方" : "四周")的指令未能发送；眼镜当前收音方向未确认。"
             self.error = "收音方向切换失败，请确认眼镜连接后重试。"
+            controlEvents.append("t=\(String(format: "%.3f", now)) business=19 type=10 direction=\(direction.rawValue) state=submit_failed packets=\(packets) gaps=\(gaps)")
+            controlEvents = Array(controlEvents.suffix(80))
         }
     }
     @discardableResult func start() -> Task<Void, Never>? {
@@ -193,13 +195,17 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
         guard canStart else { error = "请先连接眼镜并结束其他眼镜任务。"; return nil }
         return begin(deviceID: device.deviceID!, incomingSID: nil)
     }
-    @discardableResult private func begin(deviceID: String, incomingSID: String?) -> Task<Void, Never>? {
+    @discardableResult private func begin(deviceID: String, incomingSID: String?, incomingArrival: TimeInterval? = nil) -> Task<Void, Never>? {
         guard canStart, let config = settings.recognizer() else {
             error = "请先配置所选转写服务；字幕不需要 DeepSeek。"; return nil
         }
         guard let decoder = makeDecoder() else { error = "无法创建眼镜音频解码器。"; return nil }
         generation = UUID(); let token = generation
         let id = UUID(), protocolID = incomingSID ?? UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
+        controlEvents = []
+        if let incomingArrival {
+            controlEvents.append("t=\(String(format: "%.3f", incomingArrival)) business=19 type=1 sid=current state=received")
+        }
         target = deviceID; sid = protocolID; sessionID = id; options = config.options; key = config.key
         sessionPickupDirection = settings.pickupDirection; pickupDirectionMessage = nil
         pickupDirectionNeedsRetry = false; lastPickupDirectionMessageID = nil; pendingPickupDirection = nil
@@ -293,7 +299,7 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
                 return
             }
             guard canStart else { return }
-            _ = begin(deviceID: source, incomingSID: event.sid); return
+            _ = begin(deviceID: source, incomingSID: event.sid, incomingArrival: arrival); return
         }
         guard active, source == target, event.sid == sid, arrival >= acceptedAt else { return }
         if (phase == .startingAudio || phase == .openingDisplay), now >= deadline {
@@ -417,7 +423,7 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
         if event.type == 10 {
             let latest = !messageID.isEmpty && messageID == lastPickupDirectionMessageID
             let state = latest ? "send_failed" : "stale_send_failed"
-            controlEvents.append("t=\(String(format: "%.3f", now)) business=19 type=10 state=\(state) code=\(code) packets=\(packets) gaps=\(gaps)")
+            controlEvents.append("t=\(String(format: "%.3f", now)) business=19 type=10 direction=\(pickupDirection(in: packet)) state=\(state) code=\(code) packets=\(packets) gaps=\(gaps)")
             controlEvents = Array(controlEvents.suffix(80))
             if latest {
                 pendingPickupDirection = sessionPickupDirection
@@ -428,6 +434,14 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
             return
         }
         if event.type != 3 { fail("字幕命令异步发送失败，code=\(code)") }
+    }
+    private func pickupDirection(in packet: Data) -> String {
+        guard let json = try? BusinessEnvelopeMetadata.messageJSON(packet),
+              let body = try? JSONSerialization.jsonObject(with: json) as? [String: Any],
+              let settings = body["settings"] as? [String: Any],
+              let raw = settings["direction"] as? String,
+              let direction = SubtitleTranslateWire.PickupDirection(rawValue: raw) else { return "unknown" }
+        return direction.rawValue
     }
     private func send(_ packet: Data) -> Bool {
         guard let target, device.deviceID == target else { fail("眼镜连接已变化。" ); return false }

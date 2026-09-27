@@ -4,7 +4,7 @@
 
 - 只看 UI、本机文件/待办/书库与逻辑：本地版，不需要眼镜、云 Key 或厂商 framework。
 - 连接真实眼镜：设备版，使用现有通信依赖、自己的 Apple 签名和设备。当前不是从零自主重写的 SDK。
-- 不提供 IPA、预签名 App 或开发者密钥。每位使用者自行配置与编译。
+- 不提供已签名 IPA、长期发布包或开发者密钥。实时字幕 PR 的 Actions 会临时上传未签名 iPhoneOS IPA；下载后仍须用自己的 Apple 开发者签名才能安装，也可自行在 Mac 上编译。
 
 先安装/配置 Xcode、XcodeGen、Node.js，并在 Xcode 准备一个可用 iOS 模拟器。App 最低部署 iOS 16；工具链需满足各 Package.swift，自主传输包要求 Swift 6.2+。Node 需支持 fetch、ESM 和 node:test，尚未定义经过完整验证的最低版本。
 

@@ -68,6 +68,7 @@ final class SubtitleRealtimeTests: XCTestCase {
         await fulfillment(of: [started], timeout: 3)
         XCTAssertEqual(try f.types(), [2,7])
         XCTAssertEqual(try f.sid(), "glasses-shortcut")
+        XCTAssertTrue(f.runtime.controlEvents.contains { $0.contains("type=1 sid=current state=received") })
         XCTAssertEqual(f.provider.starts, 1)
         f.feed(1, sid: "duplicate-start") // Same physical tap duplicate is inside debounce.
         XCTAssertEqual(f.runtime.phase, .openingDisplay)
@@ -264,6 +265,21 @@ final class SubtitleRealtimeTests: XCTestCase {
                                              allowsChanges: true, factory: { _ in provider })
         XCTAssertEqual(reloaded.pickupDirection, .ahead)
     }
+    @MainActor func testPickupDirectionDiagnosticsAreScopedToOneSessionAndSurviveStop() async throws {
+        let f = fixture()
+        await f.runtime.start()?.value
+        let sid = try f.sid()
+        f.feed(2, sid: sid, code: 1); f.feed(8, sid: sid, code: 1)
+        f.runtime.setPickupDirection(.ahead)
+        f.runtime.stop()
+        XCTAssertTrue(f.runtime.diagnosticText.contains("type=10 direction=ahead state=submitted"))
+
+        f.clock.now += 2
+        await f.runtime.start()?.value
+        XCTAssertEqual(f.runtime.phase, .startingAudio)
+        XCTAssertEqual(f.runtime.controlEvents.filter { $0.contains("type=1 direction=ahead state=submitted") }.count, 1)
+        XCTAssertFalse(f.runtime.controlEvents.contains { $0.contains("type=10") })
+    }
     @MainActor func testPickupDirectionUsesAheadForGlassesStartAndDoesNotStopOnSwitchFailure() async throws {
         let f = fixture()
         f.runtime.setShortcut(true)
@@ -289,6 +305,7 @@ final class SubtitleRealtimeTests: XCTestCase {
         XCTAssertEqual(try f.types(), [2, 7])
         XCTAssertNotNil(f.runtime.error)
         XCTAssertTrue(f.runtime.pickupDirectionNeedsRetry)
+        XCTAssertTrue(f.runtime.controlEvents.contains { $0.contains("type=10 direction=around state=submit_failed packets=0 gaps=0") })
 
         f.device.failType10 = false
         f.runtime.retryPickupDirection()
@@ -298,6 +315,7 @@ final class SubtitleRealtimeTests: XCTestCase {
                                   messageID: try XCTUnwrap(f.device.sentMessageIDs.last))
         XCTAssertEqual(f.runtime.phase, .listening)
         XCTAssertEqual(f.provider.stops, 0)
+        XCTAssertTrue(f.runtime.controlEvents.contains { $0.contains("type=10 direction=around state=send_failed code=42") })
         f.runtime.retryPickupDirection()
         XCTAssertEqual(try f.types(), [2, 7, 10, 10])
     }
@@ -319,6 +337,7 @@ final class SubtitleRealtimeTests: XCTestCase {
 
         f.runtime.transportFailed(device: "glasses", packet: firstPacket, code: 42,
                                   messageID: firstID)
+        XCTAssertTrue(f.runtime.controlEvents.contains { $0.contains("type=10 direction=ahead state=stale_send_failed code=42") })
         XCTAssertFalse(f.runtime.pickupDirectionNeedsRetry)
         XCTAssertNil(f.runtime.error)
         XCTAssertEqual(f.runtime.phase, .listening)
