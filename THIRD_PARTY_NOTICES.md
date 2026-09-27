@@ -15,3 +15,17 @@ The root PolyForm Noncommercial 1.0.0 license covers original Turbo IO material 
 - RayNeo and other product names identify interoperability targets; this project is not an official manufacturer release.
 
 Before publication, check the actual dependency inventory and retain each supplied component's original notices. The presence of a component in a local development environment is not recorded here as a license grant. IPA/App distribution, signing certificates, private service credentials and user data are outside this source release.
+
+## Experimental Strix OS 1.0.4.12 firmware artifacts
+
+The `firmware-strix-1.0.4.12-turbophoto-r3` prerelease contains an experimental modified OTA archive, its AP image, and a locally repacked original-content baseline. Original firmware code, libraries, and resources remain copyrighted by RayNeo, Bestechnic, and their respective rights holders. These binaries are not original firmware source code and are not relicensed under the repository's PolyForm license. No official endorsement or guaranteed recovery is implied. Original research code follows the repository license. The embedded Turbo portrait was explicitly authorized for publication by its owner.
+
+These are high-risk research specimens, not production firmware. Read `firmware-research/strix-1.0.4.12/docs/SAFETY.md` before handling them. The baseline is not a full flash backup or a validated unbrick image.
+
+The `firmware-strix-1.0.4.12-tnv1` prerelease additionally provides the exact tested TNV1 navigation OTA archive and AP image, retaining the TDP1 display test tool. Only AP content differs from the 1.0.4.12 original payload baseline; the other 13 payloads are unchanged. These original-code/resource copyright and non-endorsement boundaries also apply. Read `firmware-research/strix-1.0.4.12/native-navigation/README.md`; rollback is not guaranteed. No personal merged/signed iOS package is included.
+
+## TMU1 音乐 API 参考
+
+`official-addon/music/MusicAPI.m` 的网易云 API 编码参考 Beans Music（XIaodou0416，提交 `f9881318caf774129205c3160510ef0dfa318adc`），上游 MIT 许可原文位于 `official-addon/music/Beans-MIT-LICENSE.txt`，随音乐合并包保留。不是将整个 Beans App 合并或重新许可。项目原创代码的非商业条款不改变第三方代码原有许可。音乐、封面、歌词及网易云服务权利归其权利人；本仓库不提供账号、歌曲资源、付费解锁或风控绕过。
+
+The `firmware-strix-1.0.4.12-tmu1` prerelease distributes the exact hardware-tested music OTA archive, retaining navigation, display and animation experiments. The firmware copyright and risk boundaries above apply equally; only AP payload content and its manifest Size/MD5 change. No account data or personal signing material is included, and original vendor firmware is not licensed as original project source.

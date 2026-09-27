@@ -39,3 +39,9 @@ test('weather mock exception is exact and does not hide another tenant on the sa
 test('permits generated build directory without treating it as publishable',()=>{
   fixture({'build/output.dex':'fixture','README.md':'Source only'},r=>{assert.equal(r.files,1);assert.deepEqual(r.findings,[]);});
 });
+
+test('animation exception rejects changed pixels or binary data',()=>{
+  const root='firmware-research/strix-1.0.4.12/native-navigation/src/official-addon/research/animation-runtime-v1/assets/';
+  fixture({[root+'encoded-v1/anime-idle-192x176-l8.bin']:'changed'},r=>assert.ok(r.findings.some(f=>f.rule==='animation-asset-needs-review')));
+  fixture({[root+'unreviewed.png']:'unreviewed'},r=>assert.ok(r.findings.some(f=>f.rule==='non-source-artifact')));
+});

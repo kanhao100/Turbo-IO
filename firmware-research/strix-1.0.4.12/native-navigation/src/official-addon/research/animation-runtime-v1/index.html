@@ -1,0 +1,36 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Turbo IO · ANIM60 本机预览</title>
+<style>
+:root{color-scheme:dark;font-family:system-ui,sans-serif;background:#080d0c;color:#e9f0ed}body{max-width:1100px;margin:50px auto;padding:24px}small{color:#91a399}h1{font-size:32px;font-weight:650;margin:12px 0}p{color:#aab9b2;line-height:1.7;max-width:780px}.grid{display:flex;gap:32px;align-items:flex-start;flex-wrap:wrap}.panel{background:#101916;border:1px solid #23372d;border-radius:20px;padding:24px}canvas{display:block;background:black}#zoom{width:576px;height:528px;image-rendering:pixelated;max-width:100%;object-fit:contain}.card{width:258px;height:196px;box-sizing:border-box;border:1px solid #274e32;border-radius:12px;display:grid;place-items:center;background:#000;overflow:hidden}button{background:#183d2a;border:1px solid #39664b;color:#dbffe6;border-radius:10px;padding:10px 18px;margin:12px 10px 16px 0;cursor:pointer}#stats{font:13px/1.8 ui-monospace,monospace;white-space:pre-line;color:#92e7b0}.note{font-size:13px;max-width:265px}
+</style><small>TURBO IO / DISPLAY LAB</small><h1>192 × 176 · 60 FPS 调度验证</h1>
+<p>先测本地画布刷新，再验收人物动作。底部标记每秒有 60 个目标位置；人物当前只有 12 张生成关键帧，以 8 个姿态/秒播放。此页不是眼镜投屏，也不能证明镜片已达到 60 FPS。</p>
+<button id="play" disabled>加载素材…</button><button id="color">切换灰度</button>
+<div class="grid"><section class="panel"><small>3 倍放大 · 像素检查</small><canvas id="zoom" width="192" height="176"></canvas></section>
+<section class="panel"><small>标准卡片占位 · 258 × 196 CSS px</small><div class="card"><canvas id="native" width="192" height="176"></canvas></div><p class="note">卡片只是尺寸对照。固件候选实际从独立的 Turbo Display 测试页进入，不修改仪表盘。</p><div id="stats"></div></section></div>
+<script type="module">
+const response=await fetch('assets/encoded-v1/anime-idle-192x176-l8.bin');if(!response.ok)throw Error('asset load failed');
+const raw=new Uint8Array(await response.arrayBuffer());if(raw.length!==192*176*12)throw Error('bad asset length');
+const contexts=['zoom','native'].map(id=>document.getElementById(id).getContext('2d'));
+const pixels=new ImageData(192,176),play=document.getElementById('play'),stats=document.getElementById('stats');
+let start=performance.now(),running=true,green=true,last=-1,submitted=0,skipped=0;
+play.disabled=false;play.textContent='暂停';
+play.onclick=()=>{running=!running;if(running){start=performance.now();last=-1;submitted=skipped=0;}play.textContent=running?'暂停':'重新开始';};
+document.getElementById('color').onclick=()=>{green=!green;document.getElementById('color').textContent=green?'切换灰度':'切换绿色';last=-1;};
+function render(now){
+ if(running){
+  const elapsed=Math.min(30000,now-start),due=Math.floor(elapsed*60/1000),frame=Math.floor(elapsed*8/1000)%12;
+  if(elapsed>=30000){running=false;play.textContent='重新开始';}
+  else if(due!==last){
+   if(last>=0)skipped+=Math.max(0,due-last-1);
+   for(let i=0;i<192*176;i++){
+    const x=i%192,y=Math.floor(i/192);let v=raw[frame*192*176+i];
+    if(y>=170)v=x>=due%192&&x-due%192<4?255:0;
+    pixels.data[i*4]=green?0:v;pixels.data[i*4+1]=v;pixels.data[i*4+2]=green?0:v;pixels.data[i*4+3]=255;
+   }
+   contexts.forEach(c=>c.putImageData(pixels,0,0));submitted++;last=due;
+   stats.textContent=`素材：12 poses / 8 poses·s⁻¹\n刷新目标：60/s\n本机绘制：${submitted}\n调度跳过：${skipped}\n进度：${(elapsed/1000).toFixed(1)} / 30 s\n镜片实际 FPS：尚未测量`;
+  }
+ }
+ requestAnimationFrame(render);
+}requestAnimationFrame(render);
+</script></html>

@@ -1,0 +1,19 @@
+{
+  "version": "TMU1-session-fix",
+  "baseFirmware": "Strix OS 1.0.4.12",
+  "officialIOS": "1.0.5 (201)",
+  "archive": "StrixOS-1.0.4.12-TurboMusic-TMU1-EXPERIMENTAL.zip",
+  "archiveBytes": 9468398,
+  "archiveSHA256": "307a0d41aa76b3ed91a8fcc07b09329d76d78a51584c9954c7896d64b1ad9a81",
+  "apBytes": 9902600,
+  "apSHA256": "15da0e4ed255587f3b0f2dc422aff9c01d4ea48f3cf71c73407f3fcd6b2c936f",
+  "apMD5": "1d3edd747e409e52437755e876c39b37",
+  "manifestSHA256": "03767e475ceefd4c3e779d58e85fb2f2b7893485741c8a20197c3754cc855fe7",
+  "changedPayloads": ["nuttx_ap.bin"],
+  "unchangedStockPayloads": 13,
+  "physicalFeedbackDate": "2026-09-23",
+  "physicalFeedback": "User confirmed album cover, timed center-highlighted lyrics, playback state and controls; wheel is oversensitive",
+  "knownIssues": ["Wheel touch can accidentally skip tracks", "NetEase QR confirmation may reject environment", "No long-duration stability or terminated-app wake guarantee"],
+  "productionReady": false,
+  "recoveryGuaranteed": false
+}

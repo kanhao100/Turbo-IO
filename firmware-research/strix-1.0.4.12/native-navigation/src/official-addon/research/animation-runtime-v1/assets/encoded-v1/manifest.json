@@ -1,0 +1,13 @@
+{
+  "width": 192,
+  "height": 176,
+  "frames": 12,
+  "format": "L8",
+  "frameBytes": 33792,
+  "totalBytes": 405504,
+  "sourceWidth": 1512,
+  "sourceHeight": 1040,
+  "sourceSHA256": "c64ceebed83e304631ca45e7751a82d77f379120f399d30f521715ce37b0642d",
+  "dataSHA256": "f758dd6e3cdf5fc6550238df26e46111e9d45d098b9d95f649626ea58210ee1d",
+  "note": "Generated sprite identity/motion consistency requires visual QA. Host preview is not glasses acceptance."
+}

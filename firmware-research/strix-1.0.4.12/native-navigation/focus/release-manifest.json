@@ -1,0 +1,22 @@
+{
+  "version": "TFP1-FOCUS04",
+  "baseFirmware": "Strix OS 1.0.4.12",
+  "officialIOSPrivateHost": "1.0.5 (201)",
+  "archive": "StrixOS-1.0.4.12-TurboFocus-TFP1-FOCUS04-EXPERIMENTAL.zip",
+  "archiveBytes": 9300112,
+  "archiveSHA256": "ad5054e3d7bda90e94d293bea882bd8dd5a125bcc8f42c13a59b2e149313c9e3",
+  "apBytes": 9558216,
+  "apSHA256": "40b08299d66b08a909c9167400f2f660b17904d6b20026477ac470e860942a24",
+  "apMD5": "2d5c14d7c348d01c333f3561423cb47e",
+  "manifestSHA256": "21bd0f08234dfdefcad9cea63b8f2ef12cea542a9acc47de1bd832abfc910c24",
+  "changedPayloads": [
+    "nuttx_ap.bin"
+  ],
+  "unchangedStockPayloads": 13,
+  "apLimitBytes": 9600000,
+  "physicalFeedbackDate": "2026-09-25",
+  "physicalFeedback": "User confirmed successful flash and accepted the update. Not exhaustive lifecycle, battery, sleep or long-duration validation.",
+  "webContentAdapterIncluded": false,
+  "productionReady": false,
+  "recoveryGuaranteed": false
+}
