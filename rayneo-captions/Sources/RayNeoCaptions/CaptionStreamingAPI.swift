@@ -62,7 +62,7 @@ public enum CaptionStreamingAPI {
             }
             url.queryItems = query.sorted { $0.key < $1.key }.map { URLQueryItem(name: $0.key, value: $0.value) }
             headers = ["xi-api-key": key]
-        case .azure, .aliyun, .selfHostedQwen: throw CaptionConnectionFailure.configuration
+        case .azure, .aliyun, .selfHostedQwen, .appleLocal: throw CaptionConnectionFailure.configuration
         }
         var request = URLRequest(url: url.url!)
         request.timeoutInterval = 15
@@ -106,7 +106,7 @@ public enum CaptionStreamingAPI {
             case "error", "unaccepted_terms", "input_error", "invalid_request", "chunk_size_exceeded": return .failure(.rejected)
             default: return object["error"] == nil ? .ignored : .failure(.rejected)
             }
-        case .azure, .aliyun, .selfHostedQwen: throw CaptionConnectionFailure.configuration
+        case .azure, .aliyun, .selfHostedQwen, .appleLocal: throw CaptionConnectionFailure.configuration
         }
     }
     private static func transcript(_ text: String, final: Bool, utteranceEnd: Bool) throws -> CaptionStreamEvent {

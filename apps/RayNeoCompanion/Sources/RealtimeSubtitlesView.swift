@@ -45,12 +45,26 @@ struct RealtimeSubtitlesView: View {
         VStack(spacing: 18) {
             VStack(alignment: .leading, spacing: 18) {
                 HStack {
-                    Label(runtime.canStop ? "实时会话" : "眼镜字幕", systemImage: runtime.canStop ? "waveform" : "captions.bubble")
+                    Label(runtime.canStop ? "实时会话" : "实时字幕", systemImage: runtime.canStop ? "waveform" : "captions.bubble")
                     Spacer()
-                    Text(voice.ready ? "眼镜已连接" : "等待连接").font(.caption).padding(7).background(.white.opacity(0.12), in: Capsule())
+                    Text(connectionStatus).font(.caption).padding(7).background(.white.opacity(0.12), in: Capsule())
                 }.font(.subheadline.weight(.medium))
                 Text(runtime.status).font(.title3.weight(.semibold)).fixedSize(horizontal: false, vertical: true)
                     .accessibilityIdentifier("realtime-status")
+                Label(settings.inputSource.name, systemImage: settings.inputSource == .glasses ? "eyeglasses" : "mic.fill")
+                    .font(.subheadline.weight(.medium))
+                    .accessibilityIdentifier("realtime-input-source")
+                if let route = runtime.microphoneRoute {
+                    Label("实际输入：\(route)", systemImage: "waveform")
+                        .font(.caption)
+                        .accessibilityIdentifier("realtime-microphone-route")
+                }
+                if runtime.active && settings.inputSource != .glasses && settings.showOnGlasses {
+                    Label(runtime.glassesOutputReady ? "手机和眼镜显示" : "仅手机显示",
+                          systemImage: runtime.glassesOutputReady ? "eyeglasses" : "iphone")
+                        .font(.caption)
+                        .accessibilityIdentifier("realtime-output-route")
+                }
                 HStack(spacing: 22) {
                     metric(SubtitleTime.string(Double(runtime.elapsed)), label: "会话时长")
                     metric(SubtitleTime.string(runtime.audioSeconds), label: "已收音频")
@@ -68,10 +82,10 @@ struct RealtimeSubtitlesView: View {
             }.padding(22).foregroundStyle(.white)
                 .background(LinearGradient(colors: [Palette.ink, Palette.green], startPoint: .topLeading, endPoint: .bottomTrailing), in: RoundedRectangle(cornerRadius: 24))
             Card {
-                HStack { Label("此刻的字幕", systemImage: "text.bubble"); Spacer(); Badge(text: runtime.cloudReady ? "转写已连接" : "等待音频", active: runtime.cloudReady) }
+                HStack { Label("此刻的字幕", systemImage: "text.bubble"); Spacer(); Badge(text: runtime.cloudReady ? "识别已就绪" : (runtime.active ? "准备中" : "待开始"), active: runtime.cloudReady) }
                     .font(.subheadline.weight(.semibold))
                 if runtime.partial.isEmpty && runtime.recent.isEmpty {
-                    Text("开始后，周围的声音会逐句出现。\n无需向 AI 提问，也不会生成回答。")
+                    Text("开始后，所选麦克风收到的声音会逐句出现。\n无需向 AI 提问，也不会生成回答。")
                         .font(.title3).foregroundStyle(Palette.muted).lineSpacing(7).frame(maxWidth: .infinity, minHeight: 95, alignment: .leading)
                 } else {
                     ForEach(runtime.recent.suffix(3)) { entry in Text(entry.text).font(.title3).lineSpacing(6).textSelection(.enabled).privacySensitive() }
@@ -82,27 +96,46 @@ struct RealtimeSubtitlesView: View {
                 }
                 if runtime.gaps > 0 { Label("检测到 \(runtime.gaps) 处音频缺口，已记录到历史", systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(Palette.amber) }
             }
-            Card {
-                Label("眼镜收音方向", systemImage: "mic.circle").font(.subheadline.weight(.semibold))
-                Picker("收音范围", selection: Binding(
-                    get: { settings.pickupDirection },
-                    set: { runtime.setPickupDirection($0) }
-                )) {
-                    Text("四周").tag(SubtitleTranslateWire.PickupDirection.around)
-                    Text("前方").tag(SubtitleTranslateWire.PickupDirection.ahead)
+            if settings.translationEnabled {
+                Card {
+                    HStack {
+                        Label("本地翻译", systemImage: "character.bubble").font(.subheadline.weight(.semibold))
+                        Spacer()
+                        Badge(text: settings.options.language.hasPrefix("zh") ? "中文 → 英文" : "英文 → 中文", active: !runtime.translatedText.isEmpty)
+                    }
+                    if runtime.translatedText.isEmpty {
+                        Text(runtime.active ? "最终字幕形成后，译文会显示在这里。" : "开始会话后显示译文。")
+                            .font(.subheadline).foregroundStyle(Palette.muted)
+                    } else {
+                        Text(runtime.translatedText).font(.title3).lineSpacing(6)
+                            .textSelection(.enabled).privacySensitive()
+                            .accessibilityIdentifier("realtime-translation-text")
+                    }
                 }
-                .pickerStyle(.segmented)
-                .disabled(!runtime.canChangePickupDirection)
-                .accessibilityIdentifier("realtime-pickup-direction")
-                if let message = runtime.pickupDirectionMessage {
-                    Text(message).font(.caption).foregroundStyle(Palette.amber)
-                } else if runtime.active {
-                    Text(runtime.canChangePickupDirection ? "切换会沿当前字幕会话发送指令。" : "字幕启动完成后可切换。")
-                        .font(.caption).foregroundStyle(Palette.muted)
-                }
-                if runtime.pickupDirectionNeedsRetry {
-                    Button("重试收音切换") { runtime.retryPickupDirection() }
-                        .accessibilityIdentifier("realtime-pickup-direction-retry")
+            }
+            if settings.inputSource == .glasses {
+                Card {
+                    Label("眼镜收音方向", systemImage: "mic.circle").font(.subheadline.weight(.semibold))
+                    Picker("收音范围", selection: Binding(
+                        get: { settings.pickupDirection },
+                        set: { runtime.setPickupDirection($0) }
+                    )) {
+                        Text("四周").tag(SubtitleTranslateWire.PickupDirection.around)
+                        Text("前方").tag(SubtitleTranslateWire.PickupDirection.ahead)
+                    }
+                    .pickerStyle(.segmented)
+                    .disabled(!runtime.canChangePickupDirection)
+                    .accessibilityIdentifier("realtime-pickup-direction")
+                    if let message = runtime.pickupDirectionMessage {
+                        Text(message).font(.caption).foregroundStyle(Palette.amber)
+                    } else if runtime.active {
+                        Text(runtime.canChangePickupDirection ? "切换会沿当前字幕会话发送指令。" : "字幕启动完成后可切换。")
+                            .font(.caption).foregroundStyle(Palette.muted)
+                    }
+                    if runtime.pickupDirectionNeedsRetry {
+                        Button("重试收音切换") { runtime.retryPickupDirection() }
+                            .accessibilityIdentifier("realtime-pickup-direction-retry")
+                    }
                 }
             }
             if runtime.canStop {
@@ -110,7 +143,11 @@ struct RealtimeSubtitlesView: View {
             } else if alwaysOn.enabled {
                 PrimaryButton(title: "前往关闭全天智记", icon: "arrow.right.circle") { page = 1 }
                     .accessibilityIdentifier("realtime-close-always-on")
-                Text("全天智记正在独占眼镜音频。关闭后再启动普通实时字幕；这里不会暗中抢占或改动永久设置。")
+                Text("全天智记正在使用语音识别。关闭后再启动普通实时字幕；这里不会暗中抢占或改动永久设置。")
+                    .font(.caption).foregroundStyle(Palette.amber)
+            } else if voice.enabled {
+                PrimaryButton(title: "先关闭语音待命", icon: "stop.circle") { voice.stop() }
+                Text("语音待命运行时，请先关闭再使用手机或系统麦克风收音。")
                     .font(.caption).foregroundStyle(Palette.amber)
             } else if !settings.requirements.isEmpty {
                 PrimaryButton(title: "配置转写服务", icon: "key") { showSettings = true }.accessibilityIdentifier("realtime-configure")
@@ -128,10 +165,10 @@ struct RealtimeSubtitlesView: View {
                 }.buttonStyle(.plain)
             }
             HStack {
-                Label(runtime.shortcutEnabled ? "双击：开始 / 停止并保存（永久）" : "双击字幕可在设置中启用", systemImage: "hand.tap")
+                Label(shortcutHint, systemImage: "hand.tap")
                 Spacer(); Button("设置") { showSettings = true }
             }.font(.caption).foregroundStyle(Palette.muted)
-            Text("运行时无需打开手机：再次双击眼镜即可停止并保存。锁屏与正常后台会继续使用外设连接；强制结束 App 或断连会结束当前会话。")
+            Text(sessionHint)
                 .font(.caption).foregroundStyle(Palette.muted)
             if latency.enabled { latencyCard }
             DisclosureGroup("显示测试与诊断") {
@@ -140,6 +177,25 @@ struct RealtimeSubtitlesView: View {
                 ShareLink("分享延迟实验报告", item: latency.report)
             }.font(.subheadline)
         }
+    }
+    private var connectionStatus: String {
+        if settings.inputSource == .glasses { return voice.ready ? "眼镜已连接" : "等待眼镜" }
+        if settings.showOnGlasses && voice.ready { return "眼镜已连接" }
+        return "无需眼镜"
+    }
+    private var shortcutHint: String {
+        if settings.inputSource == .glasses {
+            return runtime.shortcutEnabled ? "双击：开始 / 停止并保存（永久）" : "双击字幕可在设置中启用"
+        }
+        return "使用所选录音输入收音"
+    }
+    private var sessionHint: String {
+        if settings.inputSource == .glasses {
+            return "运行时无需打开手机：再次双击眼镜即可停止并保存。锁屏与正常后台会继续使用外设连接；强制结束 App 或断连会结束当前会话。"
+        }
+        return settings.showOnGlasses
+            ? "音频来自所选录音输入。眼镜连接且空闲时可同步显示字幕；眼镜不会被要求启动收音。"
+            : "音频来自所选录音输入，字幕在手机上显示。"
     }
     private var latencyCard: some View {
         Card {

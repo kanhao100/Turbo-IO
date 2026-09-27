@@ -82,9 +82,10 @@ public struct SpeechConfiguration: Codable, Equatable {
             case .aliyun: missing.append("阿里云 Workspace Host 或识别语言")
             case .selfHostedQwen: missing.append("自建 Qwen WSS Realtime 地址或识别语言")
             case .deepgram, .elevenLabs: missing.append("识别语言")
+            case .appleLocal: missing.append("Apple 本机识别语言")
             }
         }
-        if !asrKey { missing.append("\(service.name) API Key") }
+        if service != .appleLocal && !asrKey { missing.append("\(service.name) API Key") }
         if conversation && !modelKey { missing.append("DeepSeek API Key（用于生成回答）") }
         return missing
     }

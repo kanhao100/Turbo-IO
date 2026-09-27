@@ -8,10 +8,21 @@ import RayNeoCaptions
     var supportsDevice: Bool { get }
     var deviceID: String? { get }
     var subtitleOwnsDisplay: Bool { get }
+    var voiceEnabled: Bool { get }
     var featureIsBusy: (() -> Bool)? { get }
     func prepare()
     func ownDisplayForSubtitles(_ owns: Bool)
     @discardableResult func sendRealtimeSubtitle(target: String, payload: Data) throws -> String
+    func sendDisplaySubtitle(target: String, payload: Data) throws
+}
+
+extension SubtitleRealtimeDevice {
+    var voiceEnabled: Bool { false }
+    // Existing test doubles exercise the glasses-audio protocol only. The real device
+    // implements the separate display-only transport and its stricter wire validator.
+    func sendDisplaySubtitle(target: String, payload: Data) throws {
+        throw SubtitleDisplayWire.Failure.invalidPacket
+    }
 }
 
 protocol SubtitlePCMDecoder: AnyObject {
@@ -51,6 +62,8 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
     @Published private(set) var phase: Phase = .idle
     @Published private(set) var status = "让眼镜听见的声音，变成看得见的字幕"
     @Published private(set) var partial = ""
+    @Published private(set) var translatedText = ""
+    @Published private(set) var microphoneRoute: String?
     @Published private(set) var recent: [CaptionEntry] = []
     @Published private(set) var elapsed = 0
     @Published private(set) var audioBytes = 0
@@ -81,8 +94,19 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
     private static let shortcutKey = "companion.realtimeSubtitles.shortcutEnabled.v1"
     private var timer: Timer?, lifecycle: NSObjectProtocol?
     private var provider: CaptionASRProvider?, decoder: SubtitlePCMDecoder?, writer: SubtitleSessionWriting?
+    #if COMPANION_DEVICE
+    private var microphone: SubtitleMicrophoneInput?
+    private var translator: AppleCaptionTranslation?
+    #endif
     private var record: SubtitleSessionRecord?, options = CaptionOptions(), key = ""
     private var target: String?, sid: String?, generation = UUID()
+    private var sessionInputSource: SubtitleInputSource = .glasses
+    private var displayClaimed = false, displayOpening = false, displayDeadline: TimeInterval = 0
+    private var translationQueue: Task<Void, Never>?
+    private var translatedRecent: [String] = []
+    private var pendingTranslations = 0, skippedTranslations = 0
+    private var inputRouteType: String?
+    private var lastASRDiagnosticSummary = ""
     private var sessionPickupDirection: SubtitleTranslateWire.PickupDirection = .around
     private var lastPickupDirectionMessageID: String?
     private var pendingPickupDirection: SubtitleTranslateWire.PickupDirection?
@@ -101,10 +125,18 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
     private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
     private var now: TimeInterval { uptime() }
     var active: Bool { phase != .idle }
-    var canStart: Bool { !active && !saving && device.supportsDevice && device.deviceID != nil && !device.subtitleOwnsDisplay && device.featureIsBusy?() != true }
+    var canStart: Bool {
+        guard !active, !saving else { return false }
+        if settings.inputSource != .glasses {
+            return !device.voiceEnabled && device.featureIsBusy?() != true
+        }
+        return device.supportsDevice && device.deviceID != nil && !device.subtitleOwnsDisplay && device.featureIsBusy?() != true
+    }
     var canStop: Bool { [.preparing, .startingAudio, .openingDisplay, .listening].contains(phase) }
+    var currentInputSource: SubtitleInputSource { active ? sessionInputSource : settings.inputSource }
+    var glassesOutputReady: Bool { displayReady && target != nil }
     var canChangePickupDirection: Bool {
-        settings.allowsChanges && ((phase == .idle && !saving) || phase == .listening)
+        settings.allowsChanges && ((phase == .idle && !saving) || (phase == .listening && sessionInputSource == .glasses))
     }
     var audioSeconds: TimeInterval { Double(audioBytes) / 32_000 }
 
@@ -192,14 +224,23 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
     }
     @discardableResult func start() -> Task<Void, Never>? {
         prepare()
-        guard canStart else { error = "请先连接眼镜并结束其他眼镜任务。"; return nil }
-        return begin(deviceID: device.deviceID!, incomingSID: nil)
+        guard canStart else { error = "请先结束当前会话；使用眼镜收音时还需连接眼镜并退出其他眼镜任务。"; return nil }
+        let source = settings.inputSource
+        let displayTarget: String? = source == .glasses ? device.deviceID :
+            (settings.showOnGlasses && device.supportsDevice && !device.subtitleOwnsDisplay && device.featureIsBusy?() != true
+                ? device.deviceID : nil)
+        return begin(deviceID: displayTarget, incomingSID: nil, source: source)
     }
-    @discardableResult private func begin(deviceID: String, incomingSID: String?, incomingArrival: TimeInterval? = nil) -> Task<Void, Never>? {
+    @discardableResult private func begin(deviceID: String?, incomingSID: String?, source: SubtitleInputSource,
+                                          incomingArrival: TimeInterval? = nil) -> Task<Void, Never>? {
         guard canStart, let config = settings.recognizer() else {
             error = "请先配置所选转写服务；字幕不需要 DeepSeek。"; return nil
         }
-        guard let decoder = makeDecoder() else { error = "无法创建眼镜音频解码器。"; return nil }
+        let decoder: SubtitlePCMDecoder?
+        if source == .glasses {
+            guard let created = makeDecoder() else { error = "无法创建眼镜音频解码器。"; return nil }
+            decoder = created
+        } else { decoder = nil }
         generation = UUID(); let token = generation
         let id = UUID(), protocolID = incomingSID ?? UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
         controlEvents = []
@@ -207,11 +248,17 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
             controlEvents.append("t=\(String(format: "%.3f", incomingArrival)) business=19 type=1 sid=current state=received")
         }
         target = deviceID; sid = protocolID; sessionID = id; options = config.options; key = config.key
+        sessionInputSource = source
         sessionPickupDirection = settings.pickupDirection; pickupDirectionMessage = nil
         pickupDirectionNeedsRetry = false; lastPickupDirectionMessageID = nil; pendingPickupDirection = nil
         provider = config.provider; self.decoder = decoder; phase = .preparing; status = "正在准备本次字幕与音频存储"
-        partial = ""; recent = []; elapsed = 0; audioBytes = 0; audioLevel = 0; packets = 0; gaps = 0
+        partial = ""; translatedText = ""; translatedRecent = []; microphoneRoute = nil; inputRouteType = nil
+        lastASRDiagnosticSummary = ""
+        translationQueue?.cancel(); translationQueue = nil
+        pendingTranslations = 0; skippedTranslations = 0
+        recent = []; elapsed = 0; audioBytes = 0; audioLevel = 0; packets = 0; gaps = 0
         lastSequence = nil; gapOpen = false; displayReady = false; cloudReady = false; cloudStarted = false
+        displayOpening = false; displayDeadline = 0; displayClaimed = false
         sequenceJumps = 0; maximumSequenceStep = 0; discardedSequencePackets = 0
         maximumDispatchDelayMilliseconds = 0; maximumArrivalIntervalMilliseconds = 0
         sequenceStepCounts = [:]; otherSequenceSteps = 0
@@ -219,12 +266,37 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
         let latencyService = options.service == .aliyun
             ? "\(options.service.name) · \(options.aliyunModel.rawValue)" : options.service.name
         latency.sessionStarted(at: now, service: latencyService)
-        device.ownDisplayForSubtitles(true)
+        if source == .glasses { device.ownDisplayForSubtitles(true); displayClaimed = true }
         let value = SubtitleSessionRecord(id: id, title: "字幕 · " + Date().formatted(date: .abbreviated, time: .shortened), options: options)
         record = value
         let makeWriter = makeWriter, root = archive.root
         return Task {
             do {
+                #if COMPANION_DEVICE
+                if options.service == .appleLocal {
+                    status = "正在准备 Apple 本机语音模型"
+                    try await AppleLocalCaptionASR.prepare(localeIdentifier: options.language)
+                    guard generation == token, phase == .preparing else { return }
+                    appendControl("asr_asset=ready")
+                }
+                if settings.translationEnabled {
+                    guard options.cloudLanguage != nil else {
+                        fail("本机翻译需要先选择固定的识别语言。"); return
+                    }
+                    let destination = Self.translationTarget(for: options.language)
+                    let readiness = await AppleCaptionTranslation.readiness(source: options.language, target: destination)
+                    guard generation == token, phase == .preparing else { return }
+                    guard readiness == .ready else {
+                        fail(readiness.message + "请先在字幕设置中准备语言包。"); return
+                    }
+                    translator = AppleCaptionTranslation(source: options.language, target: destination)
+                    appendControl("translation_asset=ready source=\(options.language) target=\(destination)")
+                }
+                #else
+                if options.service == .appleLocal || settings.translationEnabled {
+                    fail("当前构建不支持本机识别或翻译。"); return
+                }
+                #endif
                 let output = try await makeWriter(root, value) { [weak self] in
                     Task { @MainActor in guard let self, self.generation == token else { return }; self.fail("本地保存失败；已收到的原文件保留。") }
                 }
@@ -234,32 +306,208 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
                     return
                 }
                 writer = output
-                guard device.deviceID == deviceID else { stop(reason: "准备时眼镜已断开", interrupted: true); return }
-                writer?.event(CaptionEntry(kind: .started, text: "\(options.service.name) · \(options.selectedModel) · \(options.language) · \(options.recordAudio ? "保存文本及音频" : "仅保存文本")"))
-                defaults.set(true, forKey: Self.pendingKey)
-                phase = .startingAudio; deadline = now + 10; lastAudioAt = now
-                installTimer()
-                if incomingSID != nil {
-                    guard send(try SubtitleTranslateWire.startResult(sid: protocolID, language: options.language,
-                                                                     saveAudio: options.recordAudio, direction: sessionPickupDirection)) else { return }
-                    controlEvents.append("t=\(String(format: "%.3f", now)) business=19 type=2 direction=\(sessionPickupDirection.rawValue) state=submitted")
-                    controlEvents = Array(controlEvents.suffix(80))
-                    guard generation == token, phase == .startingAudio else { return }
-                    acceptedStart(); onShortcutStart?()
-                } else {
-                    status = "已请求字幕收音，等待眼镜确认"
-                    if send(try SubtitleTranslateWire.start(sid: protocolID, language: options.language,
-                                                            saveAudio: options.recordAudio, direction: sessionPickupDirection)) {
-                        controlEvents.append("t=\(String(format: "%.3f", now)) business=19 type=1 direction=\(sessionPickupDirection.rawValue) state=submitted")
-                        controlEvents = Array(controlEvents.suffix(80))
-                    }
+                if source == .glasses, device.deviceID != deviceID {
+                    stop(reason: "准备时眼镜已断开", interrupted: true); return
                 }
-            } catch { guard generation == token else { return }; fail("字幕准备失败，未完成启动。") }
+                writer?.event(CaptionEntry(kind: .started, text: "\(source.name) · \(options.service.name) · \(options.selectedModel) · \(options.language) · \(options.recordAudio ? "保存文本及音频" : "仅保存文本")"))
+                defaults.set(true, forKey: Self.pendingKey)
+                if source == .glasses {
+                    // A local analyzer must be ready before the glasses are asked to stream.
+                    if options.service == .appleLocal {
+                        startRecognition(token: token)
+                        guard await waitForRecognition(token: token, seconds: 20) else { return }
+                    }
+                    guard generation == token, phase == .preparing else { return }
+                    phase = .startingAudio; deadline = now + 10; lastAudioAt = now; began = now
+                    installTimer()
+                    if incomingSID != nil {
+                        guard send(try SubtitleTranslateWire.startResult(sid: protocolID, language: options.glassesLanguage,
+                                                                         saveAudio: options.recordAudio, direction: sessionPickupDirection)) else { return }
+                        appendControl("business=19 type=2 direction=\(sessionPickupDirection.rawValue) state=submitted")
+                        guard generation == token, phase == .startingAudio else { return }
+                        acceptedStart(); onShortcutStart?()
+                    } else {
+                        status = "已请求字幕收音，等待眼镜确认"
+                        if send(try SubtitleTranslateWire.start(sid: protocolID, language: options.glassesLanguage,
+                                                                saveAudio: options.recordAudio, direction: sessionPickupDirection)) {
+                            appendControl("business=19 type=1 direction=\(sessionPickupDirection.rawValue) state=submitted")
+                        }
+                    }
+                } else {
+                    startRecognition(token: token)
+                    guard await waitForRecognition(token: token, seconds: 20) else { return }
+                    guard generation == token, phase == .preparing else { return }
+                    await startMicrophone(token: token)
+                }
+            } catch {
+                guard generation == token else { return }
+                fail("字幕准备失败：\(error.localizedDescription)")
+            }
+        }
+    }
+    private static func translationTarget(for source: String) -> String {
+        source == "zh-CN" ? "en-US" : "zh-CN"
+    }
+    private func appendControl(_ event: String) {
+        controlEvents.append("t=\(String(format: "%.3f", now)) \(event)")
+        controlEvents = Array(controlEvents.suffix(80))
+    }
+    private func startRecognition(token: UUID) {
+        guard generation == token, !cloudStarted else { return }
+        provider?.onReady = { [weak self] in
+            guard let self, self.generation == token, self.cloudStarted else { return }
+            self.cloudReady = true
+            self.latency.cloudReady(at: self.now)
+            self.appendControl("asr_state=ready")
+        }
+        provider?.onText = { [weak self] text, final in
+            guard let self, self.generation == token else { return }
+            self.recognized(text, final: final)
+        }
+        provider?.onFailure = { [weak self] failure in
+            guard let self, self.generation == token else { return }
+            self.appendControl("asr_state=failed")
+            self.fail("\(self.options.service.name)：\(failure.message)")
+        }
+        provider?.onEndpoint = nil
+        #if COMPANION_DEVICE
+        if let local = provider as? AppleLocalCaptionASR {
+            local.onDiagnostic = { [weak self] event in
+                guard let self, self.generation == token else { return }
+                self.appendControl(event)
+            }
+        }
+        #endif
+        cloudStarted = true
+        cloudDeadline = now + 20
+        latency.cloudStarted(at: now)
+        appendControl("asr_state=starting service=\(options.service.rawValue)")
+        provider?.start(options: options, key: key)
+    }
+    private func waitForRecognition(token: UUID, seconds: TimeInterval) async -> Bool {
+        let until = now + seconds
+        while generation == token, phase == .preparing, !cloudReady, now < until {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        guard generation == token, phase == .preparing else { return false }
+        guard cloudReady else {
+            fail("转写引擎准备超时，请检查模型或服务连接。"); return false
+        }
+        return true
+    }
+    private func startMicrophone(token: UUID) async {
+        #if COMPANION_DEVICE
+        guard sessionInputSource != .glasses, generation == token else { return }
+        let mic = SubtitleMicrophoneInput()
+        microphone = mic
+        mic.onDiagnostic = { [weak self] event in
+            guard let self, self.generation == token else { return }
+            // AVAudioSession error descriptions and port names are not part of shared diagnostics.
+            let safe = event.components(separatedBy: " error=").first ?? event
+            self.appendControl(safe.hasPrefix("mic.failure=") ? "mic.failure" : safe)
+        }
+        mic.onFailure = { [weak self] reason in
+            guard let self, self.generation == token else { return }
+            self.appendControl("mic_state=failed")
+            self.fail(reason)
+        }
+        mic.onPCM = { [weak self] pcm in
+            guard let self, self.generation == token else { return }
+            self.acceptMicrophonePCM(pcm)
+        }
+        do {
+            let preferredUID: String?
+            if sessionInputSource == .iPhoneMicrophone {
+                let ports = try await SubtitleMicrophoneInput.availablePorts()
+                preferredUID = ports.first(where: { $0.isBuiltIn })?.uid
+                guard preferredUID != nil else {
+                    fail("当前没有可用的 iPhone 内置麦克风。"); return
+                }
+            } else { preferredUID = settings.systemInputUID }
+            guard generation == token, phase == .preparing else { return }
+            status = "正在打开\(sessionInputSource.name)"
+            began = now; lastAudioAt = now
+            latency.audioStartAccepted(at: now)
+            let port = try await mic.start(preferredUID: preferredUID)
+            guard generation == token, phase == .preparing else { mic.stop(); return }
+            microphoneRoute = port.name
+            inputRouteType = port.type
+            appendControl("mic_state=ready type=\(port.type) source=\(sessionInputSource.rawValue)")
+            phase = .listening; deadline = 0; installTimer()
+            status = "正在听 · \(port.name) · \(options.service.name)"
+            if target != nil { openDisplayOnly() }
+            else if settings.showOnGlasses {
+                appendControl("display_state=unavailable phone_capture=continues")
+                status = "正在听 · \(port.name) · 仅手机显示"
+            }
+        } catch {
+            guard generation == token else { return }
+            appendControl("mic_state=start_failed")
+            fail(error.localizedDescription)
+        }
+        #else
+        fail("此构建没有麦克风采集功能。")
+        #endif
+    }
+    private func acceptMicrophonePCM(_ pcm: Data) {
+        guard sessionInputSource != .glasses, cloudStarted,
+              phase == .preparing || phase == .listening else { return }
+        guard !pcm.isEmpty, pcm.count.isMultiple(of: 2), pcm.count <= 16_384 else {
+            fail("麦克风 PCM 数据格式不正确。"); return
+        }
+        let arrival = now
+        if packets > 0 {
+            let interval = arrival - lastAudioAt
+            maximumArrivalIntervalMilliseconds = max(maximumArrivalIntervalMilliseconds, Int(interval * 1_000))
+            if interval > 0.75 { markGap("麦克风音频到达间隔中断") }
+        }
+        latency.audioArrived(callbackAt: arrival, handledAt: now)
+        lastAudioAt = arrival; packets += 1; audioBytes += pcm.count
+        record?.receivedPCMBytes = audioBytes
+        if gapOpen { writer?.event(CaptionEntry(kind: .gap, text: "麦克风音频恢复，缺失部分未补录")); gapOpen = false }
+        let samples = pcm.withUnsafeBytes { Array($0.bindMemory(to: Int16.self)) }
+        audioLevel = min(1, sqrt(samples.reduce(0.0) { $0 + pow(Double($1) / 32768, 2) } / Double(samples.count)) * 5)
+        writer?.pcm(pcm)
+        // Cloud and Apple adapters accept bounded frames. Keep disk input intact.
+        for offset in stride(from: 0, to: pcm.count, by: 3_840) {
+            provider?.append(pcm.subdata(in: offset..<min(offset + 3_840, pcm.count)))
+        }
+    }
+    private func openDisplayOnly() {
+        guard sessionInputSource != .glasses, let sid, let target, device.deviceID == target,
+              !device.subtitleOwnsDisplay, device.featureIsBusy?() != true else {
+            dropDisplayOnly(reason: "眼镜显示不可用", notifyGlasses: false)
+            return
+        }
+        device.ownDisplayForSubtitles(true); displayClaimed = true
+        guard device.deviceID == target else { dropDisplayOnly(reason: "连接已变化", notifyGlasses: false); return }
+        displayOpening = true; displayDeadline = now + 10
+        do {
+            try device.sendDisplaySubtitle(target: target, payload: SubtitleDisplayWire.preview(sid: sid))
+            appendControl("business=19 type=7 display_only=1 state=submitted")
+        } catch { dropDisplayOnly(reason: "眼镜显示配置未能发送", notifyGlasses: false) }
+    }
+    private func dropDisplayOnly(reason: String, notifyGlasses: Bool) {
+        guard sessionInputSource != .glasses else { return }
+        if notifyGlasses, let target, let sid, device.deviceID == target,
+           let packet = try? SubtitleDisplayWire.stop(sid: sid) {
+            try? device.sendDisplaySubtitle(target: target, payload: packet)
+            appendControl("business=19 type=3 display_only=1 state=submitted")
+        }
+        displayOpening = false; displayReady = false; displayDeadline = 0; pendingText = nil
+        target = nil
+        if displayClaimed { device.ownDisplayForSubtitles(false); displayClaimed = false }
+        appendControl("display_state=disabled reason=\(reason) phone_capture=continues")
+        if phase == .listening {
+            status = "正在听 · \(microphoneRoute ?? sessionInputSource.name) · 仅手机显示（眼镜显示不可用）"
         }
     }
     func setShortcut(_ enabled: Bool) {
         guard !active, !saving else { return }
         settings.refresh()
+        guard !enabled || settings.inputSource == .glasses else {
+            error = "眼镜双击仅适用于眼镜音频流。"; return
+        }
         guard !enabled || settings.requirements.isEmpty else { error = "请先保存转写配置与密钥。"; return }
         shortcutEnabled = enabled
         defaults.set(enabled, forKey: Self.shortcutKey)
@@ -269,8 +517,34 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
         // `arrival` is captured in the native callback. A bounded main-queue delay must not
         // silently discard valid audio; session/device/SID/acceptance-time checks reject stale work.
         guard source == device.deviceID, now >= arrival else { return }
+        if active, sessionInputSource != .glasses {
+            guard displayClaimed, source == target, arrival >= acceptedAt else { return }
+            guard let reply = try? SubtitleDisplayWire.reply(packet) else {
+                dropDisplayOnly(reason: "显示回包格式不正确", notifyGlasses: true); return
+            }
+            if reply.type == 4 {
+                // Display-only output never consumes or archives glasses audio.
+                appendControl("business=19 type=4 display_only=1 state=unexpected")
+                dropDisplayOnly(reason: "显示会话收到非预期眼镜音频", notifyGlasses: true)
+                return
+            }
+            guard reply.sid == sid else { return }
+            if reply.type == 8, displayOpening {
+                guard reply.code == 1 || reply.code == 2 else {
+                    dropDisplayOnly(reason: "眼镜未接受显示配置", notifyGlasses: true); return
+                }
+                displayOpening = false; displayReady = true
+                appendControl("business=19 type=8 display_only=1 state=accepted")
+                status = "正在听 · \(microphoneRoute ?? sessionInputSource.name) · 手机和眼镜显示"
+                pumpDisplay()
+            } else if reply.type == 3 {
+                dropDisplayOnly(reason: "眼镜结束显示", notifyGlasses: false)
+            }
+            return
+        }
         guard let event = try? SubtitleTranslateWire.event(packet) else {
-            if active, source == target { fail("字幕消息格式或音频长度不匹配，已停止本次会话。") }; return
+            if active, source == target { fail("字幕消息格式或音频长度不匹配，已停止本次会话。") }
+            return
         }
         if [1, 2, 3, 7, 8, 10].contains(event.type) {
             let state = active ? phase.rawValue : (saving ? "saving" : "idle")
@@ -282,7 +556,7 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
         // A second glasses shortcut uses the same type-1 control event as the first one on
         // current firmware. Handle it before strict SID filtering: its new SID is a gesture
         // identifier and must never replace the active caption SID.
-        if active, event.type == 1, source == target, arrival >= acceptedAt {
+        if active, sessionInputSource == .glasses, event.type == 1, source == target, arrival >= acceptedAt {
             guard arrival - acceptedAt >= 1.5 else {
                 lastEvent = "忽略字幕启动后的重复 type=1（防抖）"
                 return
@@ -293,13 +567,14 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
             return
         }
         if phase == .idle, event.type == 1 {
-            guard shortcutEnabled else { return }
+            guard shortcutEnabled, settings.inputSource == .glasses else { return }
             guard !saving, arrival >= shortcutSuppressedUntil else {
                 status = "上一段正在保存或仍在防抖期；请稍后再次双击"
                 return
             }
             guard canStart else { return }
-            _ = begin(deviceID: source, incomingSID: event.sid, incomingArrival: arrival); return
+            _ = begin(deviceID: source, incomingSID: event.sid, source: .glasses,
+                      incomingArrival: arrival); return
         }
         guard active, source == target, event.sid == sid, arrival >= acceptedAt else { return }
         if (phase == .startingAudio || phase == .openingDisplay), now >= deadline {
@@ -329,20 +604,11 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
     }
     private func acceptedStart() {
         guard phase == .startingAudio, let sid else { return }
-        phase = .openingDisplay; deadline = now + 10; lastAudioAt = now; cloudDeadline = now + 20
+        phase = .openingDisplay; deadline = now + 10; lastAudioAt = now
         latency.audioStartAccepted(at: now)
         status = "收音启动已确认，正在连接转写与字幕显示"
         let token = generation
-        provider?.onReady = { [weak self] in
-            guard let self, self.generation == token, self.cloudStarted else { return }
-            self.cloudReady = true; self.latency.cloudReady(at: self.now)
-        }
-        provider?.onText = { [weak self] text, final in guard let self, self.generation == token else { return }; self.recognized(text, final: final) }
-        provider?.onFailure = { [weak self] failure in guard let self, self.generation == token else { return }; self.fail("\(self.options.service.name)：\(failure.message)") }
-        provider?.onEndpoint = nil
-        cloudStarted = true
-        latency.cloudStarted(at: now)
-        provider?.start(options: options, key: key)
+        startRecognition(token: token)
         guard generation == token, phase == .openingDisplay else { return }
         do { _ = send(try SubtitleTranslateWire.display(sid: sid)) } catch { fail("无法编码显示命令。") }
     }
@@ -393,6 +659,7 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
                 let entry = CaptionEntry(kind: .final, text: value); recent.append(entry)
                 if recent.count > 200 { recent.removeFirst(recent.count - 200) }
                 record?.finalSentences += 1; record?.preview = String(value.prefix(180)); writer?.event(entry)
+                queueTranslation(value)
             }
             partial = ""
         }
@@ -402,24 +669,83 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
         pendingText = CaptionText.lensWindow(visible.isEmpty ? "正在聆听…" : visible, maximumBytes: 384)
         pumpDisplay()
     }
+    private func queueTranslation(_ source: String) {
+        #if COMPANION_DEVICE
+        guard settings.translationEnabled, translator != nil else { return }
+        guard pendingTranslations < 16 else {
+            skippedTranslations += 1
+            appendControl("translation_state=backpressure skipped=\(skippedTranslations)")
+            error = "本机翻译处理积压，部分译文未生成；原文已保存。"
+            return
+        }
+        pendingTranslations += 1
+        let previous = translationQueue, token = generation
+        translationQueue = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                if self.generation == token { self.pendingTranslations = max(0, self.pendingTranslations - 1) }
+            }
+            await previous?.value
+            guard self.generation == token, self.active, !Task.isCancelled,
+                  let translator = self.translator else { return }
+            do {
+                let translated = try await translator.translate(source)
+                guard self.generation == token, self.active, !Task.isCancelled else { return }
+                guard !translated.isEmpty, translated.utf8.count <= 32_768 else {
+                    self.appendControl("translation_state=empty_or_oversize")
+                    return
+                }
+                self.translatedText = translated
+                self.translatedRecent.append(translated)
+                if self.translatedRecent.count > 200 {
+                    self.translatedRecent.removeFirst(self.translatedRecent.count - 200)
+                }
+                self.writer?.event(CaptionEntry(kind: .translation, text: translated))
+                self.appendControl("translation_state=ready source=\(self.options.language) target=\(Self.translationTarget(for: self.options.language))")
+                self.pendingText = CaptionText.lensWindow(self.translatedRecent.suffix(2).joined(separator: "\n"), maximumBytes: 384)
+                self.pumpDisplay()
+            } catch {
+                guard self.generation == token, self.active else { return }
+                self.appendControl("translation_state=failed")
+                self.error = "本机翻译失败；原文字幕继续显示。"
+            }
+        }
+        #endif
+    }
     private func pumpDisplay() {
         guard phase == .listening, displayReady, now - lastDisplayAt >= 0.5, let text = pendingText, let sid else { return }
         pendingText = nil; lastDisplayAt = now
-        do {
-            if send(try SubtitleTranslateWire.text(text, sid: sid)) { latency.resultSubmittedToGlasses(at: now) }
-        } catch { fail("无法编码字幕文字。") }
+        if sessionInputSource == .glasses {
+            do {
+                if send(try SubtitleTranslateWire.text(text, sid: sid)) { latency.resultSubmittedToGlasses(at: now) }
+            } catch { fail("无法编码字幕文字。") }
+        } else if let target, device.deviceID == target {
+            do {
+                try device.sendDisplaySubtitle(target: target, payload: SubtitleDisplayWire.text(text, sid: sid))
+                latency.resultSubmittedToGlasses(at: now)
+            } catch { dropDisplayOnly(reason: "字幕文字未能发送", notifyGlasses: true) }
+        }
     }
     private func markGap(_ note: String) {
         guard !gapOpen else { return }; gapOpen = true; gaps += 1; record?.gaps = gaps
         writer?.gap(); decoder?.reset(); writer?.event(CaptionEntry(kind: .gap, text: note))
     }
-    func inputLost() { if cloudStarted { markGap("手机接收队列丢包") } }
+    func inputLost() { if sessionInputSource == .glasses, cloudStarted { markGap("手机接收队列丢包") } }
     func connectionChanged() {
         guard active, let target, device.deviceID != target else { return }
-        stop(reason: "连接中断，本次字幕已停止并保存", interrupted: true, notifyGlasses: false)
+        if sessionInputSource == .glasses {
+            stop(reason: "连接中断，本次字幕已停止并保存", interrupted: true, notifyGlasses: false)
+        } else { dropDisplayOnly(reason: "眼镜连接中断", notifyGlasses: false) }
     }
     func transportFailed(device source: String, packet: Data, code: Int, messageID: String) {
-        guard source == target, let event = try? SubtitleTranslateWire.event(packet), event.sid == sid else { return }
+        guard source == target else { return }
+        if sessionInputSource != .glasses {
+            guard let reply = try? SubtitleDisplayWire.reply(packet), reply.sid == sid else { return }
+            appendControl("business=19 type=\(reply.type) display_only=1 state=send_failed code=\(code)")
+            dropDisplayOnly(reason: "眼镜显示发送失败", notifyGlasses: false)
+            return
+        }
+        guard let event = try? SubtitleTranslateWire.event(packet), event.sid == sid else { return }
         if event.type == 10 {
             let latest = !messageID.isEmpty && messageID == lastPickupDirectionMessageID
             let state = latest ? "send_failed" : "stale_send_failed"
@@ -448,26 +774,47 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
         do { try device.sendRealtimeSubtitle(target: target, payload: packet); return true }
         catch { fail("字幕命令未能提交，请确认眼镜状态。" ); return false }
     }
-    private func fail(_ reason: String) { error = reason; stop(reason: reason, interrupted: true) }
+    private func fail(_ reason: String) {
+        appendControl("runtime_state=failed source=\(sessionInputSource.rawValue)")
+        error = reason; stop(reason: reason, interrupted: true)
+    }
     func stop(reason: String = "用户停止", interrupted: Bool = false, notifyGlasses: Bool = true) {
         guard canStop else { return }
         let wasPreparing = phase == .preparing
+        let wasGlassesCapture = sessionInputSource == .glasses
         shortcutSuppressedUntil = max(shortcutSuppressedUntil, now + 1.5)
         generation = UUID(); status = reason
+        translationQueue?.cancel(); translationQueue = nil
+        pendingTranslations = 0
+        #if COMPANION_DEVICE
+        translator?.cancel(); translator = nil
+        microphone?.stop(); microphone = nil
+        #endif
+        lastASRDiagnosticSummary = provider?.diagnosticSummary ?? lastASRDiagnosticSummary
         cloudStarted = false; provider?.stop(); provider = nil; key = ""; cloudReady = false; pendingText = nil
         latency.sessionStopped()
         decoder = nil; audioLevel = 0
         if !partial.isEmpty { writer?.event(CaptionEntry(kind: .unfinished, text: partial)); partial = "" }
         var exitSubmissionFailed = false
         if notifyGlasses, !wasPreparing, let sid, let target, device.deviceID == target {
-            do { try device.sendRealtimeSubtitle(target: target, payload: SubtitleTranslateWire.stop(sid: sid)) }
+            do {
+                if wasGlassesCapture {
+                    try device.sendRealtimeSubtitle(target: target, payload: SubtitleTranslateWire.stop(sid: sid))
+                    appendControl("business=19 type=3 source=glasses state=submitted")
+                } else if displayClaimed {
+                    try device.sendDisplaySubtitle(target: target, payload: SubtitleDisplayWire.stop(sid: sid))
+                    appendControl("business=19 type=3 display_only=1 state=submitted")
+                }
+            }
             catch { exitSubmissionFailed = true }
         }
         finishStorage(reason: reason, interrupted: interrupted)
         defaults.removeObject(forKey: Self.pendingKey)
         release()
         if exitSubmissionFailed {
-            error = "眼镜退出命令未送达；本机已停止并保存，可在眼镜再次双击退出后重试。"
+            error = wasGlassesCapture
+                ? "眼镜退出命令未送达；本机已停止并保存，可在眼镜再次双击退出后重试。"
+                : "眼镜显示退出命令未送达；手机收音已停止并保存，请确认眼镜显示已退出。"
         }
         status = saving ? "字幕已停止，正在完成本机保存" : "字幕已结束，历史保存在此 App"
     }
@@ -490,18 +837,33 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
         timer?.invalidate(); timer = nil; phase = .idle; target = nil; sid = nil
         lastPickupDirectionMessageID = nil; pickupDirectionNeedsRetry = false; pickupDirectionMessage = nil
         pendingPickupDirection = nil
-        record = nil; device.ownDisplayForSubtitles(false)
+        displayOpening = false; displayReady = false; displayDeadline = 0
+        record = nil
+        if displayClaimed { device.ownDisplayForSubtitles(false); displayClaimed = false }
         if !saving { sessionID = nil }
     }
     func tick() {
         guard active else { return }
-        if let target, device.deviceID != target { connectionChanged(); return }
+        if let target, device.deviceID != target {
+            connectionChanged()
+            if !active { return }
+        }
         guard canStop, phase != .preparing else { return }
         elapsed = max(0, Int(now - began))
-        if phase == .startingAudio || phase == .openingDisplay, now >= deadline { fail("10 秒未收到匹配的字幕启动或显示回执。" ); return }
+        if sessionInputSource == .glasses,
+           (phase == .startingAudio || phase == .openingDisplay), now >= deadline {
+            fail("10 秒未收到匹配的字幕启动或显示回执。"); return
+        }
+        if sessionInputSource != .glasses, displayOpening, now >= displayDeadline {
+            dropDisplayOnly(reason: "眼镜显示回应超时", notifyGlasses: true)
+        }
         if elapsed >= options.maximumSeconds { stop(reason: "达到本次时长上限"); return }
-        if cloudStarted, now - lastAudioAt >= 15 { fail("15 秒未收到有效眼镜音频；不是静音。" ); return }
-        if cloudStarted, now - lastAudioAt >= 5 { markGap("等待眼镜音频恢复") }
+        if cloudStarted, now - lastAudioAt >= 15 {
+            fail(sessionInputSource == .glasses ? "15 秒未收到有效眼镜音频；不是静音。" : "15 秒未收到有效麦克风音频，请检查录音权限和输入设备。"); return
+        }
+        if cloudStarted, now - lastAudioAt >= 5 {
+            markGap(sessionInputSource == .glasses ? "等待眼镜音频恢复" : "等待麦克风音频恢复")
+        }
         if cloudStarted, !cloudReady, now >= cloudDeadline { fail("转写连接超时，请检查服务配置和网络。" ); return }
         pumpDisplay()
     }
@@ -519,6 +881,7 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
         let steps = sequenceStepCounts.keys.sorted().map { "\($0):\(sequenceStepCounts[$0] ?? 0)" }.joined(separator: ",")
         let controls = controlEvents.isEmpty ? "none" : controlEvents.joined(separator: "\n")
         let requestedDirection = active ? sessionPickupDirection : settings.pickupDirection
-        return "Turbo IO 实时字幕\nphase=\(phase.rawValue) packets=\(packets) pcmBytes=\(audioBytes) gaps=\(gaps)\nseqStrideChanges=\(sequenceJumps) maxSeqStep=\(maximumSequenceStep) discardedSeq=\(discardedSequencePackets)\nseqSteps=\(steps.isEmpty ? "none" : steps) otherSteps=\(otherSequenceSteps)\nmaxArrivalMs=\(maximumArrivalIntervalMilliseconds) maxDispatchMs=\(maximumDispatchDelayMilliseconds)\nASR=\(options.service.name) model=\(options.selectedModel) ready=\(cloudReady) directionRequested=\(requestedDirection.rawValue)\n\(status)\n\(error ?? "")\n\(pickupDirectionMessage ?? "")\ncontrolEvents:\n\(controls)\n不包含音频、正文、密钥、原始序号或设备标识。"
+        let asrSummary = provider?.diagnosticSummary ?? lastASRDiagnosticSummary
+        return "Turbo IO 实时字幕\nphase=\(phase.rawValue) inputSource=\(sessionInputSource.rawValue) inputRouteType=\(inputRouteType ?? "none") displayOpening=\(displayOpening) displayReady=\(displayReady)\npackets=\(packets) pcmBytes=\(audioBytes) gaps=\(gaps)\nseqStrideChanges=\(sequenceJumps) maxSeqStep=\(maximumSequenceStep) discardedSeq=\(discardedSequencePackets)\nseqSteps=\(steps.isEmpty ? "none" : steps) otherSteps=\(otherSequenceSteps)\nmaxArrivalMs=\(maximumArrivalIntervalMilliseconds) maxDispatchMs=\(maximumDispatchDelayMilliseconds)\nASR=\(options.service.name) model=\(options.selectedModel) ready=\(cloudReady) directionRequested=\(requestedDirection.rawValue) translationEnabled=\(settings.translationEnabled)\n\(asrSummary)\ncontrolEvents:\n\(controls)\n不包含音频、正文、密钥、原始序号或设备标识。"
     }
 }

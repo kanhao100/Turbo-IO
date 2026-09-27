@@ -3,6 +3,18 @@ import Combine
 import RayNeoCaptions
 import RayNeoProtocol
 
+enum SubtitleInputSource: String, CaseIterable, Codable {
+    case glasses, iPhoneMicrophone, systemMicrophone
+
+    var name: String {
+        switch self {
+        case .glasses: return "眼镜音频流"
+        case .iPhoneMicrophone: return "iPhone 内置麦克风"
+        case .systemMicrophone: return "系统麦克风"
+        }
+    }
+}
+
 protocol SubtitleCredentialStorage {
     func key(for options: CaptionOptions) -> String?
     func save(_ key: String, for options: CaptionOptions) throws
@@ -19,8 +31,16 @@ struct SubtitleKeychainStorage: SubtitleCredentialStorage {
 @MainActor final class SubtitleSettingsStore: ObservableObject {
     static let preferencesKey = "companion.realtimeSubtitles.options.v1"
     static let pickupDirectionKey = "companion.realtimeSubtitles.pickupDirection.v1"
+    static let inputSourceKey = "companion.realtimeSubtitles.inputSource.v1"
+    static let systemInputUIDKey = "companion.realtimeSubtitles.systemInputUID.v1"
+    static let translationEnabledKey = "companion.realtimeSubtitles.translationEnabled.v1"
+    static let showOnGlassesKey = "companion.realtimeSubtitles.showOnGlasses.v1"
     @Published private(set) var options: CaptionOptions
     @Published private(set) var pickupDirection: SubtitleTranslateWire.PickupDirection
+    @Published private(set) var inputSource: SubtitleInputSource
+    @Published private(set) var systemInputUID: String?
+    @Published private(set) var translationEnabled: Bool
+    @Published private(set) var showOnGlasses: Bool
     @Published private(set) var hasKey = false
     @Published var error: String?
     var isBusy: (() -> Bool)?
@@ -40,6 +60,10 @@ struct SubtitleKeychainStorage: SubtitleCredentialStorage {
         #endif
         pickupDirection = SubtitleTranslateWire.PickupDirection(
             rawValue: defaults.string(forKey: Self.pickupDirectionKey) ?? "") ?? .around
+        inputSource = SubtitleInputSource(rawValue: defaults.string(forKey: Self.inputSourceKey) ?? "") ?? .glasses
+        systemInputUID = defaults.string(forKey: Self.systemInputUIDKey)
+        translationEnabled = defaults.bool(forKey: Self.translationEnabledKey)
+        showOnGlasses = defaults.object(forKey: Self.showOnGlassesKey) as? Bool ?? true
         if let saved = defaults.data(forKey: Self.preferencesKey),
            let decoded = try? JSONDecoder().decode(CaptionOptions.self, from: saved) {
             options = decoded
@@ -65,6 +89,25 @@ struct SubtitleKeychainStorage: SubtitleCredentialStorage {
         SpeechConfiguration(options: options).missingRequirements(asrKey: hasKey, modelKey: false, conversation: false)
     }
     func refresh() { hasKey = credentials.key(for: options).map { !$0.isEmpty } ?? false }
+    func saveInputSource(_ value: SubtitleInputSource, systemInputUID: String? = nil) {
+        guard allowsChanges, isBusy?() != true else { error = "请先结束当前会话，再切换音频来源。"; return }
+        inputSource = value
+        defaults.set(value.rawValue, forKey: Self.inputSourceKey)
+        if value == .systemMicrophone {
+            self.systemInputUID = systemInputUID
+            if let systemInputUID { defaults.set(systemInputUID, forKey: Self.systemInputUIDKey) }
+            else { defaults.removeObject(forKey: Self.systemInputUIDKey) }
+        }
+        error = nil
+    }
+    func saveTranslationEnabled(_ value: Bool) {
+        guard allowsChanges, isBusy?() != true else { error = "请先结束当前会话，再修改本地翻译。"; return }
+        translationEnabled = value; defaults.set(value, forKey: Self.translationEnabledKey); error = nil
+    }
+    func saveShowOnGlasses(_ value: Bool) {
+        guard allowsChanges, isBusy?() != true else { error = "请先结束当前会话，再修改字幕显示位置。"; return }
+        showOnGlasses = value; defaults.set(value, forKey: Self.showOnGlassesKey); error = nil
+    }
     @discardableResult func savePickupDirection(_ direction: SubtitleTranslateWire.PickupDirection) -> Bool {
         guard allowsChanges else { error = "当前设备不能修改字幕收音方向。"; return false }
         defaults.set(direction.rawValue, forKey: Self.pickupDirectionKey)
@@ -91,8 +134,13 @@ struct SubtitleKeychainStorage: SubtitleCredentialStorage {
     }
     func recognizer(for requested: CaptionOptions) -> (options: CaptionOptions, key: String, provider: CaptionASRProvider)? {
         refresh()
-        guard let value = try? requested.validated(), let key = credentials.key(for: value), !key.isEmpty,
-              let provider = factory(value.service) else { return nil }
+        guard let value = try? requested.validated(), let provider = factory(value.service) else { return nil }
+        let key: String
+        if value.service == .appleLocal { key = "" }
+        else {
+            guard let saved = credentials.key(for: value), !saved.isEmpty else { return nil }
+            key = saved
+        }
         return (value, key, provider)
     }
 }

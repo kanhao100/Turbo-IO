@@ -27,6 +27,7 @@ public enum CaptionService: String, Codable, CaseIterable {
     case azure, deepgram, aliyun
     case elevenLabs = "elevenlabs"
     case selfHostedQwen = "self-hosted-qwen"
+    case appleLocal = "apple-local"
 
     public var name: String {
         switch self {
@@ -35,6 +36,7 @@ public enum CaptionService: String, Codable, CaseIterable {
         case .elevenLabs: return "ElevenLabs"
         case .aliyun: return "阿里云流式 ASR"
         case .selfHostedQwen: return "自建 Qwen3-ASR"
+        case .appleLocal: return "Apple 本机识别"
         }
     }
     public var model: String {
@@ -44,6 +46,7 @@ public enum CaptionService: String, Codable, CaseIterable {
         case .elevenLabs: return "Scribe v2 Realtime"
         case .aliyun: return AliyunCaptionModel.qwenAudio31Streaming.rawValue
         case .selfHostedQwen: return "Qwen3-ASR OpenAI Realtime"
+        case .appleLocal: return "SpeechTranscriber"
         }
     }
     public var keychainService: String {
@@ -54,8 +57,10 @@ public enum CaptionService: String, Codable, CaseIterable {
         case .elevenLabs: return "io.turboio.companion.elevenlabs.v1"
         case .aliyun: return "RayNeo.CloudASR.https."
         case .selfHostedQwen: return "io.turboio.companion.self-hosted-qwen.v1"
+        case .appleLocal: return "io.turboio.companion.apple-local.v1"
         }
     }
+    public var requiresCredential: Bool { self != .appleLocal }
 }
 
 /// Explicit recognition-language intent. `automatic` is not represented by a
@@ -156,6 +161,7 @@ public struct CaptionOptions: Codable, Equatable {
         case .azure: return region.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         case .aliyun: return "user-api-key"
         case .selfHostedQwen: return selfHostedEndpoint.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        case .appleLocal: return "local"
         default: return "default"
         }
     }
@@ -198,7 +204,8 @@ public struct CaptionOptions: Codable, Equatable {
         }
         switch result.languageMode {
         case .automatic:
-            guard service != .deepgram else { throw CaptionFailure.invalidConfiguration }
+            // SpeechTranscriber works with one explicit locale per session.
+            guard service != .deepgram && service != .appleLocal else { throw CaptionFailure.invalidConfiguration }
         case .fixed(let localeIdentifier):
             guard Self.languages.contains(localeIdentifier) else { throw CaptionFailure.invalidConfiguration }
         }

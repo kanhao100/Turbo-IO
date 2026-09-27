@@ -88,6 +88,6 @@ struct SubtitleSessionDetailView: View {
         Task { defer { exporting = false }; do { exported = try await archive.export(id, includingAudio: audio) } catch { message = "未能生成导出文件，请结束会话后重试。" } }
     }
     private func label(_ kind: CaptionEntry.Kind) -> String {
-        switch kind { case .started: return "开始"; case .stopped: return "结束"; case .gap: return "缺口"; case .unfinished: return "未定稿"; case .final: return "定稿" }
+        switch kind { case .started: return "开始"; case .stopped: return "结束"; case .gap: return "缺口"; case .unfinished: return "未定稿"; case .final: return "定稿"; case .translation: return "译文" }
     }
 }

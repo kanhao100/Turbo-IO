@@ -23,6 +23,7 @@ import Combine
     var onSubtitleLoss: (() -> Void)?
     var onSubtitleSendError: ((String, Data, Int, String) -> Void)?
     @Published private(set) var subtitleOwnsDisplay = false
+    var voiceEnabled: Bool { enabled }
     func ownDisplayForSubtitles(_ owns: Bool) {
         #if COMPANION_DEVICE
         prepare(); controller.companionOwnDisplayForSubtitles(owns)
@@ -35,6 +36,9 @@ import Combine
         #else
         throw DeviceFeatureError.disconnected
         #endif
+    }
+    func sendDisplaySubtitle(target: String, payload: Data) throws {
+        try sendSubtitle(target: target, payload: payload)
     }
     @discardableResult func sendRealtimeSubtitle(target: String, payload: Data) throws -> String {
         #if COMPANION_DEVICE

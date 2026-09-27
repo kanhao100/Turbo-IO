@@ -1,7 +1,7 @@
 import Foundation
 
 public struct CaptionEntry: Codable, Identifiable, Equatable {
-    public enum Kind: String, Codable { case started, final, unfinished, gap, stopped }
+    public enum Kind: String, Codable { case started, final, translation, unfinished, gap, stopped }
     public let id: UUID
     public let date: Date
     public let kind: Kind
