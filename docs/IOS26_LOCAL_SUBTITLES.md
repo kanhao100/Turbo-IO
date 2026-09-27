@@ -1,6 +1,6 @@
 # iOS 26 本机实时字幕接入说明
 
-适用范围：Turbo IO iOS V1，最低系统版本 iOS 26。build 14 的音源、本机转写和翻译已经过用户真机验证。build 15 增加显示选项与“完成”保存行为，已通过 Actions 编译。build 16 增加设置页交互预览和译文失败提示，Actions 编译及签名安装后的真机验收待完成。
+适用范围：Turbo IO iOS V1，最低系统版本 iOS 26。build 14 的音源、本机转写和翻译已经过用户真机验证。build 15 增加显示选项与“完成”保存行为，已通过 Actions 编译。build 16 增加设置页交互预览和译文失败提示，也已通过 Actions 编译；签名安装后的真机验收待完成。
 
 ## 处理链路
 
@@ -54,7 +54,7 @@ build 16 起，若只看译文所属语言，而某一句翻译失败或没有�
 
 ## Actions 构建与真机检查
 
-`.github/workflows/ios-rollback-build.yml` 使用 macOS 26、Xcode 26.6 和 iOS 26 SDK 构建设备目标并关闭代码签名。历史构建 [build 15 Actions](https://github.com/kanhao100/Turbo-IO/actions/runs/36356866211) 已成功产出 `TurboIO-iOS26-v0.4.0-build15-unsigned-ipa`，其中 IPA 文件为 `TurboIO-iOS26-v0.4.0-build15-unsigned.ipa`，SHA-256 为 `c305363c97e05272c1c20c952263a7be3aa6d87aa95f1a7969d27c2de0a398b0`；产物校验通过。build 16 的 Actions 编译和 IPA 产出尚待确认。IPA 需要用户自行签名后安装，build 16 的真机功能验收也仍待完成。
+`.github/workflows/ios-rollback-build.yml` 使用 macOS 26、Xcode 26.6 和 iOS 26 SDK 构建设备目标并关闭代码签名。历史构建 [build 15 Actions](https://github.com/kanhao100/Turbo-IO/actions/runs/36356866211) 已成功产出 `TurboIO-iOS26-v0.4.0-build15-unsigned-ipa`，其中 IPA 文件为 `TurboIO-iOS26-v0.4.0-build15-unsigned.ipa`，SHA-256 为 `c305363c97e05272c1c20c952263a7be3aa6d87aa95f1a7969d27c2de0a398b0`。[build 16 Actions](https://github.com/kanhao100/Turbo-IO/actions/runs/36357680814) 已成功产出 `TurboIO-iOS26-v0.4.0-build16-unsigned-ipa`，其中 IPA 文件为 `TurboIO-iOS26-v0.4.0-build16-unsigned.ipa`，SHA-256 为 `4726531198455f3a1c2e06db5146af030279bfe4d37aec245b1f180dcf6c7a2e`；下载产物与 `SHA256SUMS.txt` 一致。IPA 需要用户自行签名后安装，build 16 的真机功能验收仍待完成。
 
 建议在已签名安装后逐项检查：
 
