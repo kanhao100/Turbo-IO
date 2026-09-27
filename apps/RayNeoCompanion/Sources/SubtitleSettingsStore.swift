@@ -15,6 +15,57 @@ enum SubtitleInputSource: String, CaseIterable, Codable {
     }
 }
 
+enum SubtitleDisplayMode: String, CaseIterable, Codable {
+    case chineseOnly, englishOnly, bilingual
+
+    var name: String {
+        switch self {
+        case .chineseOnly: return "只看中文"
+        case .englishOnly: return "只看英文"
+        case .bilingual: return "中英混合"
+        }
+    }
+}
+
+enum SubtitleBilingualOrder: String, CaseIterable, Codable {
+    case sourceFirst, translationFirst
+
+    var name: String {
+        switch self {
+        case .sourceFirst: return "原文在上"
+        case .translationFirst: return "译文在上"
+        }
+    }
+}
+
+enum SubtitleDisplayRetention: String, CaseIterable, Codable {
+    case untilNextSentence, seconds3, seconds5, seconds10
+
+    var name: String {
+        switch self {
+        case .untilNextSentence: return "直到下一句"
+        case .seconds3: return "3 秒"
+        case .seconds5: return "5 秒"
+        case .seconds10: return "10 秒"
+        }
+    }
+
+    var seconds: TimeInterval? {
+        switch self {
+        case .untilNextSentence: return nil
+        case .seconds3: return 3
+        case .seconds5: return 5
+        case .seconds10: return 10
+        }
+    }
+}
+
+private struct SubtitleDisplayPreferences: Codable {
+    var mode: SubtitleDisplayMode
+    var order: SubtitleBilingualOrder
+    var retention: SubtitleDisplayRetention
+}
+
 protocol SubtitleCredentialStorage {
     func key(for options: CaptionOptions) -> String?
     func save(_ key: String, for options: CaptionOptions) throws
@@ -35,12 +86,16 @@ struct SubtitleKeychainStorage: SubtitleCredentialStorage {
     static let systemInputUIDKey = "companion.realtimeSubtitles.systemInputUID.v1"
     static let translationEnabledKey = "companion.realtimeSubtitles.translationEnabled.v1"
     static let showOnGlassesKey = "companion.realtimeSubtitles.showOnGlasses.v1"
+    static let displayPreferencesKey = "companion.realtimeSubtitles.displayPreferences.v1"
     @Published private(set) var options: CaptionOptions
     @Published private(set) var pickupDirection: SubtitleTranslateWire.PickupDirection
     @Published private(set) var inputSource: SubtitleInputSource
     @Published private(set) var systemInputUID: String?
     @Published private(set) var translationEnabled: Bool
     @Published private(set) var showOnGlasses: Bool
+    @Published private(set) var displayMode: SubtitleDisplayMode
+    @Published private(set) var bilingualOrder: SubtitleBilingualOrder
+    @Published private(set) var displayRetention: SubtitleDisplayRetention
     @Published private(set) var hasKey = false
     @Published var error: String?
     var isBusy: (() -> Bool)?
@@ -64,6 +119,12 @@ struct SubtitleKeychainStorage: SubtitleCredentialStorage {
         systemInputUID = defaults.string(forKey: Self.systemInputUIDKey)
         translationEnabled = defaults.bool(forKey: Self.translationEnabledKey)
         showOnGlasses = defaults.object(forKey: Self.showOnGlassesKey) as? Bool ?? true
+        let display = defaults.data(forKey: Self.displayPreferencesKey)
+            .flatMap { try? JSONDecoder().decode(SubtitleDisplayPreferences.self, from: $0) }
+            ?? SubtitleDisplayPreferences(mode: .bilingual, order: .sourceFirst, retention: .untilNextSentence)
+        displayMode = display.mode
+        bilingualOrder = display.order
+        displayRetention = display.retention
         if let saved = defaults.data(forKey: Self.preferencesKey),
            let decoded = try? JSONDecoder().decode(CaptionOptions.self, from: saved) {
             options = decoded
@@ -107,6 +168,25 @@ struct SubtitleKeychainStorage: SubtitleCredentialStorage {
     func saveShowOnGlasses(_ value: Bool) {
         guard allowsChanges, isBusy?() != true else { error = "请先结束当前会话，再修改字幕显示位置。"; return }
         showOnGlasses = value; defaults.set(value, forKey: Self.showOnGlassesKey); error = nil
+    }
+    @discardableResult func saveDisplayPreferences(
+        mode: SubtitleDisplayMode,
+        order: SubtitleBilingualOrder,
+        retention: SubtitleDisplayRetention
+    ) -> Bool {
+        guard allowsChanges else { error = "当前设备不能修改字幕显示设置。"; return false }
+        do {
+            let value = SubtitleDisplayPreferences(mode: mode, order: order, retention: retention)
+            defaults.set(try JSONEncoder().encode(value), forKey: Self.displayPreferencesKey)
+            displayMode = mode
+            bilingualOrder = order
+            displayRetention = retention
+            error = nil
+            return true
+        } catch {
+            self.error = "字幕显示设置未能保存，请重试。"
+            return false
+        }
     }
     @discardableResult func savePickupDirection(_ direction: SubtitleTranslateWire.PickupDirection) -> Bool {
         guard allowsChanges else { error = "当前设备不能修改字幕收音方向。"; return false }

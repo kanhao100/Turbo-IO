@@ -16,10 +16,16 @@ struct SubtitleSettingsView: View {
     @State private var key = ""
     @State private var saved = false
     @State private var confirmApply = false
+    @State private var dismissAfterSave = false
+    @State private var showSaveError = false
+    @State private var saveErrorMessage = ""
     @State private var draftInputSource: SubtitleInputSource = .glasses
     @State private var draftInputUID = ""
     @State private var draftTranslationEnabled = false
     @State private var draftShowOnGlasses = true
+    @State private var draftDisplayMode: SubtitleDisplayMode = .bilingual
+    @State private var draftBilingualOrder: SubtitleBilingualOrder = .sourceFirst
+    @State private var draftDisplayRetention: SubtitleDisplayRetention = .untilNextSentence
     @State private var inputPorts: [SubtitleMicrophoneInput.Port] = []
     @State private var inputStatus = ""
     @State private var localModelStatus = ""
@@ -107,13 +113,39 @@ struct SubtitleSettingsView: View {
                 Section("本地翻译") {
                     Toggle("翻译最终字幕", isOn: $draftTranslationEnabled)
                         .accessibilityIdentifier("subtitle-local-translation")
+                        .disabled(busy)
                     Text(translationPairDescription).font(.caption).foregroundStyle(.secondary)
+                    Picker("字幕语言", selection: $draftDisplayMode) {
+                        ForEach(SubtitleDisplayMode.allCases, id: \.self) { mode in
+                            Text(mode.name).tag(mode)
+                        }
+                    }
+                    .accessibilityIdentifier("subtitle-display-mode")
+                    if draftDisplayMode == .bilingual {
+                        Picker("中英混合顺序", selection: $draftBilingualOrder) {
+                            ForEach(SubtitleBilingualOrder.allCases, id: \.self) { order in
+                                Text(order.name).tag(order)
+                            }
+                        }
+                        .accessibilityIdentifier("subtitle-bilingual-order")
+                    }
+                    Picker("最终字幕停留", selection: $draftDisplayRetention) {
+                        ForEach(SubtitleDisplayRetention.allCases, id: \.self) { retention in
+                            Text(retention.name).tag(retention)
+                        }
+                    }
+                    .accessibilityIdentifier("subtitle-display-retention")
+                    Text(draftTranslationEnabled
+                         ? "选择原文语言时可显示临时识别结果；译文在一句话结束后生成。最终字幕按所选时长停留。"
+                         : "翻译关闭时，字幕语言须与识别语言一致；中英混合需要开启翻译。")
+                        .font(.caption).foregroundStyle(.secondary)
                     if draftTranslationEnabled {
                         Button("准备翻译语言包") { prepareTranslationLanguages() }
                             .accessibilityIdentifier("subtitle-prepare-translation")
+                            .disabled(busy)
                         if !translationStatus.isEmpty { Text(translationStatus).font(.caption).foregroundStyle(.secondary) }
                     }
-                }.disabled(busy)
+                }.disabled(!settings.allowsChanges)
                 if draftInputSource == .glasses { Section("实时字幕收音方向") {
                     Picker("收音范围", selection: Binding(
                         get: { settings.pickupDirection },
@@ -136,21 +168,22 @@ struct SubtitleSettingsView: View {
                     }
                 } }
                 Section("本机保存") {
-                    Toggle("同时保存音频", isOn: $draft.recordAudio).accessibilityIdentifier("subtitle-save-audio")
+                    Toggle("同时保存音频", isOn: $draft.recordAudio)
+                        .accessibilityIdentifier("subtitle-save-audio")
+                        .disabled(busy)
                     Text("文本总会保存。音频为处理后的 16 kHz 单声道 WAV，每 60 秒分段；已知断流另起一段，不补静音。约 115 MB/小时，仅存此 App，不自动上传网盘。")
                         .font(.caption).foregroundStyle(.secondary)
                     Picker("单次时长上限", selection: $draft.maximumSeconds) {
                         Text("30 分钟").tag(1800); Text("60 分钟").tag(3600); Text("120 分钟").tag(7200)
                     }
+                    .disabled(busy)
                     Button("保存字幕设置") {
-                        draft.idleSeconds = 0
-                        if alwaysOn.activeTask { confirmApply = true }
-                        else { saveDraft() }
+                        beginSave(dismissOnSuccess: false)
                     }
                         .accessibilityIdentifier("subtitle-save-settings")
                     if saved { Text("已保存；不会自动开始收音。开始时使用所选音频来源与识别引擎。") .font(.caption).foregroundStyle(Palette.green) }
                     if let error = settings.error { Text(error).font(.caption).foregroundStyle(Palette.amber) }
-                }.disabled(busy || !settings.allowsChanges)
+                }.disabled(!settings.allowsChanges)
                 Section("双击眼镜旋钮 → 字幕") {
                     Text("先读取 → 设置双击字幕 → 再次读取确认。只改双击，保留长按和其他配置。") .font(.caption).foregroundStyle(.secondary)
                     Button("读取眼镜快捷键") { features.refreshSettings() }.disabled(!voice.ready || busy)
@@ -187,16 +220,36 @@ struct SubtitleSettingsView: View {
                 if voice.enabled { Button("先关闭 AI 对话待命") { voice.stop() } }
             }
             .navigationTitle("字幕设置").navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
+            .toolbar { ToolbarItem(placement: .confirmationAction) {
+                Button("完成") { beginSave(dismissOnSuccess: true) }
+                    .accessibilityIdentifier("subtitle-settings-done")
+            } }
             .onAppear {
-                draft = settings.options; settings.refresh()
+                draft = settings.options; draft.idleSeconds = 0; settings.refresh()
                 draftInputSource = settings.inputSource
                 draftInputUID = settings.systemInputUID ?? ""
                 draftTranslationEnabled = settings.translationEnabled
                 draftShowOnGlasses = settings.showOnGlasses
+                draftDisplayMode = settings.translationEnabled ? settings.displayMode : sourceOnlyMode
+                draftBilingualOrder = settings.bilingualOrder
+                draftDisplayRetention = settings.displayRetention
             }
             .onChange(of: draft.service) { _ in key = ""; saved = false }
-            .onChange(of: draft.aliyunModel) { _ in saved = false }
+            .onChange(of: draft) { _ in saved = false }
+            .onChange(of: key) { newValue in if !newValue.isEmpty { saved = false } }
+            .onChange(of: draftInputSource) { _ in saved = false }
+            .onChange(of: draftInputUID) { _ in saved = false }
+            .onChange(of: draftTranslationEnabled) { enabled in
+                saved = false
+                if !enabled { draftDisplayMode = sourceOnlyMode }
+            }
+            .onChange(of: draft.language) { _ in
+                if !draftTranslationEnabled { draftDisplayMode = sourceOnlyMode }
+            }
+            .onChange(of: draftShowOnGlasses) { _ in saved = false }
+            .onChange(of: draftDisplayMode) { _ in saved = false }
+            .onChange(of: draftBilingualOrder) { _ in saved = false }
+            .onChange(of: draftDisplayRetention) { _ in saved = false }
             .translationTask(translationConfiguration) { session in
                 #if COMPANION_DEVICE
                 do {
@@ -209,14 +262,66 @@ struct SubtitleSettingsView: View {
             .confirmationDialog("全天智记正在运行，何时应用新服务设置？", isPresented: $confirmApply) {
                 Button("立即应用并重连 ASR") { applyAlwaysOn(.immediately) }
                 Button("下一次眼镜语音任务生效") { applyAlwaysOn(.nextTask) }
-                Button("取消", role: .cancel) {}
+                Button("取消", role: .cancel) { dismissAfterSave = false }
             } message: { Text("立即应用不会重启眼镜采音，但 ASR 重连期间可能产生短暂缺口。") }
+            .alert("字幕设置未保存", isPresented: $showSaveError) {
+                Button("知道了", role: .cancel) {}
+            } message: { Text(saveErrorMessage) }
         }
+    }
+
+    private func beginSave(dismissOnSuccess: Bool) {
+        dismissAfterSave = dismissOnSuccess
+        saved = false
+        guard validateDisplaySelection() else {
+            dismissAfterSave = false
+            return
+        }
+        if !hasSpeechOrInputChanges {
+            saved = !hasDisplayPreferenceChanges || settings.saveDisplayPreferences(
+                mode: draftDisplayMode, order: draftBilingualOrder, retention: draftDisplayRetention)
+            finishSave()
+        } else if alwaysOn.activeTask && !busy && settings.allowsChanges {
+            confirmApply = true
+        } else {
+            saveDraft()
+        }
+    }
+
+    private var sourceOnlyMode: SubtitleDisplayMode {
+        draft.language.hasPrefix("zh") ? .chineseOnly : .englishOnly
+    }
+
+    private var hasDisplayPreferenceChanges: Bool {
+        draftDisplayMode != settings.displayMode || draftBilingualOrder != settings.bilingualOrder ||
+            draftDisplayRetention != settings.displayRetention
+    }
+
+    private var hasSpeechOrInputChanges: Bool {
+        var requested = draft
+        var stored = settings.options
+        requested.idleSeconds = 0
+        stored.idleSeconds = 0
+        return requested != stored || !key.isEmpty || draftInputSource != settings.inputSource ||
+            (draftInputSource == .systemMicrophone && draftInputUID != (settings.systemInputUID ?? "")) ||
+            draftTranslationEnabled != settings.translationEnabled || draftShowOnGlasses != settings.showOnGlasses
+    }
+
+    private func validateDisplaySelection() -> Bool {
+        guard draftTranslationEnabled || draftDisplayMode == sourceOnlyMode else {
+            saveErrorMessage = draft.language.hasPrefix("zh")
+                ? "当前识别语言是中文。只看英文或中英混合需要开启翻译；也可选择只看中文。"
+                : "当前识别语言是英文。只看中文或中英混合需要开启翻译；也可选择只看英文。"
+            showSaveError = true
+            return false
+        }
+        return true
     }
 
     private func applyAlwaysOn(_ policy: AlwaysOnApplyPolicy) {
         saved = alwaysOn.applySpeechSettings(draft, key: key, policy: policy)
-        if saved { persistInputSettings(); key = "" }
+        if saved { saved = persistInputSettings() }
+        finishSave()
     }
 
     private var inputDescription: String {
@@ -233,8 +338,8 @@ struct SubtitleSettingsView: View {
         return (draft.language, "zh-CN")
     }
     private var translationPairDescription: String {
-        draft.language.hasPrefix("zh") ? "中文语音 → 英文译文。原文会先显示，译文在最终字幕形成后更新。" :
-            "英文语音 → 中文译文。原文会先显示，译文在最终字幕形成后更新。"
+        draft.language.hasPrefix("zh") ? "中文语音 → 英文译文。译文在一句话结束后生成。" :
+            "英文语音 → 中文译文。译文在一句话结束后生成。"
     }
     private func refreshInputPorts() {
         inputStatus = "正在读取系统麦克风…"
@@ -267,13 +372,29 @@ struct SubtitleSettingsView: View {
         translationStatus = "本地预览不准备真机语言包。"
         #endif
     }
-    private func persistInputSettings() {
+    private func persistInputSettings() -> Bool {
         settings.saveInputSource(draftInputSource, systemInputUID: draftInputUID.isEmpty ? nil : draftInputUID)
+        guard settings.error == nil else { return false }
         settings.saveTranslationEnabled(draftTranslationEnabled)
+        guard settings.error == nil else { return false }
         settings.saveShowOnGlasses(draftShowOnGlasses)
+        guard settings.error == nil else { return false }
+        return settings.saveDisplayPreferences(mode: draftDisplayMode, order: draftBilingualOrder,
+                                               retention: draftDisplayRetention)
     }
     private func saveDraft() {
         saved = settings.save(draft, key: key)
-        if saved { persistInputSettings(); key = "" }
+        if saved { saved = persistInputSettings() }
+        finishSave()
+    }
+    private func finishSave() {
+        if saved {
+            key = ""
+            if dismissAfterSave { dismiss() }
+        } else {
+            saveErrorMessage = settings.error ?? alwaysOn.error ?? "请检查字幕设置后重试。"
+            showSaveError = true
+        }
+        dismissAfterSave = false
     }
 }

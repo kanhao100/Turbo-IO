@@ -84,34 +84,25 @@ struct RealtimeSubtitlesView: View {
             Card {
                 HStack { Label("此刻的字幕", systemImage: "text.bubble"); Spacer(); Badge(text: runtime.cloudReady ? "识别已就绪" : (runtime.active ? "准备中" : "待开始"), active: runtime.cloudReady) }
                     .font(.subheadline.weight(.semibold))
-                if runtime.partial.isEmpty && runtime.recent.isEmpty {
-                    Text("开始后，所选麦克风收到的声音会逐句出现。\n无需向 AI 提问，也不会生成回答。")
-                        .font(.title3).foregroundStyle(Palette.muted).lineSpacing(7).frame(maxWidth: .infinity, minHeight: 95, alignment: .leading)
+                Text(effectiveDisplayModeName)
+                    .font(.caption).foregroundStyle(Palette.muted)
+                    .accessibilityIdentifier("realtime-display-mode")
+                if runtime.displayText.isEmpty {
+                    Text(runtime.active
+                         ? "正在聆听，下一句字幕生成后会显示在这里。"
+                         : "开始后，所选麦克风收到的声音会逐句出现。\n无需向 AI 提问，也不会生成回答。")
+                        .font(.title3).foregroundStyle(Palette.muted).lineSpacing(7)
+                        .frame(maxWidth: .infinity, minHeight: 95, alignment: .leading)
                 } else {
-                    ForEach(runtime.recent.suffix(3)) { entry in Text(entry.text).font(.title3).lineSpacing(6).textSelection(.enabled).privacySensitive() }
-                    if !runtime.partial.isEmpty {
-                        Text(runtime.partial).font(.title3).lineSpacing(6).foregroundStyle(Palette.green).privacySensitive()
+                    Text(runtime.displayText).font(.title3).lineSpacing(6)
+                        .foregroundStyle(runtime.displayIsPartial ? Palette.green : Palette.ink)
+                        .textSelection(.enabled).privacySensitive()
+                        .accessibilityIdentifier("realtime-display-text")
+                    if runtime.displayIsPartial {
                         Text("识别中 · 内容可能修订").font(.caption).foregroundStyle(Palette.muted)
                     }
                 }
                 if runtime.gaps > 0 { Label("检测到 \(runtime.gaps) 处音频缺口，已记录到历史", systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(Palette.amber) }
-            }
-            if settings.translationEnabled {
-                Card {
-                    HStack {
-                        Label("本地翻译", systemImage: "character.bubble").font(.subheadline.weight(.semibold))
-                        Spacer()
-                        Badge(text: settings.options.language.hasPrefix("zh") ? "中文 → 英文" : "英文 → 中文", active: !runtime.translatedText.isEmpty)
-                    }
-                    if runtime.translatedText.isEmpty {
-                        Text(runtime.active ? "最终字幕形成后，译文会显示在这里。" : "开始会话后显示译文。")
-                            .font(.subheadline).foregroundStyle(Palette.muted)
-                    } else {
-                        Text(runtime.translatedText).font(.title3).lineSpacing(6)
-                            .textSelection(.enabled).privacySensitive()
-                            .accessibilityIdentifier("realtime-translation-text")
-                    }
-                }
             }
             if settings.inputSource == .glasses {
                 Card {
@@ -182,6 +173,10 @@ struct RealtimeSubtitlesView: View {
         if settings.inputSource == .glasses { return voice.ready ? "眼镜已连接" : "等待眼镜" }
         if settings.showOnGlasses && voice.ready { return "眼镜已连接" }
         return "无需眼镜"
+    }
+    private var effectiveDisplayModeName: String {
+        if settings.translationEnabled { return settings.displayMode.name }
+        return settings.options.language.hasPrefix("zh") ? "只看中文" : "只看英文"
     }
     private var shortcutHint: String {
         if settings.inputSource == .glasses {
