@@ -67,6 +67,7 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
     @Published private(set) var displayTranslationText = ""
     @Published private(set) var displayText = ""
     @Published private(set) var displayIsPartial = false
+    @Published private(set) var displayIsAwaitingTranslation = false
     @Published private(set) var microphoneRoute: String?
     @Published private(set) var recent: [CaptionEntry] = []
     @Published private(set) var elapsed = 0
@@ -105,6 +106,7 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
     private var record: SubtitleSessionRecord?, options = CaptionOptions(), key = ""
     private var target: String?, sid: String?, generation = UUID()
     private var sessionInputSource: SubtitleInputSource = .glasses
+    private var sessionTranslationQuality: SubtitleTranslationQuality = .lowLatency
     private var displayClaimed = false, displayOpening = false, displayDeadline: TimeInterval = 0
     private var translationQueue: Task<Void, Never>?
     private var translatedRecent: [String] = []
@@ -112,9 +114,13 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
     private var firstPartialAudioBytes: Int?
     private var lastExpiredSentenceNumber = 0
     private var hasCompletedDisplayPair = false
+    private var displayShowsTemporarySource = false
+    private var displayCompletedAt: TimeInterval?
     private var displayExpiresAt: TimeInterval?
     private var displayPreferencesSignature = ""
+    private var displayRetentionSignature = ""
     private var pendingTranslations = 0, skippedTranslations = 0
+    private var reportedLanguageMismatch = false
     private var inputRouteType: String?
     private var lastASRDiagnosticSummary = ""
     private var sessionPickupDirection: SubtitleTranslateWire.PickupDirection = .around
@@ -259,18 +265,23 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
         }
         target = deviceID; sid = protocolID; sessionID = id; options = config.options; key = config.key
         sessionInputSource = source
+        sessionTranslationQuality = settings.translationQuality
         sessionPickupDirection = settings.pickupDirection; pickupDirectionMessage = nil
         pickupDirectionNeedsRetry = false; lastPickupDirectionMessageID = nil; pendingPickupDirection = nil
         provider = config.provider; self.decoder = decoder; phase = .preparing; status = "正在准备本次字幕与音频存储"
         partial = ""; translatedText = ""; translatedRecent = []; microphoneRoute = nil; inputRouteType = nil
-        displaySourceText = ""; displayTranslationText = ""; displayText = ""; displayIsPartial = false
+        displaySourceText = ""; displayTranslationText = ""; displayText = ""
+        displayIsPartial = false; displayIsAwaitingTranslation = false
         sentenceNumber = 0; displayedSentenceNumber = 0; lastExpiredSentenceNumber = 0
         firstPartialAudioBytes = nil
-        hasCompletedDisplayPair = false
-        displayExpiresAt = nil; displayPreferencesSignature = currentDisplayPreferencesSignature
+        hasCompletedDisplayPair = false; displayShowsTemporarySource = false
+        displayCompletedAt = nil; displayExpiresAt = nil
+        displayPreferencesSignature = currentDisplayPreferencesSignature
+        displayRetentionSignature = currentDisplayRetentionSignature
         lastASRDiagnosticSummary = ""
         translationQueue?.cancel(); translationQueue = nil
         pendingTranslations = 0; skippedTranslations = 0
+        reportedLanguageMismatch = false
         recent = []; elapsed = 0; audioBytes = 0; audioLevel = 0; packets = 0; gaps = 0
         lastSequence = nil; gapOpen = false; displayReady = false; cloudReady = false; cloudStarted = false
         displayOpening = false; displayDeadline = 0; displayClaimed = false
@@ -299,13 +310,16 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
                         fail("本机翻译需要先选择固定的识别语言。"); return
                     }
                     let destination = Self.translationTarget(for: options.language)
-                    let readiness = await AppleCaptionTranslation.readiness(source: options.language, target: destination)
+                    let readiness = await AppleCaptionTranslation.readiness(
+                        source: options.language, target: destination,
+                        quality: sessionTranslationQuality)
                     guard generation == token, phase == .preparing else { return }
                     guard readiness == .ready else {
                         fail(readiness.message + "请先在字幕设置中准备语言包。"); return
                     }
-                    translator = AppleCaptionTranslation(source: options.language, target: destination)
-                    appendControl("translation_asset=ready source=\(options.language) target=\(destination)")
+                    translator = AppleCaptionTranslation(source: options.language, target: destination,
+                                                         quality: sessionTranslationQuality)
+                    appendControl("translation_asset=ready source=\(options.language) target=\(destination) quality=\(sessionTranslationQuality.rawValue)")
                 }
                 #else
                 if options.service == .appleLocal || settings.translationEnabled {
@@ -371,13 +385,22 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
         return sourceIsChinese ? .chineseOnly : .englishOnly
     }
     private var currentDisplayPreferencesSignature: String {
-        "\(settings.displayMode.rawValue)|\(settings.bilingualOrder.rawValue)|\(settings.displayRetention.rawValue)"
+        "\(settings.displayMode.rawValue)|\(settings.bilingualOrder.rawValue)|\(settings.displayRetention.rawValue)|\(settings.customRetentionSeconds)|\(settings.showLiveSourceDuringTranslation)"
+    }
+    private var currentDisplayRetentionSignature: String {
+        "\(settings.displayRetention.rawValue)|\(settings.effectiveRetentionSeconds.map { String($0) } ?? "next")"
+    }
+    private func updateDisplayExpiryFromCompletion() {
+        displayExpiresAt = displayCompletedAt.flatMap { completedAt in
+            settings.effectiveRetentionSeconds.map { completedAt + $0 }
+        }
     }
     private func armDisplayExpiryIfNeeded() {
         // With an intended lens target, wait for a successful type-5 submission.
         // Otherwise a delayed type-8 ACK could consume the entire display duration.
         guard hasCompletedDisplayPair, target == nil else { return }
-        displayExpiresAt = settings.displayRetention.seconds.map { now + $0 }
+        if displayCompletedAt == nil { displayCompletedAt = now }
+        updateDisplayExpiryFromCompletion()
     }
     private var sourceCanShowWithoutTranslation: Bool {
         switch effectiveDisplayMode {
@@ -389,7 +412,9 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
     private var displayNeedsTranslationBeforeCommit: Bool {
         settings.translationEnabled && (effectiveDisplayMode == .bilingual || !sourceCanShowWithoutTranslation)
     }
-    private func composedDisplayText(source: String, translation: String) -> String {
+    private func composedDisplayText(source: String, translation: String,
+                                     temporarySource: Bool = false) -> String {
+        if temporarySource { return source }
         switch effectiveDisplayMode {
         case .chineseOnly: return sourceIsChinese ? source : translation
         case .englishOnly: return sourceIsChinese ? translation : source
@@ -399,7 +424,9 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
                 ? source + "\n" + translation : translation + "\n" + source
         }
     }
-    private func lensDisplayText(source: String, translation: String) -> String {
+    private func lensDisplayText(source: String, translation: String,
+                                 temporarySource: Bool = false) -> String {
+        if temporarySource { return CaptionText.lensWindow(source, maximumBytes: 384) }
         if effectiveDisplayMode == .bilingual, !translation.isEmpty {
             // Give each language its own budget so tail truncation cannot erase one line.
             let first = CaptionText.lensWindow(source, maximumBytes: 180)
@@ -410,31 +437,43 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
         return CaptionText.lensWindow(composedDisplayText(source: source, translation: translation), maximumBytes: 384)
     }
     private func showDisplay(source: String, translation: String, partial: Bool,
-                             completed: Bool, sentence: Int) {
-        guard sentence >= displayedSentenceNumber, sentence > lastExpiredSentenceNumber else { return }
-        let visible = composedDisplayText(source: source, translation: translation)
+                             completed: Bool, sentence: Int,
+                             temporarySource: Bool = false) {
+        guard sentence >= displayedSentenceNumber, sentence > lastExpiredSentenceNumber else {
+            if completed { appendControl("display_state=late_result_ignored") }
+            return
+        }
+        let visible = composedDisplayText(source: source, translation: translation,
+                                          temporarySource: temporarySource)
         guard !visible.isEmpty else { return }
-        let visualChange = visible != displayText || sentence != displayedSentenceNumber || partial != displayIsPartial
+        let visualChange = visible != displayText || sentence != displayedSentenceNumber ||
+            partial != displayIsPartial || completed != hasCompletedDisplayPair ||
+            temporarySource != displayShowsTemporarySource
         displayedSentenceNumber = sentence
         displaySourceText = source
         displayTranslationText = translation
         displayText = visible
         displayIsPartial = partial
+        displayIsAwaitingTranslation = !partial && !completed && settings.translationEnabled
+        displayShowsTemporarySource = temporarySource
         hasCompletedDisplayPair = completed
         if visualChange {
-            displayExpiresAt = nil
+            displayCompletedAt = nil; displayExpiresAt = nil
             if completed { armDisplayExpiryIfNeeded() }
         }
         guard visualChange else { return }
-        pendingText = lensDisplayText(source: source, translation: translation)
-        appendControl("display_state=updated mode=\(effectiveDisplayMode.rawValue) pair=\(completed) partial=\(partial)")
+        pendingText = lensDisplayText(source: source, translation: translation,
+                                      temporarySource: temporarySource)
+        appendControl("display_state=updated mode=\(effectiveDisplayMode.rawValue) pair=\(completed) partial=\(partial) temporarySource=\(temporarySource)")
         pumpDisplay()
     }
     private func clearVisibleDisplay() {
         guard !displayText.isEmpty else { return }
         lastExpiredSentenceNumber = displayedSentenceNumber
         displaySourceText = ""; displayTranslationText = ""; displayText = ""
-        displayIsPartial = false; hasCompletedDisplayPair = false; displayExpiresAt = nil
+        displayIsPartial = false; displayIsAwaitingTranslation = false
+        hasCompletedDisplayPair = false; displayShowsTemporarySource = false
+        displayCompletedAt = nil; displayExpiresAt = nil
         // Type-5 requires a nonempty string. A single space requests a visually blank lens.
         pendingText = " "
         appendControl("display_state=expired")
@@ -443,14 +482,24 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
     private func refreshDisplayPreferences() {
         let signature = currentDisplayPreferencesSignature
         guard signature != displayPreferencesSignature else { return }
+        let retentionSignature = currentDisplayRetentionSignature
+        let retentionChanged = retentionSignature != displayRetentionSignature
         displayPreferencesSignature = signature
+        displayRetentionSignature = retentionSignature
         guard !displaySourceText.isEmpty || !displayTranslationText.isEmpty else { return }
-        let visible = composedDisplayText(source: displaySourceText, translation: displayTranslationText)
+        if !settings.showLiveSourceDuringTranslation { displayShowsTemporarySource = false }
+        let visible = composedDisplayText(source: displaySourceText,
+                                          translation: displayTranslationText,
+                                          temporarySource: displayShowsTemporarySource)
         displayText = visible
-        displayExpiresAt = nil
-        armDisplayExpiryIfNeeded()
-        pendingText = visible.isEmpty ? " " : lensDisplayText(source: displaySourceText, translation: displayTranslationText)
-        appendControl("display_state=preferences_changed mode=\(effectiveDisplayMode.rawValue)")
+        // A layout or live-source toggle keeps the original completion deadline.
+        // A retention edit recalculates from the first final display, never from
+        // the settings edit or from a repeat type-5 submission.
+        if retentionChanged, hasCompletedDisplayPair { updateDisplayExpiryFromCompletion() }
+        pendingText = visible.isEmpty ? " " : lensDisplayText(source: displaySourceText,
+                                                               translation: displayTranslationText,
+                                                               temporarySource: displayShowsTemporarySource)
+        appendControl("display_state=preferences_changed mode=\(effectiveDisplayMode.rawValue) retentionChanged=\(retentionChanged)")
         pumpDisplay()
     }
     private func appendControl(_ event: String) {
@@ -762,6 +811,13 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
         cloudReady = true; partial = value
         if final {
             if !value.isEmpty {
+                if options.service == .appleLocal, !reportedLanguageMismatch,
+                   let detected = LocalSubtitleLanguageDetection.detect(sampleText: value),
+                   LocalSubtitleLanguageDetection.differsFromConfiguredLocale(
+                       detected, configuredLocale: options.language) {
+                    reportedLanguageMismatch = true
+                    appendControl("asr_text_language_mismatch detected=\(detected.language.rawValue) configured=\(sourceIsChinese ? "chinese" : "english")")
+                }
                 // Recognition callbacks trail the spoken words. Keep a short lead-in
                 // from the first partial so tapping a sentence does not skip its start.
                 let seekBytes = firstPartialAudioBytes ?? max(0, audioBytes - 96_000)
@@ -774,6 +830,14 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
                 if !displayNeedsTranslationBeforeCommit {
                     showDisplay(source: value, translation: "", partial: false,
                                 completed: true, sentence: sentence)
+                } else if settings.showLiveSourceDuringTranslation ||
+                            (effectiveDisplayMode == .bilingual && sentence == 1 && !hasCompletedDisplayPair) {
+                    // Keep the recognized original visible while its final translation runs.
+                    // A newer partial owns the next sentence number, so a late translation
+                    // from this sentence cannot replace newer live speech.
+                    showDisplay(source: value, translation: "", partial: false,
+                                completed: false, sentence: sentence,
+                                temporarySource: !sourceCanShowWithoutTranslation)
                 }
                 queueTranslation(value, sentence: sentence, audioOffset: audioOffset)
             }
@@ -783,11 +847,20 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
             if firstPartialAudioBytes == nil {
                 firstPartialAudioBytes = max(0, audioBytes - 96_000)
             }
-            if sourceCanShowWithoutTranslation,
-                  (!hasCompletedDisplayPair || !displayNeedsTranslationBeforeCommit),
-                  (!displayNeedsTranslationBeforeCommit || pendingTranslations == 0) {
-                // Translation-dependent displays hold the completed pair until the next
-                // translation is ready. Source-only displays can advance with live speech.
+            if settings.showLiveSourceDuringTranslation && settings.translationEnabled {
+                // New live speech takes precedence over an older translated sentence.
+                // In translation-only mode the original is explicitly temporary; the
+                // final translation still replaces it in the selected language.
+                showDisplay(source: value, translation: "", partial: true,
+                            completed: false, sentence: sentenceNumber + 1,
+                            temporarySource: !sourceCanShowWithoutTranslation)
+            } else if sourceCanShowWithoutTranslation,
+                      (!displayNeedsTranslationBeforeCommit ||
+                       (sentenceNumber == 0 && lastExpiredSentenceNumber == 0 &&
+                        pendingTranslations == 0 && !hasCompletedDisplayPair)) {
+                // Strict translation mode allows the first bilingual utterance to
+                // appear while it is recognized. Later utterances wait for their
+                // translations even when the previous caption has timed out.
                 showDisplay(source: value, translation: "", partial: true,
                             completed: false, sentence: sentenceNumber + 1)
             }
@@ -888,8 +961,9 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
                 latency.resultSubmittedToGlasses(at: now)
             } catch { dropDisplayOnly(reason: "字幕文字未能发送", notifyGlasses: true) }
         }
-        if submitted, hasCompletedDisplayPair, text != " " {
-            displayExpiresAt = settings.displayRetention.seconds.map { now + $0 }
+        if submitted, hasCompletedDisplayPair, text != " ", displayCompletedAt == nil {
+            displayCompletedAt = now
+            updateDisplayExpiryFromCompletion()
         }
     }
     private func markGap(_ note: String) {
@@ -1051,6 +1125,7 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
         let controls = controlEvents.isEmpty ? "none" : controlEvents.joined(separator: "\n")
         let requestedDirection = active ? sessionPickupDirection : settings.pickupDirection
         let asrSummary = provider?.diagnosticSummary ?? lastASRDiagnosticSummary
-        return "Turbo IO 实时字幕\nphase=\(phase.rawValue) inputSource=\(sessionInputSource.rawValue) inputRouteType=\(inputRouteType ?? "none") displayOpening=\(displayOpening) displayReady=\(displayReady)\npackets=\(packets) pcmBytes=\(audioBytes) gaps=\(gaps)\nseqStrideChanges=\(sequenceJumps) maxSeqStep=\(maximumSequenceStep) discardedSeq=\(discardedSequencePackets)\nseqSteps=\(steps.isEmpty ? "none" : steps) otherSteps=\(otherSequenceSteps)\nmaxArrivalMs=\(maximumArrivalIntervalMilliseconds) maxDispatchMs=\(maximumDispatchDelayMilliseconds)\nASR=\(options.service.name) model=\(options.selectedModel) ready=\(cloudReady) directionRequested=\(requestedDirection.rawValue) translationEnabled=\(settings.translationEnabled) displayMode=\(effectiveDisplayMode.rawValue) retention=\(settings.displayRetention.rawValue)\n\(asrSummary)\ncontrolEvents:\n\(controls)\n不包含音频、正文、密钥、原始序号或设备标识。"
+        let retentionSeconds = settings.effectiveRetentionSeconds.map { String(format: "%.1f", $0) } ?? "next_sentence"
+        return "Turbo IO 实时字幕\nphase=\(phase.rawValue) inputSource=\(sessionInputSource.rawValue) inputRouteType=\(inputRouteType ?? "none") displayOpening=\(displayOpening) displayReady=\(displayReady)\npackets=\(packets) pcmBytes=\(audioBytes) gaps=\(gaps)\nseqStrideChanges=\(sequenceJumps) maxSeqStep=\(maximumSequenceStep) discardedSeq=\(discardedSequencePackets)\nseqSteps=\(steps.isEmpty ? "none" : steps) otherSteps=\(otherSequenceSteps)\nmaxArrivalMs=\(maximumArrivalIntervalMilliseconds) maxDispatchMs=\(maximumDispatchDelayMilliseconds)\nASR=\(options.service.name) model=\(options.selectedModel) ready=\(cloudReady) directionRequested=\(requestedDirection.rawValue) translationEnabled=\(settings.translationEnabled) translationQuality=\(sessionTranslationQuality.rawValue) displayMode=\(effectiveDisplayMode.rawValue) retention=\(settings.displayRetention.rawValue) retentionSeconds=\(retentionSeconds) liveSourceDuringTranslation=\(settings.showLiveSourceDuringTranslation)\n\(asrSummary)\ncontrolEvents:\n\(controls)\n不包含音频、正文、密钥、原始序号或设备标识。"
     }
 }

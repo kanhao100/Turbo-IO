@@ -38,8 +38,26 @@ enum SubtitleBilingualOrder: String, CaseIterable, Codable {
     }
 }
 
+enum SubtitleTranslationQuality: String, CaseIterable, Codable {
+    case lowLatency, highFidelity
+
+    var name: String {
+        switch self {
+        case .lowLatency: return "低延迟"
+        case .highFidelity: return "高保真"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .lowLatency: return "优先快速返回译文，适合实时对话。"
+        case .highFidelity: return "iOS 26.4 及支持 Apple Intelligence 的设备会优先使用高保真翻译，可能更慢；其他环境回退到低延迟。"
+        }
+    }
+}
+
 enum SubtitleDisplayRetention: String, CaseIterable, Codable {
-    case untilNextSentence, seconds3, seconds5, seconds10
+    case untilNextSentence, seconds3, seconds5, seconds10, custom
 
     var name: String {
         switch self {
@@ -47,6 +65,7 @@ enum SubtitleDisplayRetention: String, CaseIterable, Codable {
         case .seconds3: return "3 秒"
         case .seconds5: return "5 秒"
         case .seconds10: return "10 秒"
+        case .custom: return "自定义"
         }
     }
 
@@ -56,6 +75,7 @@ enum SubtitleDisplayRetention: String, CaseIterable, Codable {
         case .seconds3: return 3
         case .seconds5: return 5
         case .seconds10: return 10
+        case .custom: return nil
         }
     }
 }
@@ -64,6 +84,33 @@ private struct SubtitleDisplayPreferences: Codable {
     var mode: SubtitleDisplayMode
     var order: SubtitleBilingualOrder
     var retention: SubtitleDisplayRetention
+    var showLiveSourceDuringTranslation: Bool
+    var customRetentionSeconds: Double
+
+    init(mode: SubtitleDisplayMode, order: SubtitleBilingualOrder,
+         retention: SubtitleDisplayRetention, showLiveSourceDuringTranslation: Bool = true,
+         customRetentionSeconds: Double = 5) {
+        self.mode = mode
+        self.order = order
+        self.retention = retention
+        self.showLiveSourceDuringTranslation = showLiveSourceDuringTranslation
+        self.customRetentionSeconds = customRetentionSeconds
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case mode, order, retention, showLiveSourceDuringTranslation, customRetentionSeconds
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        mode = try container.decode(SubtitleDisplayMode.self, forKey: .mode)
+        order = try container.decode(SubtitleBilingualOrder.self, forKey: .order)
+        retention = try container.decode(SubtitleDisplayRetention.self, forKey: .retention)
+        showLiveSourceDuringTranslation = try container.decodeIfPresent(
+            Bool.self, forKey: .showLiveSourceDuringTranslation) ?? true
+        customRetentionSeconds = try container.decodeIfPresent(
+            Double.self, forKey: .customRetentionSeconds) ?? 5
+    }
 }
 
 protocol SubtitleCredentialStorage {
@@ -85,6 +132,7 @@ struct SubtitleKeychainStorage: SubtitleCredentialStorage {
     static let inputSourceKey = "companion.realtimeSubtitles.inputSource.v1"
     static let systemInputUIDKey = "companion.realtimeSubtitles.systemInputUID.v1"
     static let translationEnabledKey = "companion.realtimeSubtitles.translationEnabled.v1"
+    static let translationQualityKey = "companion.realtimeSubtitles.translationQuality.v1"
     static let showOnGlassesKey = "companion.realtimeSubtitles.showOnGlasses.v1"
     static let displayPreferencesKey = "companion.realtimeSubtitles.displayPreferences.v1"
     @Published private(set) var options: CaptionOptions
@@ -92,10 +140,16 @@ struct SubtitleKeychainStorage: SubtitleCredentialStorage {
     @Published private(set) var inputSource: SubtitleInputSource
     @Published private(set) var systemInputUID: String?
     @Published private(set) var translationEnabled: Bool
+    @Published private(set) var translationQuality: SubtitleTranslationQuality
     @Published private(set) var showOnGlasses: Bool
     @Published private(set) var displayMode: SubtitleDisplayMode
     @Published private(set) var bilingualOrder: SubtitleBilingualOrder
     @Published private(set) var displayRetention: SubtitleDisplayRetention
+    @Published private(set) var showLiveSourceDuringTranslation: Bool
+    @Published private(set) var customRetentionSeconds: Double
+    var effectiveRetentionSeconds: TimeInterval? {
+        displayRetention == .custom ? min(30, max(1, customRetentionSeconds)) : displayRetention.seconds
+    }
     @Published private(set) var hasKey = false
     @Published var error: String?
     var isBusy: (() -> Bool)?
@@ -118,6 +172,8 @@ struct SubtitleKeychainStorage: SubtitleCredentialStorage {
         inputSource = SubtitleInputSource(rawValue: defaults.string(forKey: Self.inputSourceKey) ?? "") ?? .glasses
         systemInputUID = defaults.string(forKey: Self.systemInputUIDKey)
         translationEnabled = defaults.bool(forKey: Self.translationEnabledKey)
+        translationQuality = SubtitleTranslationQuality(
+            rawValue: defaults.string(forKey: Self.translationQualityKey) ?? "") ?? .lowLatency
         showOnGlasses = defaults.object(forKey: Self.showOnGlassesKey) as? Bool ?? true
         let display = defaults.data(forKey: Self.displayPreferencesKey)
             .flatMap { try? JSONDecoder().decode(SubtitleDisplayPreferences.self, from: $0) }
@@ -125,6 +181,8 @@ struct SubtitleKeychainStorage: SubtitleCredentialStorage {
         displayMode = display.mode
         bilingualOrder = display.order
         displayRetention = display.retention
+        showLiveSourceDuringTranslation = display.showLiveSourceDuringTranslation
+        customRetentionSeconds = min(30, max(1, display.customRetentionSeconds))
         if let saved = defaults.data(forKey: Self.preferencesKey),
            let decoded = try? JSONDecoder().decode(CaptionOptions.self, from: saved) {
             options = decoded
@@ -165,6 +223,12 @@ struct SubtitleKeychainStorage: SubtitleCredentialStorage {
         guard allowsChanges, isBusy?() != true else { error = "请先结束当前会话，再修改本地翻译。"; return }
         translationEnabled = value; defaults.set(value, forKey: Self.translationEnabledKey); error = nil
     }
+    func saveTranslationQuality(_ value: SubtitleTranslationQuality) {
+        guard allowsChanges, isBusy?() != true else { error = "请先结束当前会话，再修改本地翻译策略。"; return }
+        translationQuality = value
+        defaults.set(value.rawValue, forKey: Self.translationQualityKey)
+        error = nil
+    }
     func saveShowOnGlasses(_ value: Bool) {
         guard allowsChanges, isBusy?() != true else { error = "请先结束当前会话，再修改字幕显示位置。"; return }
         showOnGlasses = value; defaults.set(value, forKey: Self.showOnGlassesKey); error = nil
@@ -172,15 +236,27 @@ struct SubtitleKeychainStorage: SubtitleCredentialStorage {
     @discardableResult func saveDisplayPreferences(
         mode: SubtitleDisplayMode,
         order: SubtitleBilingualOrder,
-        retention: SubtitleDisplayRetention
+        retention: SubtitleDisplayRetention,
+        showLiveSourceDuringTranslation: Bool? = nil,
+        customRetentionSeconds: Double? = nil
     ) -> Bool {
         guard allowsChanges else { error = "当前设备不能修改字幕显示设置。"; return false }
         do {
-            let value = SubtitleDisplayPreferences(mode: mode, order: order, retention: retention)
+            let liveSource = showLiveSourceDuringTranslation ?? self.showLiveSourceDuringTranslation
+            let customSeconds = customRetentionSeconds ?? self.customRetentionSeconds
+            guard customSeconds.isFinite, (1...30).contains(customSeconds) else {
+                error = "自定义停留时间须在 1 至 30 秒之间。"
+                return false
+            }
+            let value = SubtitleDisplayPreferences(mode: mode, order: order, retention: retention,
+                                                   showLiveSourceDuringTranslation: liveSource,
+                                                   customRetentionSeconds: customSeconds)
             defaults.set(try JSONEncoder().encode(value), forKey: Self.displayPreferencesKey)
             displayMode = mode
             bilingualOrder = order
             displayRetention = retention
+            self.showLiveSourceDuringTranslation = liveSource
+            self.customRetentionSeconds = customSeconds
             error = nil
             return true
         } catch {

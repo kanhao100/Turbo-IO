@@ -78,7 +78,7 @@ jobs:
           IPA_VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Info.plist")
           IPA_BUILD=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Info.plist")
           test "$IPA_VERSION" = "0.4.0"
-          test "$IPA_BUILD" = "19"
+          test "$IPA_BUILD" = "20"
           IPA_NAME="TurboIO-iOS26-v${IPA_VERSION}-build${IPA_BUILD}-unsigned.ipa"
           IPA_PATH="$OUTPUT/$IPA_NAME"
 

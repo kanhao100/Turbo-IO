@@ -23,14 +23,24 @@ struct SubtitleSettingsView: View {
     @State private var draftInputSource: SubtitleInputSource = .glasses
     @State private var draftInputUID = ""
     @State private var draftTranslationEnabled = false
+    @State private var draftTranslationQuality: SubtitleTranslationQuality = .lowLatency
     @State private var draftShowOnGlasses = true
     @State private var draftDisplayMode: SubtitleDisplayMode = .bilingual
     @State private var draftBilingualOrder: SubtitleBilingualOrder = .sourceFirst
     @State private var draftDisplayRetention: SubtitleDisplayRetention = .untilNextSentence
+    @State private var draftShowLiveSourceDuringTranslation = true
+    @State private var draftCustomRetentionSeconds = 5.0
+    @State private var advancedDisplayExpanded = false
     @State private var inputPorts: [SubtitleMicrophoneInput.Port] = []
     @State private var inputStatus = ""
     @State private var localModelStatus = ""
     @State private var translationStatus = ""
+    @State private var preparingTranslationDescription = ""
+    @State private var preparingTranslation = false
+    @State private var translationPreparationID: UUID?
+    @State private var sampleText = ""
+    @State private var sampleDetection: LocalSubtitleLanguageDetection.Result?
+    @State private var sampleDetectionStatus = ""
     @State private var translationConfiguration: TranslationSession.Configuration?
     private var busy: Bool {
         runtime.active || runtime.saving || voice.enabled || (voice.subtitleOwnsDisplay && !alwaysOn.activeTask)
@@ -106,6 +116,40 @@ struct SubtitleSettingsView: View {
                     Picker("识别语言", selection: $draft.language) {
                         Text("中文").tag("zh-CN"); Text("English · UK").tag("en-GB"); Text("English · US").tag("en-US")
                     }
+                    Text("准备模型仅为所选语言下载或检查资源，不会根据麦克风声音自动判断语种。中文与英语需要先选好识别语言。")
+                        .font(.caption).foregroundStyle(.secondary)
+                    DisclosureGroup("实验：用文字样本检查识别语言") {
+                        TextField("粘贴一段已经识别的文字（建议至少 20 个字或字母）", text: $sampleText,
+                                  axis: .vertical)
+                            .lineLimit(3...6)
+                            .accessibilityIdentifier("subtitle-language-sample")
+                        Button("检测文字语言") {
+                            sampleDetection = LocalSubtitleLanguageDetection.detect(sampleText: sampleText)
+                            sampleDetectionStatus = sampleDetection == nil
+                                ? "样本过短、不够明确，或不是支持的简体中文/英文。繁体中文不会自动映射为 zh-CN；请手动确认语言。当前设置未变。"
+                                : "检测完成；需要手动应用后才会更改识别语言。"
+                        }
+                        .accessibilityIdentifier("subtitle-detect-sample-language")
+                        if let result = sampleDetection {
+                            LabeledContent("文字语言", value: "\(result.language.name) · 约 \(Int(result.confidence * 100))% 置信度")
+                            if result.language == .english {
+                                Text(draft.language == "en-GB" || draft.language == "en-US"
+                                     ? "文字不能判断英式或美式口音；应用后沿用当前英语地区设置。"
+                                     : "文字不能判断英式或美式口音；应用后暂选 English · US，也可以在上方改为 English · UK。")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                            Button("应用到识别语言") {
+                                draft.language = result.suggestedLocale(currentLocale: draft.language)
+                                sampleDetectionStatus = "已选择 \(draft.language)；请点击完成或保存字幕设置。"
+                            }
+                            .accessibilityIdentifier("subtitle-apply-detected-language")
+                        }
+                        if !sampleDetectionStatus.isEmpty {
+                            Text(sampleDetectionStatus).font(.caption).foregroundStyle(.secondary)
+                        }
+                        Text("这里只判断粘贴文字的语言，不读取麦克风。文字无法判断英式或美式口音；英语地区沿用当前选择。实时收音不会自动切换模型。")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
                     if draft.service != .appleLocal {
                         SecureField(settings.hasKey(for: draft) ? "已保存密钥，留空保留" : "填写自己的 API Key", text: $key)
                             .textInputAutocapitalization(.never).autocorrectionDisabled().accessibilityIdentifier("subtitle-api-key")
@@ -116,6 +160,8 @@ struct SubtitleSettingsView: View {
                         .accessibilityIdentifier("subtitle-local-translation")
                         .disabled(busy)
                     Text(translationPairDescription).font(.caption).foregroundStyle(.secondary)
+                    Text("“准备翻译语言包”仅检查当前选择的固定语言对与翻译策略，不会从声音中自动判断源语言。")
+                        .font(.caption).foregroundStyle(.secondary)
                     Picker("字幕语言", selection: $draftDisplayMode) {
                         ForEach(SubtitleDisplayMode.allCases, id: \.self) { mode in
                             Text(mode.name).tag(mode)
@@ -130,29 +176,74 @@ struct SubtitleSettingsView: View {
                         }
                         .accessibilityIdentifier("subtitle-bilingual-order")
                     }
-                    Picker("最终字幕停留", selection: $draftDisplayRetention) {
-                        ForEach(SubtitleDisplayRetention.allCases, id: \.self) { retention in
-                            Text(retention.name).tag(retention)
-                        }
-                    }
-                    .accessibilityIdentifier("subtitle-display-retention")
                     Text(draftTranslationEnabled
-                         ? "选择原文语言时可显示临时识别结果；译文在一句话结束后生成。最终字幕按所选时长停留。"
+                         ? "默认在识别中临时显示原文，即使最终选择“只看中文/英文”；译文完成后替换。需要严格单语时，可在产品测试选项中关闭流式原文。"
                          : "翻译关闭时，字幕语言须与识别语言一致；中英混合需要开启翻译。")
                         .font(.caption).foregroundStyle(.secondary)
                     if draftTranslationEnabled {
-                        Button("准备翻译语言包") { prepareTranslationLanguages() }
+                        Button(preparingTranslation ? "正在准备翻译语言包…" : "准备翻译语言包") {
+                            prepareTranslationLanguages()
+                        }
                             .accessibilityIdentifier("subtitle-prepare-translation")
-                            .disabled(busy)
+                            .disabled(busy || preparingTranslation)
                         if !translationStatus.isEmpty { Text(translationStatus).font(.caption).foregroundStyle(.secondary) }
                     }
                 }.disabled(!settings.allowsChanges)
+                Section {
+                    DisclosureGroup("实验：翻译与字幕时序（产品测试）", isExpanded: $advancedDisplayExpanded) {
+                        Picker("本机翻译策略", selection: $draftTranslationQuality) {
+                            ForEach(SubtitleTranslationQuality.allCases, id: \.self) { quality in
+                                Text(quality.name).tag(quality)
+                            }
+                        }
+                        .disabled(!draftTranslationEnabled || busy)
+                        .accessibilityIdentifier("subtitle-translation-quality")
+                        Text(draftTranslationQuality.detail)
+                            .font(.caption).foregroundStyle(.secondary)
+                        Toggle("新一句开始时显示流式原文", isOn: $draftShowLiveSourceDuringTranslation)
+                            .accessibilityIdentifier("subtitle-advanced-live-source")
+                        Text("开启后，即使只看译文，新一句流式原文也会覆盖上一句译文；本句识别完成后继续保留原文，直到译文返回并替换。关闭后优先保留上一句；首句混合模式仍显示已识别原文。")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Picker("最终字幕停留", selection: $draftDisplayRetention) {
+                            ForEach(SubtitleDisplayRetention.allCases, id: \.self) { retention in
+                                Text(retention.name).tag(retention)
+                            }
+                        }
+                        .accessibilityIdentifier("subtitle-display-retention")
+                        if draftDisplayRetention == .custom {
+                            HStack {
+                                Text("自定义时长")
+                                Spacer()
+                                Text("\(Int(draftCustomRetentionSeconds)) 秒")
+                                    .monospacedDigit().foregroundStyle(.secondary)
+                            }
+                            Slider(value: $draftCustomRetentionSeconds, in: 1...30, step: 1)
+                                .accessibilityLabel("最终字幕自定义停留秒数")
+                                .accessibilityIdentifier("subtitle-custom-retention-seconds")
+                        }
+                        Text("停留计时从最终字幕出现时开始；开启流式原文时，新一句会提前替换。选择“直到下一句”则保持最后一句，直到后续可显示的字幕出现。")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Button("恢复显示时序默认值") {
+                            draftShowLiveSourceDuringTranslation = true
+                            draftDisplayRetention = .untilNextSentence
+                            draftCustomRetentionSeconds = 5
+                        }
+                        .accessibilityIdentifier("subtitle-advanced-reset")
+                    }
+                } header: {
+                    Label("产品测试选项", systemImage: "slider.horizontal.3")
+                } footer: {
+                    Text("翻译策略会影响译文质量、耗时及设备资源；显示选项只改变字幕何时出现和消失。")
+                }
+                .disabled(!settings.allowsChanges)
                 Section("显示预览") {
                     SubtitleDisplayPreview(language: draft.language,
                                            translationEnabled: draftTranslationEnabled,
                                            mode: draftDisplayMode,
                                            order: draftBilingualOrder,
-                                           retention: draftDisplayRetention)
+                                           retention: draftDisplayRetention,
+                                           customRetentionSeconds: draftCustomRetentionSeconds,
+                                           showLiveSourceDuringTranslation: draftShowLiveSourceDuringTranslation)
                 }
                 if draftInputSource == .glasses { Section("实时字幕收音方向") {
                     Picker("收音范围", selection: Binding(
@@ -237,10 +328,13 @@ struct SubtitleSettingsView: View {
                 draftInputSource = settings.inputSource
                 draftInputUID = settings.systemInputUID ?? ""
                 draftTranslationEnabled = settings.translationEnabled
+                draftTranslationQuality = settings.translationQuality
                 draftShowOnGlasses = settings.showOnGlasses
                 draftDisplayMode = settings.translationEnabled ? settings.displayMode : sourceOnlyMode
                 draftBilingualOrder = settings.bilingualOrder
                 draftDisplayRetention = settings.displayRetention
+                draftShowLiveSourceDuringTranslation = settings.showLiveSourceDuringTranslation
+                draftCustomRetentionSeconds = settings.customRetentionSeconds
             }
             .onChange(of: draft.service) { _ in key = ""; saved = false }
             .onChange(of: draft) { _ in saved = false }
@@ -251,21 +345,39 @@ struct SubtitleSettingsView: View {
                 saved = false
                 if !enabled { draftDisplayMode = sourceOnlyMode }
             }
+            .onChange(of: draftTranslationQuality) { _ in saved = false; translationStatus = "" }
             .onChange(of: draft.language) { _ in
+                localModelStatus = ""
+                translationStatus = ""
                 if !draftTranslationEnabled { draftDisplayMode = sourceOnlyMode }
             }
             .onChange(of: draftShowOnGlasses) { _ in saved = false }
             .onChange(of: draftDisplayMode) { _ in saved = false }
             .onChange(of: draftBilingualOrder) { _ in saved = false }
             .onChange(of: draftDisplayRetention) { _ in saved = false }
+            .onChange(of: sampleText) { _ in sampleDetection = nil; sampleDetectionStatus = "" }
+            .onChange(of: draftShowLiveSourceDuringTranslation) { _ in saved = false }
+            .onChange(of: draftCustomRetentionSeconds) { _ in saved = false }
             .translationTask(translationConfiguration) { session in
                 #if COMPANION_DEVICE
+                guard let requestID = translationPreparationID else { return }
+                let requested = preparingTranslationDescription
                 do {
                     try await AppleCaptionTranslation.prepare(session: session)
-                    translationStatus = "翻译语言包已就绪"
-                } catch { translationStatus = "语言包准备失败：\(error.localizedDescription)" }
+                    guard translationPreparationID == requestID else { return }
+                    let current = "\(translationPair.source) → \(translationPair.target)（\(draftTranslationQuality.name)）"
+                    translationStatus = requested == current
+                        ? "\(requested) 语言包已就绪；该操作不会识别麦克风语种。"
+                        : "\(requested) 语言包已就绪；当前已选 \(current)，请为当前配置重新准备。"
+                } catch {
+                    guard translationPreparationID == requestID else { return }
+                    translationStatus = "\(requested) 语言包准备失败：\(error.localizedDescription)"
+                }
+                guard translationPreparationID == requestID else { return }
                 #endif
                 translationConfiguration = nil
+                preparingTranslation = false
+                translationPreparationID = nil
             }
             .confirmationDialog("全天智记正在运行，何时应用新服务设置？", isPresented: $confirmApply) {
                 Button("立即应用并重连 ASR") { applyAlwaysOn(.immediately) }
@@ -287,7 +399,9 @@ struct SubtitleSettingsView: View {
         }
         if !hasSpeechOrInputChanges {
             saved = !hasDisplayPreferenceChanges || settings.saveDisplayPreferences(
-                mode: draftDisplayMode, order: draftBilingualOrder, retention: draftDisplayRetention)
+                mode: draftDisplayMode, order: draftBilingualOrder, retention: draftDisplayRetention,
+                showLiveSourceDuringTranslation: draftShowLiveSourceDuringTranslation,
+                customRetentionSeconds: draftCustomRetentionSeconds)
             finishSave()
         } else if alwaysOn.activeTask && !busy && settings.allowsChanges {
             confirmApply = true
@@ -302,7 +416,9 @@ struct SubtitleSettingsView: View {
 
     private var hasDisplayPreferenceChanges: Bool {
         draftDisplayMode != settings.displayMode || draftBilingualOrder != settings.bilingualOrder ||
-            draftDisplayRetention != settings.displayRetention
+            draftDisplayRetention != settings.displayRetention ||
+            draftShowLiveSourceDuringTranslation != settings.showLiveSourceDuringTranslation ||
+            draftCustomRetentionSeconds != settings.customRetentionSeconds
     }
 
     private var hasSpeechOrInputChanges: Bool {
@@ -312,7 +428,8 @@ struct SubtitleSettingsView: View {
         stored.idleSeconds = 0
         return requested != stored || !key.isEmpty || draftInputSource != settings.inputSource ||
             (draftInputSource == .systemMicrophone && draftInputUID != (settings.systemInputUID ?? "")) ||
-            draftTranslationEnabled != settings.translationEnabled || draftShowOnGlasses != settings.showOnGlasses
+            draftTranslationEnabled != settings.translationEnabled || draftShowOnGlasses != settings.showOnGlasses ||
+            draftTranslationQuality != settings.translationQuality
     }
 
     private func validateDisplaySelection() -> Bool {
@@ -360,11 +477,17 @@ struct SubtitleSettingsView: View {
     }
     private func prepareLocalModel() {
         #if COMPANION_DEVICE
-        localModelStatus = "正在准备所选语言的本机模型…"
+        let selectedLanguage = draft.language
+        localModelStatus = "正在准备 \(selectedLanguage) 本机识别模型…"
         Task {
             do {
-                try await AppleLocalCaptionASR.prepare(localeIdentifier: draft.language)
-                localModelStatus = "本机识别模型已就绪"
+                let matchedLanguage = await AppleLocalCaptionASR.matchedLocaleIdentifier(
+                    localeIdentifier: selectedLanguage)
+                try await AppleLocalCaptionASR.prepare(localeIdentifier: selectedLanguage)
+                let prepared = "\(selectedLanguage) 模型已就绪；系统实际匹配 \(matchedLanguage ?? selectedLanguage)。"
+                localModelStatus = draft.language == selectedLanguage
+                    ? prepared + "不检测麦克风语种。"
+                    : prepared + "当前已选 \(draft.language)，请为当前语言重新准备。"
             } catch { localModelStatus = "模型不可用：\(error.localizedDescription)" }
         }
         #else
@@ -373,9 +496,14 @@ struct SubtitleSettingsView: View {
     }
     private func prepareTranslationLanguages() {
         #if COMPANION_DEVICE
-        translationStatus = "正在检查翻译语言包…"
+        guard !preparingTranslation else { return }
+        preparingTranslation = true
+        translationPreparationID = UUID()
+        let pair = translationPair
+        preparingTranslationDescription = "\(pair.source) → \(pair.target)（\(draftTranslationQuality.name)）"
+        translationStatus = "正在准备 \(preparingTranslationDescription) 语言包…"
         translationConfiguration = AppleCaptionTranslation.configuration(
-            source: translationPair.source, target: translationPair.target)
+            source: pair.source, target: pair.target, quality: draftTranslationQuality)
         #else
         translationStatus = "本地预览不准备真机语言包。"
         #endif
@@ -385,10 +513,14 @@ struct SubtitleSettingsView: View {
         guard settings.error == nil else { return false }
         settings.saveTranslationEnabled(draftTranslationEnabled)
         guard settings.error == nil else { return false }
+        settings.saveTranslationQuality(draftTranslationQuality)
+        guard settings.error == nil else { return false }
         settings.saveShowOnGlasses(draftShowOnGlasses)
         guard settings.error == nil else { return false }
         return settings.saveDisplayPreferences(mode: draftDisplayMode, order: draftBilingualOrder,
-                                               retention: draftDisplayRetention)
+                                               retention: draftDisplayRetention,
+                                               showLiveSourceDuringTranslation: draftShowLiveSourceDuringTranslation,
+                                               customRetentionSeconds: draftCustomRetentionSeconds)
     }
     private func saveDraft() {
         saved = settings.save(draft, key: key)
@@ -415,14 +547,17 @@ private struct SubtitleDisplayPreview: View {
     let mode: SubtitleDisplayMode
     let order: SubtitleBilingualOrder
     let retention: SubtitleDisplayRetention
+    let customRetentionSeconds: Double
+    let showLiveSourceDuringTranslation: Bool
 
     private enum Scenario: String, CaseIterable {
-        case normal, secondTranslationFails
+        case normal, rapidTurns, secondTranslationFails
 
         var name: String {
             switch self {
-            case .normal: return "正常翻译"
-            case .secondTranslationFails: return "第二句翻译失败"
+            case .normal: return "连续对话"
+            case .rapidTurns: return "快速插话"
+            case .secondTranslationFails: return "译文失败"
             }
         }
     }
@@ -438,7 +573,10 @@ private struct SubtitleDisplayPreview: View {
     @State private var playhead: Double = 8.6
     @State private var playing = false
     @State private var lastTick: Date?
-    private let duration: Double = 29
+    private var retentionSeconds: Double? {
+        retention == .custom ? min(30, max(1, customRetentionSeconds)) : retention.seconds
+    }
+    private var duration: Double { max(29, 23 + (retentionSeconds ?? 0)) }
 
     var body: some View {
         let state = previewState(at: playhead)
@@ -521,7 +659,7 @@ private struct SubtitleDisplayPreview: View {
                 .buttonStyle(.bordered)
                 .accessibilityIdentifier("subtitle-preview-replay")
             }
-            Text("预览仅演示语言选择、顺序和停留时间；眼镜排版以真机为准。不会启动麦克风、转写或翻译服务。")
+            Text("示例演示临时原文、译文等待、下一句覆盖和停留时间。翻译返回时间是固定示例，不代表低延迟或高保真策略的实测耗时。眼镜排版以真机为准；不会启动麦克风、转写或翻译服务。")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         }
@@ -531,6 +669,10 @@ private struct SubtitleDisplayPreview: View {
             lastTick = tick
             playhead = min(duration, playhead + elapsed)
             if playhead >= duration { playing = false; lastTick = nil }
+        }
+        .onChange(of: duration) { newDuration in
+            playhead = min(playhead, newDuration)
+            if playhead >= newDuration { playing = false; lastTick = nil }
         }
     }
 
@@ -556,13 +698,21 @@ private struct SubtitleDisplayPreview: View {
     private var secondTranslation: String {
         sourceIsChinese ? "Wait, the car on the left is turning." : "等一下，左边那辆车正在转弯。"
     }
+    private var thirdSource: String {
+        sourceIsChinese ? "好，我已经看到了，我们从后面绕过去。" :
+            "Okay, I see it now. Let's go around behind it."
+    }
+    private var thirdTranslation: String {
+        sourceIsChinese ? "Okay, I see it now. Let's go around behind it." :
+            "好，我已经看到了，我们从后面绕过去。"
+    }
 
     private func previewState(at time: Double) -> PreviewState {
         if time < 0.8 {
             return PreviewState(caption: "", status: "待播放", explanation: "播放或拖动进度，查看长句识别、翻译延迟及下一句切换。", isPartial: false)
         }
         if time < 6 {
-            let caption = sourceOnly || bilingual
+            let caption = sourceOnly || bilingual || showLiveSourceDuringTranslation
                 ? partial(firstSource, progress: (time - 0.8) / 5.2) : ""
             return PreviewState(caption: caption, status: caption.isEmpty ? "等待译文" : "临时识别",
                                 explanation: "第一位说话者说出较长的句子；临时识别会逐步修订。", isPartial: !caption.isEmpty)
@@ -572,10 +722,12 @@ private struct SubtitleDisplayPreview: View {
                 return finalized(firstSource, completedAt: 6, now: time,
                                  explanation: "第一句识别完成；所选语言就是识别原文。")
             }
-            let caption = bilingual ? partial(firstSource, progress: 0.98) : ""
+            let caption = bilingual || showLiveSourceDuringTranslation ? firstSource : ""
             return PreviewState(caption: caption, status: caption.isEmpty ? "等待译文" : "翻译中",
-                                explanation: "第一句已识别，译文还未生成；只看译文时不会闪出原文。",
-                                isPartial: !caption.isEmpty)
+                                explanation: caption.isEmpty
+                                    ? "第一句已识别，译文还未生成；当前设置等待译文。"
+                                    : "第一句已识别，译文还未生成；本句完整原文继续显示。",
+                                isPartial: false)
         }
         let firstCompleted = composed(source: firstSource, translation: firstTranslation)
         if time < 10 {
@@ -586,20 +738,48 @@ private struct SubtitleDisplayPreview: View {
                             explanation: "第一句译文生成，按所选语言和混合顺序显示。")
         }
         if time < 14 {
-            if sourceOnly {
+            if sourceOnly || showLiveSourceDuringTranslation {
                 return PreviewState(caption: partial(secondSource, progress: (time - 10) / 4),
                                     status: "临时识别",
-                                    explanation: "第二位说话者开始；只看识别原文时立即跟随新一句。", isPartial: true)
+                                    explanation: "第二位说话者开始；新一句原文逐步覆盖上一句译文。", isPartial: true)
             }
             return finalized(firstCompleted, completedAt: 8.4, now: time,
                              explanation: "第二位说话者开始；当前模式保留上一句，等待新译文。")
         }
         if time < 16.4 {
-            return sourceOnly
+            return sourceOnly || showLiveSourceDuringTranslation
                 ? finalized(secondSource, completedAt: 14, now: time,
-                            explanation: "第二句识别完成，开始按所选时长停留。")
+                            explanation: "第二句识别完成；本句原文保留到译文返回。",
+                            awaitingTranslation: !sourceOnly)
                 : finalized(firstCompleted, completedAt: 8.4, now: time,
                             explanation: "第二句已识别，新译文仍在生成；上一句继续停留或到时清空。")
+        }
+        if scenario == .rapidTurns && time >= 17.4 {
+            let secondCompleted = composed(source: secondSource, translation: secondTranslation)
+            if time < 20.4 {
+                if sourceOnly || showLiveSourceDuringTranslation {
+                    return PreviewState(caption: partial(thirdSource, progress: (time - 17.4) / 3),
+                                        status: "临时识别",
+                                        explanation: "第三位说话者很快插话；原文立即更新，而非等待整句翻译。",
+                                        isPartial: true)
+                }
+                return finalized(secondCompleted, completedAt: 16.4, now: time,
+                                 explanation: "快速插话发生；当前设置继续显示上一句译文。")
+            }
+            if time < 22.4 {
+                return sourceOnly || showLiveSourceDuringTranslation
+                    ? finalized(thirdSource, completedAt: 20.4, now: time,
+                                explanation: "第三句已识别，原文保留直到译文返回。",
+                                awaitingTranslation: !sourceOnly)
+                    : finalized(secondCompleted, completedAt: 16.4, now: time,
+                                explanation: "第三句译文生成中；上一句仍按停留时间显示。")
+            }
+            return sourceOnly
+                ? finalized(thirdSource, completedAt: 20.4, now: time,
+                            explanation: "第三句原文按停留时间显示。")
+                : finalized(composed(source: thirdSource, translation: thirdTranslation),
+                            completedAt: 22.4, now: time,
+                            explanation: "第三句译文返回；立即替换暂显原文，开始最终字幕停留计时。")
         }
         if sourceOnly {
             return finalized(secondSource, completedAt: 14, now: time,
@@ -613,7 +793,9 @@ private struct SubtitleDisplayPreview: View {
             return finalized(fallback, completedAt: 16.4, now: time,
                              explanation: bilingual
                                 ? "第二句翻译失败；混合模式只显示已识别原文。"
-                                : "第二句翻译失败；仅用所选语言显示状态，不闪出原文。")
+                                : (showLiveSourceDuringTranslation
+                                   ? "第二句翻译失败；临时原文结束后，换成所选语言的失败提示。"
+                                   : "第二句翻译失败；仅用所选语言显示失败提示。"))
         }
         return finalized(composed(source: secondSource, translation: secondTranslation),
                          completedAt: 16.4, now: time,
@@ -621,13 +803,14 @@ private struct SubtitleDisplayPreview: View {
     }
 
     private func finalized(_ caption: String, completedAt: Double, now: Double,
-                           explanation: String) -> PreviewState {
-        if let seconds = retention.seconds, now >= completedAt + seconds {
+                           explanation: String, awaitingTranslation: Bool = false) -> PreviewState {
+        if !awaitingTranslation, let seconds = retentionSeconds, now >= completedAt + seconds {
             return PreviewState(caption: "", status: "已清空",
                                 explanation: "最终字幕显示 \(Int(seconds)) 秒后清空；下一句生成时会重新显示。",
                                 isPartial: false)
         }
-        return PreviewState(caption: caption, status: "最终字幕", explanation: explanation, isPartial: false)
+        return PreviewState(caption: caption, status: awaitingTranslation ? "翻译中" : "最终字幕",
+                            explanation: explanation, isPartial: false)
     }
 
     private func composed(source: String, translation: String) -> String {

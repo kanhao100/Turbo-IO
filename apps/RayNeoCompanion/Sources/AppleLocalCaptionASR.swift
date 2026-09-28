@@ -67,6 +67,15 @@ import Speech
         "appleASRPendingBytes=\(pendingPCMBytes) appleASRDropped=\(droppedAnalyzerInputs)"
     }
 
+    /// Reports the actual locale selected by SpeechTranscriber for the fixed
+    /// user setting. This is a support lookup, not spoken-language detection.
+    static func matchedLocaleIdentifier(localeIdentifier: String) async -> String? {
+        guard SpeechTranscriber.isAvailable,
+              let locale = await SpeechTranscriber.supportedLocale(
+                equivalentTo: Locale(identifier: localeIdentifier)) else { return nil }
+        return locale.identifier
+    }
+
     static func readiness(localeIdentifier: String) async -> Readiness {
         guard SpeechTranscriber.isAvailable else { return .unavailable }
         guard let locale = await SpeechTranscriber.supportedLocale(

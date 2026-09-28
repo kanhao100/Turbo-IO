@@ -103,6 +103,8 @@ struct RealtimeSubtitlesView: View {
                         .accessibilityIdentifier("realtime-display-text")
                     if runtime.displayIsPartial {
                         Text("识别中 · 内容可能修订").font(.caption).foregroundStyle(Palette.muted)
+                    } else if runtime.displayIsAwaitingTranslation {
+                        Text("原文已识别 · 正在翻译").font(.caption).foregroundStyle(Palette.muted)
                     }
                 }
                 if runtime.gaps > 0 { Label("检测到 \(runtime.gaps) 处音频缺口，已记录到历史", systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(Palette.amber) }

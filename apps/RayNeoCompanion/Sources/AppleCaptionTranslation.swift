@@ -34,16 +34,27 @@ import Translation
 
     private let session: TranslationSession
 
-    init(source: String, target: String) {
-        session = TranslationSession(
-            installedSource: Locale.Language(identifier: source),
-            target: Locale.Language(identifier: target))
-    }
-
-    static func readiness(source: String, target: String) async -> Readiness {
+    init(source: String, target: String, quality: SubtitleTranslationQuality = .lowLatency) {
         let from = Locale.Language(identifier: source)
         let to = Locale.Language(identifier: target)
-        let availability = LanguageAvailability()
+        if #available(iOS 26.4, *) {
+            session = TranslationSession(installedSource: from, target: to,
+                                         preferredStrategy: Self.strategy(for: quality))
+        } else {
+            session = TranslationSession(installedSource: from, target: to)
+        }
+    }
+
+    static func readiness(source: String, target: String,
+                          quality: SubtitleTranslationQuality = .lowLatency) async -> Readiness {
+        let from = Locale.Language(identifier: source)
+        let to = Locale.Language(identifier: target)
+        let availability: LanguageAvailability
+        if #available(iOS 26.4, *) {
+            availability = LanguageAvailability(preferredStrategy: strategy(for: quality))
+        } else {
+            availability = LanguageAvailability()
+        }
         switch await availability.status(from: from, to: to) {
         case .installed: return .ready
         case .supported: return .needsDownload
@@ -54,10 +65,23 @@ import Translation
 
     /// Pass this to `.translationTask(configuration)` in a visible settings view.
     /// A directly initialized TranslationSession cannot request new downloads.
-    static func configuration(source: String, target: String) -> TranslationSession.Configuration {
-        TranslationSession.Configuration(
-            source: Locale.Language(identifier: source),
-            target: Locale.Language(identifier: target))
+    static func configuration(source: String, target: String,
+                              quality: SubtitleTranslationQuality = .lowLatency) -> TranslationSession.Configuration {
+        let from = Locale.Language(identifier: source)
+        let to = Locale.Language(identifier: target)
+        if #available(iOS 26.4, *) {
+            return TranslationSession.Configuration(source: from, target: to,
+                                                    preferredStrategy: strategy(for: quality))
+        }
+        return TranslationSession.Configuration(source: from, target: to)
+    }
+
+    @available(iOS 26.4, *)
+    private static func strategy(for quality: SubtitleTranslationQuality) -> TranslationSession.Strategy {
+        switch quality {
+        case .lowLatency: return .lowLatency
+        case .highFidelity: return .highFidelity
+        }
     }
 
     static func prepare(session: TranslationSession) async throws {
