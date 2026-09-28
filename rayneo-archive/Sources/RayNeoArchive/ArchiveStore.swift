@@ -1,6 +1,6 @@
 import Foundation
 
-enum TransactionCheckpoint: Sendable { case sourceChunkCopied, journalDurable, filePublished, manifestPublished }
+enum TransactionCheckpoint: Sendable { case sourceChunkCopied, journalDurable, filePublished, manifestPublished, fileRemoved }
 
 /// A local, source-preserving archive. It does not contact glasses, decode audio, recognize speech, or upload.
 /// The host must keep security-scoped URLs accessible for the duration of each call.
@@ -127,6 +127,36 @@ public actor ArchiveStore {
         }
     }
 
+    /// Remove one whole archived recording and its registered Markdown revisions.
+    /// The original imported source and separately exported snapshots are never touched.
+    /// Once the delete journal is durable, `recover()` resumes cleanup if the remaining files still match.
+    public func deleteRecording(_ id: UUID) throws -> ArchiveDeletionReceipt {
+        try files.locked {
+            var manifest = try loadAndRecover().manifest
+            guard let recording = manifest.recordings.first(where: { $0.id == id }) else {
+                throw ArchiveError.recordingNotFound
+            }
+            try verifyDeletionContents(recording)
+            let beforeData = try encodeManifest(manifest)
+            let mutation = Mutation.deleted(recording)
+            try apply(mutation, to: &manifest)
+            let afterData = try encodeManifest(manifest)
+            let transactionID = UUID()
+            let stem = transactionID.uuidString.lowercased()
+            var journalPrepared = false
+            do {
+                try commitDeletion(recording: recording, transactionID: transactionID,
+                                   manifestBeforeSHA256: digest(beforeData), manifestData: afterData,
+                                   prepared: &journalPrepared)
+                let notes = recording.transcripts.reduce(Int64(0)) { $0 + $1.byteCount }
+                return ArchiveDeletionReceipt(recordingID: id, audioBytes: recording.byteCount, noteBytes: notes)
+            } catch {
+                if !journalPrepared { cleanupUnprepared(stem) }
+                throw error
+            }
+        }
+    }
+
     /// Resume only valid, bounded journals. Unjournaled leftovers are reported and retained.
     public func recover() throws -> RecoveryReport {
         try files.locked { try loadAndRecover().report }
@@ -206,11 +236,13 @@ public actor ArchiveStore {
         return data
     }
 
-    private func loadManifest() throws -> Manifest {
-        guard let data = try files.readSmall(in: files.root.value, name: "manifest.json", limit: limits.maximumManifestBytes) else { return Manifest() }
+    private func loadManifest() throws -> (manifest: Manifest, exists: Bool) {
+        guard let data = try files.readSmall(in: files.root.value, name: "manifest.json", limit: limits.maximumManifestBytes) else {
+            return (Manifest(), false)
+        }
         guard let manifest = try? JSONDecoder().decode(Manifest.self, from: data) else { throw ArchiveError.invalidManifest }
         try validate(manifest)
-        return manifest
+        return (manifest, true)
     }
 
     private func validate(_ manifest: Manifest) throws {
@@ -260,16 +292,25 @@ public actor ArchiveStore {
                 guard revision.number == manifest.recordings[index].transcripts.count + 1 else { throw ArchiveError.invalidJournal }
                 manifest.recordings[index].transcripts.append(revision)
             }
+        case .deleted(let recording):
+            // The missing case is needed only after the delete manifest was published.
+            try validate(Manifest(recordings: [recording]))
+            if let index = manifest.recordings.firstIndex(where: { $0.id == recording.id }) {
+                guard manifest.recordings[index] == recording else { throw ArchiveError.invalidJournal }
+                manifest.recordings.remove(at: index)
+            }
         }
         try validate(manifest)
     }
 
-    private func destination(_ mutation: Mutation) -> (directory: Int32, filename: String, sha256: String, size: Int64, limit: Int64) {
+    private func destination(_ mutation: Mutation) throws -> (directory: Int32, filename: String, sha256: String, size: Int64, limit: Int64) {
         switch mutation {
         case .imported(let recording):
             return (files.audio.value, recording.audioFilename, recording.sha256, recording.byteCount, limits.maximumFileBytes)
         case .transcript(let recordingID, let revision):
             return (files.notes.value, revision.filename(recordingID: recordingID), revision.noteSHA256, revision.byteCount, maximumNoteBytes)
+        case .deleted:
+            throw ArchiveError.invalidJournal
         }
     }
 
@@ -281,7 +322,7 @@ public actor ArchiveStore {
         prepared = true
         try checkpoint?(.journalDurable)
         try Task.checkCancellation()
-        let target = destination(mutation)
+        let target = try destination(mutation)
         try files.publish(stageName: stem + ".blob", to: target.directory, filename: target.filename)
         try checkpoint?(.filePublished)
         try Task.checkCancellation()
@@ -292,8 +333,51 @@ public actor ArchiveStore {
         try cleanupCommitted(stem)
     }
 
+    private func verifyDeletionContents(_ recording: ArchivedRecording) throws {
+        try verifyAudio(recording)
+        for revision in recording.transcripts { try verifyNote(revision, recordingID: recording.id) }
+    }
+
+    private func removeDeletionContents(_ recording: ArchivedRecording) throws {
+        try files.removeVerified(in: files.audio.value, name: recording.audioFilename,
+                                 sha256: recording.sha256, size: recording.byteCount, limit: limits.maximumFileBytes)
+        for revision in recording.transcripts {
+            try files.removeVerified(in: files.notes.value, name: revision.filename(recordingID: recording.id),
+                                     sha256: revision.noteSHA256, size: revision.byteCount, limit: maximumNoteBytes)
+        }
+        // Make even previously completed unlinks durable before the journal is retired.
+        try ArchiveFileSystem.synchronize(files.audio.value)
+        try ArchiveFileSystem.synchronize(files.notes.value)
+    }
+
+    private var maximumJournalBytes: Int { limits.maximumManifestBytes + 8_192 }
+
+    private func commitDeletion(recording: ArchivedRecording, transactionID: UUID,
+                                manifestBeforeSHA256: String, manifestData: Data, prepared: inout Bool) throws {
+        let stem = transactionID.uuidString.lowercased()
+        let journal = Journal(transactionID: transactionID, mutation: .deleted(recording),
+                              deletionManifestBeforeSHA256: manifestBeforeSHA256,
+                              deletionManifestAfterSHA256: digest(manifestData))
+        let journalData = try encoder().encode(journal)
+        guard journalData.count <= maximumJournalBytes else { throw ArchiveError.manifestSizeLimitExceeded }
+        try files.writeExclusive(journalData, name: stem + ".journal")
+        try ArchiveFileSystem.synchronize(files.staging.value)
+        prepared = true
+        try checkpoint?(.journalDurable)
+        try Task.checkCancellation()
+        try files.writeExclusive(manifestData, name: stem + ".manifest")
+        try files.replaceManifest(stageName: stem + ".manifest")
+        try checkpoint?(.manifestPublished)
+        try Task.checkCancellation()
+        try removeDeletionContents(recording)
+        try checkpoint?(.fileRemoved)
+        try cleanupCommitted(stem)
+    }
+
     private func loadAndRecover() throws -> (manifest: Manifest, report: RecoveryReport) {
-        var manifest = try loadManifest()
+        let loaded = try loadManifest()
+        var manifest = loaded.manifest
+        var manifestExists = loaded.exists
         var recovered = 0
         let names = try files.stageNames()
         for name in names where name.hasSuffix(".journal") {
@@ -301,22 +385,56 @@ public actor ArchiveStore {
             guard let transactionID = UUID(uuidString: stem), transactionID.uuidString.lowercased() == stem else {
                 throw ArchiveError.invalidJournal
             }
-            guard let data = try files.readSmall(in: files.staging.value, name: name, limit: 131_072),
+            guard let data = try files.readSmall(in: files.staging.value, name: name, limit: maximumJournalBytes),
                   let journal = try? JSONDecoder().decode(Journal.self, from: data),
                   journal.version == 1, journal.transactionID == transactionID else { throw ArchiveError.invalidJournal }
-            try apply(journal.mutation, to: &manifest)
-            let manifestData = try encodeManifest(manifest)
-            let target = destination(journal.mutation)
-            if try !files.verify(in: target.directory, name: target.filename, sha256: target.sha256, size: target.size, limit: target.limit) {
-                guard try files.verify(in: files.staging.value, name: stem + ".blob", sha256: target.sha256, size: target.size, limit: target.limit) else {
-                    throw ArchiveError.missingRecoveryData
+            switch journal.mutation {
+            case .deleted(let recording):
+                guard manifestExists,
+                      let before = journal.deletionManifestBeforeSHA256,
+                      let after = journal.deletionManifestAfterSHA256 else { throw ArchiveError.invalidJournal }
+                let current = digest(try encodeManifest(manifest))
+                if current == before {
+                    guard manifest.recordings.first(where: { $0.id == recording.id }) == recording else {
+                        throw ArchiveError.invalidJournal
+                    }
+                    // Before publishing the delete manifest, all files must still exist and match.
+                    try verifyDeletionContents(recording)
+                    try apply(journal.mutation, to: &manifest)
+                    let manifestData = try encodeManifest(manifest)
+                    guard digest(manifestData) == after else { throw ArchiveError.invalidJournal }
+                    try files.removeStageIfPresent(stem + ".manifest")
+                    try files.writeExclusive(manifestData, name: stem + ".manifest")
+                    try files.replaceManifest(stageName: stem + ".manifest")
+                    manifestExists = true
+                } else if current == after {
+                    guard !manifest.recordings.contains(where: { $0.id == recording.id }) else {
+                        throw ArchiveError.invalidJournal
+                    }
+                    try validate(Manifest(recordings: [recording]))
+                } else {
+                    throw ArchiveError.invalidJournal
                 }
-                try files.publish(stageName: stem + ".blob", to: target.directory, filename: target.filename)
+                // An interrupted cleanup may have removed only some exact files.
+                try removeDeletionContents(recording)
+            case .imported, .transcript:
+                guard journal.deletionManifestBeforeSHA256 == nil,
+                      journal.deletionManifestAfterSHA256 == nil else { throw ArchiveError.invalidJournal }
+                try apply(journal.mutation, to: &manifest)
+                let manifestData = try encodeManifest(manifest)
+                let target = try destination(journal.mutation)
+                if try !files.verify(in: target.directory, name: target.filename, sha256: target.sha256, size: target.size, limit: target.limit) {
+                    guard try files.verify(in: files.staging.value, name: stem + ".blob", sha256: target.sha256, size: target.size, limit: target.limit) else {
+                        throw ArchiveError.missingRecoveryData
+                    }
+                    try files.publish(stageName: stem + ".blob", to: target.directory, filename: target.filename)
+                }
+                // This filename is bound to the validated transaction. No wildcard cleanup is performed.
+                try files.removeStageIfPresent(stem + ".manifest")
+                try files.writeExclusive(manifestData, name: stem + ".manifest")
+                try files.replaceManifest(stageName: stem + ".manifest")
+                manifestExists = true
             }
-            // This filename is bound to the validated transaction. No wildcard cleanup is performed.
-            try files.removeStageIfPresent(stem + ".manifest")
-            try files.writeExclusive(manifestData, name: stem + ".manifest")
-            try files.replaceManifest(stageName: stem + ".manifest")
             try cleanupCommitted(stem)
             recovered += 1
         }

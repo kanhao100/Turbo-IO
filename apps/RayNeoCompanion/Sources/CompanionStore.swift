@@ -220,6 +220,10 @@ final class CompanionStore: ObservableObject {
         recordings = restore("recordings") ?? []
         configuration = restore("configuration") ?? ModelConfiguration()
         prompterText = defaults.string(forKey: prefix + "prompter") ?? ""
+        archive.isRecordingInUse = { [weak self] id in
+            guard let self else { return false }
+            return self.recordingASR.busy && self.recordingASR.recordingID == id
+        }
     }
 
     static func forCurrentLaunch() -> CompanionStore {

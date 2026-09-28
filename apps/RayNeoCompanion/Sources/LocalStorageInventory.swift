@@ -49,7 +49,7 @@ struct StorageCategory: Identifiable, Equatable, Sendable {
             case .portableTrash:
                 return "可恢复；清理将永久删除已识别的暂存副本，异常文件保留。"
             case .verifiedRecordings:
-                return "含音频、笔记与校验记录；当前归档没有逐条删除接口。"
+                return "可逐条删除已校验的本机录音及笔记；操作不影响眼镜上的文件。"
             case .subtitleSessions:
                 return "可删除已结束会话，或只清除其已保存音频。"
             case .alwaysOnTranscripts:
@@ -85,8 +85,10 @@ struct StorageRecord: Identifiable, Equatable, Sendable {
     let bytes: Int64
     let category: StorageCategory.Kind
     let canDelete: Bool
-    /// Actual WAV file bytes on disk. Nil outside subtitle sessions.
+    /// Actual audio file bytes on disk for subtitle sessions and verified recordings.
     let audioBytes: Int64?
+    /// The archive row seen during scanning. A changed note list requires a new confirmation.
+    let archiveSnapshot: ArchivedRecording?
 }
 
 enum StorageInventoryError: LocalizedError {
@@ -183,12 +185,17 @@ enum StorageInventoryError: LocalizedError {
                     .appendingPathComponent(book.id.uuidString + ".json")], canDelete: false))
         }
         for recording in store.archive.recordings {
+            let notes = recording.transcripts.compactMap { recording.noteRelativePath(for: $0) }
+            let distinctNotes = Array(Set(notes)).sorted()
             let urls = [store.archive.rootDirectory.appendingPathComponent(recording.audioRelativePath)] +
-                recording.transcripts.compactMap { recording.noteRelativePath(for: $0) }
-                    .map { store.archive.rootDirectory.appendingPathComponent($0) }
+                distinctNotes.map { store.archive.rootDirectory.appendingPathComponent($0) }
             seeds.append(.init(id: .other(.verifiedRecordings, recording.id.uuidString),
                 category: .verifiedRecordings, title: recording.title, date: recording.importedAt,
-                urls: urls, canDelete: false))
+                urls: urls, canDelete: !store.archive.isBusy &&
+                    !(store.recordingASR.busy && store.recordingASR.recordingID == recording.id) &&
+                    store.archive.verificationIssues[recording.id] == nil &&
+                    notes.count == recording.transcripts.count && distinctNotes.count == notes.count,
+                archiveSnapshot: recording))
         }
         var missingLegacyRecordings = 0
         for recording in store.recordings {
@@ -251,7 +258,7 @@ enum StorageInventoryError: LocalizedError {
 
     func delete(_ record: StorageRecord) async throws {
         guard !scanning else { throw StorageInventoryError.busy }
-        guard records.contains(where: { $0.id == record.id && $0.category == record.category && $0.canDelete }) else {
+        guard records.contains(where: { $0 == record && $0.canDelete }) else {
             throw StorageInventoryError.stale
         }
         switch record.id {
@@ -269,6 +276,19 @@ enum StorageInventoryError: LocalizedError {
             }
         case .alwaysOnDay:
             throw StorageInventoryError.unsupported
+        case .other(.verifiedRecordings, let value):
+            guard let id = UUID(uuidString: value) else { throw StorageInventoryError.stale }
+            guard !store.archive.isBusy,
+                  !(store.recordingASR.busy && store.recordingASR.recordingID == id) else {
+                throw StorageInventoryError.busy
+            }
+            guard store.archive.verificationIssues[id] == nil,
+                  let scanned = record.archiveSnapshot,
+                  store.archive.recordings.contains(where: { $0.id == id && $0 == scanned }) else {
+                throw StorageInventoryError.stale
+            }
+            do { _ = try await store.archive.deleteRecording(id) }
+            catch { await refresh(); throw error }
         case .other:
             throw StorageInventoryError.unsupported
         }
@@ -303,6 +323,7 @@ private enum StorageDiskScanner {
         let date: Date
         let urls: [URL]
         let canDelete: Bool
+        var archiveSnapshot: ArchivedRecording? = nil
     }
     struct Snapshot: Sendable {
         let categories: [StorageCategory]
@@ -364,22 +385,36 @@ private enum StorageDiskScanner {
         }
         for seed in seeds {
             var amount = Size(), audio: Int64? = nil
+            var allRequiredFilesPresent = !seed.urls.isEmpty
             do {
-                for url in seed.urls {
+                for (index, url) in seed.urls.enumerated() {
+                    if seed.category == .verifiedRecordings {
+                        let values = try? url.resourceValues(forKeys: [.isRegularFileKey,
+                            .isSymbolicLinkKey, .fileSizeKey])
+                        if values?.isRegularFile != true || values?.isSymbolicLink == true ||
+                            values?.fileSize == nil || (values?.fileSize ?? -1) < 0 {
+                            allRequiredFilesPresent = false
+                        }
+                    }
                     let part = try size(url)
-                    if !part.exists { issues.append("\(seed.title)有登记文件未找到，已按实际文件计数。") }
+                    if !part.exists {
+                        allRequiredFilesPresent = false
+                        issues.append("\(seed.title)有登记文件未找到，已按实际文件计数。")
+                    }
                     try amount.add(part)
+                    if seed.category == .verifiedRecordings && index == 0 { audio = part.bytes }
                 }
                 if seed.category == .subtitleSessions, let directory = seed.urls.first {
                     audio = try subtitleAudioBytes(in: directory)
                 }
             } catch {
+                allRequiredFilesPresent = false
                 issues.append("\(seed.title)的大小未能完整读取。")
             }
             records.append(StorageRecord(id: seed.id, title: seed.title, date: seed.date,
                 bytes: amount.bytes, category: seed.category,
-                canDelete: seed.canDelete && amount.exists && amount.skipped == 0,
-                audioBytes: audio))
+                canDelete: seed.canDelete && allRequiredFilesPresent && amount.exists && amount.skipped == 0,
+                audioBytes: audio, archiveSnapshot: seed.archiveSnapshot))
         }
         do {
             let copies = try PortableExportCopies(parent: documents).catalog().copies
@@ -388,7 +423,7 @@ private enum StorageDiskScanner {
                     copy.id.uuidString), title: "便携归档 \(copy.id.uuidString.prefix(8))",
                     date: copy.modifiedAt, bytes: copy.bytes,
                     category: copy.inTrash ? .portableTrash : .portableExports,
-                    canDelete: false, audioBytes: nil))
+                    canDelete: false, audioBytes: nil, archiveSnapshot: nil))
             }
         } catch { issues.append("便携归档副本列表未能读取。") }
         do {
@@ -399,7 +434,7 @@ private enum StorageDiskScanner {
                 records.append(StorageRecord(id: .other(.recordingInbox, entry.id),
                     title: "眼镜录音 \(entry.id.prefix(8))", date: entry.createdAt,
                     bytes: amount.bytes, category: .recordingInbox,
-                    canDelete: false, audioBytes: nil))
+                    canDelete: false, audioBytes: nil, archiveSnapshot: nil))
             }
         } catch { issues.append("眼镜录音接收列表未能完整读取。") }
         records.sort { $0.bytes == $1.bytes ? $0.date > $1.date : $0.bytes > $1.bytes }

@@ -10,6 +10,8 @@ struct StorageSpaceView: View {
 
 private struct StorageSpaceDashboard: View {
     private let store: CompanionStore
+    @ObservedObject private var archive: LocalArchiveController
+    @ObservedObject private var recordingASR: ManualRecordingASR
     @StateObject private var inventory: LocalStorageInventory
     @State private var sortBySize = true
     @State private var sessionSearch = ""
@@ -22,6 +24,8 @@ private struct StorageSpaceDashboard: View {
 
     init(store: CompanionStore) {
         self.store = store
+        _archive = ObservedObject(wrappedValue: store.archive)
+        _recordingASR = ObservedObject(wrappedValue: store.recordingASR)
         _inventory = StateObject(wrappedValue: LocalStorageInventory(store: store))
     }
 
@@ -245,7 +249,7 @@ private struct StorageSpaceDashboard: View {
         VStack(alignment: .leading, spacing: 10) {
             SectionLabel(title: "其他个人资料", trailing: "\(otherRecords.count) 条记录")
             Card {
-                Text("眼镜接收录音、已核验归档和恢复暂存文件会分别计入上面的占用明细。目前只对已有安全删除流程的资料提供清理；未知文件和归档内部事务文件会保留。")
+                Text("已校验录音可逐条清理本机音频与笔记。眼镜接收录音、旧版录音及恢复暂存文件仍只显示占用；未知文件和归档内部事务文件会保留。")
                     .font(.caption)
                     .foregroundStyle(Palette.muted)
                     .fixedSize(horizontal: false, vertical: true)
@@ -296,6 +300,14 @@ private struct StorageSpaceDashboard: View {
                 }
                 .font(.caption)
                 .foregroundStyle(Palette.muted)
+            } else if case .other(.verifiedRecordings, _) = record.id {
+                HStack {
+                    Label("录音 " + size(record.audioBytes ?? 0), systemImage: "waveform")
+                    Spacer()
+                    Text("笔记 " + size(max(0, record.bytes - (record.audioBytes ?? 0))))
+                }
+                .font(.caption)
+                .foregroundStyle(Palette.muted)
             }
             HStack(spacing: 16) {
                 recordDestination(record)
@@ -304,8 +316,10 @@ private struct StorageSpaceDashboard: View {
                     Button("只清录音") { pendingAction = .audio(record) }
                         .disabled(working || inventory.scanning || !record.canDelete)
                 }
-                if record.canDelete {
-                    Button("删除", role: .destructive) { pendingAction = .record(record) }
+                if record.canDelete && !archiveDeletionUnavailable(record) {
+                    Button(record.category == .verifiedRecordings ? "删除本机归档" : "删除", role: .destructive) {
+                        pendingAction = .record(record)
+                    }
                         .disabled(working || inventory.scanning)
                 }
             }
@@ -367,6 +381,19 @@ private struct StorageSpaceDashboard: View {
         .sorted { $0.date > $1.date }
     }
 
+    private func archiveDeletionUnavailable(_ record: StorageRecord) -> Bool {
+        guard record.category == .verifiedRecordings else { return false }
+        if archive.isBusy { return true }
+        if case .other(.verifiedRecordings, let value) = record.id,
+           let id = UUID(uuidString: value) {
+            guard let scanned = record.archiveSnapshot,
+                  archive.recordings.contains(where: { $0.id == id && $0 == scanned }) else { return true }
+            return archive.verificationIssues[id] != nil ||
+                (recordingASR.busy && recordingASR.recordingID == id)
+        }
+        return true
+    }
+
     private func feedback(_ text: String, icon: String, tint: Color) -> some View {
         Label(text, systemImage: icon)
             .font(.subheadline)
@@ -397,7 +424,9 @@ private struct StorageSpaceDashboard: View {
                 resultMessage = "已清理 \(record.title) 的录音约 \(size(freed))；字幕仍保留。"
             case .record(let record):
                 try await inventory.delete(record)
-                resultMessage = "已删除 \(record.title) 的本机资料。"
+                resultMessage = record.category == .verifiedRecordings
+                    ? "已删除“\(record.title)”的本机录音和笔记；眼镜上的文件未操作。"
+                    : "已删除 \(record.title) 的本机资料。"
             }
         } catch {
             resultError = "清理未完成：\(error.localizedDescription)。请刷新占用后查看哪些文件仍保留。"
@@ -414,7 +443,8 @@ private enum StorageCleanupAction {
         switch self {
         case .cache(let category): return category.isCache ? "清理\(category.title)？" : "永久清空\(category.title)？"
         case .audio: return "只清理这段录音？"
-        case .record: return "永久删除这条记录？"
+        case .record(let record):
+            return record.category == .verifiedRecordings ? "永久删除本机录音归档？" : "永久删除这条记录？"
         }
     }
     var buttonTitle: String {
@@ -433,6 +463,10 @@ private enum StorageCleanupAction {
         case .audio(let record):
             return "将删除“\(record.title)”的本机录音约 \(format(record.audioBytes ?? 0))。字幕、译文和会话信息保留，但此会话将无法回听，不能撤销；请先导出需要保留的录音。不会删除眼镜上的文件。"
         case .record(let record):
+            if record.category == .verifiedRecordings {
+                let audio = record.audioBytes ?? 0
+                return "将从这部 iPhone 删除“\(record.title)”的录音约 \(format(audio))、全部本地笔记约 \(format(max(0, record.bytes - audio)))，并移除这条归档登记。删除后不能从本机归档恢复；请先导出需要保留的内容。不会删除眼镜上的文件。单独生成的 ZIP 导出副本需另行管理。"
+            }
             return "将删除“\(record.title)”的本机资料约 \(format(record.bytes))，包括此记录的文字和录音。不能撤销；请先导出需要保留的内容。不会删除眼镜上的文件。"
         }
     }

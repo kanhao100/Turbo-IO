@@ -113,6 +113,7 @@ struct ArchiveView: View {
 
 struct ArchiveDetailView: View {
     @EnvironmentObject private var archive: LocalArchiveController
+    @Environment(\.dismiss) private var dismiss
     let original: ArchivedRecording
     @State private var mode = "归档证据"
     @State private var title = ""
@@ -121,9 +122,21 @@ struct ArchiveDetailView: View {
     @State private var confirmBundle = false
     @State private var bundleTask: Task<Void,Never>?
     @FocusState private var editing: Bool
+    private var recordingStillPresent: Bool { archive.recordings.contains { $0.id == original.id } }
     private var recording: ArchivedRecording { archive.recordings.first { $0.id == original.id } ?? original }
     private var integrityIssue: String? { archive.verificationIssues[original.id] }
     var body: some View {
+        Group {
+            if recordingStillPresent {
+                detailContent
+            } else {
+                ContentUnavailableView("归档已删除", systemImage: "archivebox",
+                    description: Text("这份本机录音已从归档移除。"))
+                    .task { dismiss() }
+            }
+        }
+    }
+    private var detailContent: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 19) {
                 VStack(alignment: .leading, spacing: 10) {

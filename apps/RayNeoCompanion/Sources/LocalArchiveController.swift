@@ -82,6 +82,11 @@ actor LocalArchiveRepository {
         try await open().exportTranscript(for: recordingID, text: text, title: title)
     }
 
+    func deleteRecording(_ id: UUID) async throws -> ArchiveDeletionReceipt {
+        guard !portableExportActive else { throw LocalArchiveError.busy }
+        return try await open().deleteRecording(id)
+    }
+
     func verify(_ id: UUID) async throws -> ArchiveReceipt {
         let receipt = try await open().verifyRecording(id)
         for revision in receipt.recording.transcripts {
@@ -221,6 +226,7 @@ final class LocalArchiveController: ObservableObject {
     @Published var errorMessage: String?
     let allowsTestFixture: Bool
     let rootDirectory: URL
+    var isRecordingInUse: ((UUID) -> Bool)?
     private let repository: LocalArchiveRepository
 
     init(rootDirectory: URL?, allowsTestFixture: Bool = false, limits: ArchiveLimits = ArchiveLimits()) {
@@ -269,6 +275,29 @@ final class LocalArchiveController: ObservableObject {
             ? "已永久清理暂存箱中的已识别副本；原归档保留。"
             : "没有可安全永久清理的副本；未标记或结构异常的目录已保留。"
         return freed
+    }
+
+    @discardableResult func deleteRecording(_ id: UUID) async throws -> ArchiveDeletionReceipt {
+        guard !isBusy, isRecordingInUse?(id) != true else { throw LocalArchiveError.busy }
+        isBusy = true; activity = "删除本机录音归档…"; errorMessage = nil; statusMessage = nil
+        defer { isBusy = false; activity = "" }
+        do {
+            let receipt = try await repository.deleteRecording(id)
+            recordings.removeAll { $0.id == id }
+            latestVerifications.removeValue(forKey: id)
+            verificationIssues.removeValue(forKey: id)
+            statusMessage = "已删除录音及其全部本地 Markdown 修订；原导入文件和已导出的 ZIP 不受影响。"
+            return receipt
+        } catch {
+            // A durable delete journal may already have been written; reloading completes it when possible.
+            if let refreshed = try? await repository.load() { recordings = refreshed.recordings }
+            if !recordings.contains(where: { $0.id == id }) {
+                latestVerifications.removeValue(forKey: id)
+                verificationIssues.removeValue(forKey: id)
+            }
+            errorMessage = Self.describe(error) + "\n删除可能已进入恢复流程，请刷新存储空间后核对实际占用。"
+            throw error
+        }
     }
 
     @discardableResult func importFile(_ source: URL, title: String? = nil) async -> Bool {

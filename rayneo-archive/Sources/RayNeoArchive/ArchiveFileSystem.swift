@@ -203,6 +203,46 @@ final class ArchiveFileSystem {
         return true
     }
 
+    /// Unlink only a regular file whose current bytes still match one manifest entry.
+    /// Missing entries are expected when an interrupted deletion is resumed.
+    func removeVerified(in directory: Int32, name: String, sha256: String, size: Int64, limit: Int64) throws {
+        try Task.checkCancellation()
+        let rawFD = openat(directory, name, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
+        if rawFD < 0 && errno == ENOENT { return }
+        guard rawFD >= 0 else { throw Self.failure("open deletion file") }
+        let fd = Descriptor(rawFD)
+        try Self.requireRegular(fd.value)
+        let initial = try Self.statFile(fd.value)
+        guard initial.st_size == size, size <= limit else { throw ArchiveError.archivedContentChanged }
+        var hasher = SHA256()
+        var total: Int64 = 0
+        while true {
+            let bytes = try Self.chunk(from: fd.value)
+            if bytes.isEmpty { break }
+            guard total <= size - Int64(bytes.count) else { throw ArchiveError.archivedContentChanged }
+            total += Int64(bytes.count)
+            hasher.update(data: bytes)
+            try Task.checkCancellation()
+        }
+        let actual = hasher.finalize().map { String(format: "%02x", $0) }.joined()
+        guard total == size, actual == sha256, Self.unchanged(initial, try Self.statFile(fd.value)) else {
+            throw ArchiveError.archivedContentChanged
+        }
+        var directoryEntry = stat()
+        if fstatat(directory, name, &directoryEntry, AT_SYMLINK_NOFOLLOW) != 0 {
+            if errno == ENOENT { return }
+            throw Self.failure("inspect deletion entry")
+        }
+        guard Self.unchanged(initial, directoryEntry), directoryEntry.st_mode & S_IFMT == S_IFREG else {
+            throw ArchiveError.archivedContentChanged
+        }
+        guard unlinkat(directory, name, 0) == 0 else {
+            if errno == ENOENT { return }
+            throw Self.failure("remove verified archive file")
+        }
+        try Self.synchronize(directory)
+    }
+
     func publish(stageName: String, to directory: Int32, filename: String) throws {
         // A hard-link publication is atomic and fails if the destination exists. Unlike rename it never overwrites.
         guard linkat(staging.value, stageName, directory, filename, 0) == 0 else {

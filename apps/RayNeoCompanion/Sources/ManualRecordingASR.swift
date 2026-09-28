@@ -217,7 +217,7 @@ final class FileASRDiagnostic {
     var busy: Bool { work != nil }
     func cancel() { work?.cancel(); status = "正在取消，原音频保留…" }
     func start(id: UUID, title: String, archive: LocalArchiveController, captureDiagnostic: Bool = false, rightChannelOnly: Bool = false) {
-        guard work == nil else { return }
+        guard work == nil, !archive.isBusy else { return }
         recordingID = id; progress = 0; resultText = ""
         #if COMPANION_DEVICE
         guard let host = CloudASRHostSettings.normalize(CloudVoiceKeys.asrHost),

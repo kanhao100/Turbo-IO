@@ -95,6 +95,14 @@ public struct NoteReceipt: Sendable {
     public var evidence: ArchiveEvidence { recording.evidence }
 }
 
+public struct ArchiveDeletionReceipt: Sendable {
+    public let recordingID: UUID
+    /// Logical sizes recorded in the validated manifest. Files can remain if cleanup fails.
+    public let audioBytes: Int64
+    public let noteBytes: Int64
+    public var totalBytes: Int64 { audioBytes + noteBytes }
+}
+
 public struct RecoveryReport: Sendable, Equatable {
     public let recoveredTransactions: Int
     /// Unjournaled files are preserved, never guessed safe to delete.
@@ -134,12 +142,24 @@ struct Manifest: Codable {
 enum Mutation: Codable {
     case imported(ArchivedRecording)
     case transcript(recordingID: UUID, revision: TranscriptRevision)
+    case deleted(ArchivedRecording)
 }
 
 struct Journal: Codable {
     var version = 1
     let transactionID: UUID
     let mutation: Mutation
+    /// Delete journals are bound to both complete manifest states. Older additive journals omit these.
+    let deletionManifestBeforeSHA256: String?
+    let deletionManifestAfterSHA256: String?
+
+    init(transactionID: UUID, mutation: Mutation,
+         deletionManifestBeforeSHA256: String? = nil, deletionManifestAfterSHA256: String? = nil) {
+        self.transactionID = transactionID
+        self.mutation = mutation
+        self.deletionManifestBeforeSHA256 = deletionManifestBeforeSHA256
+        self.deletionManifestAfterSHA256 = deletionManifestAfterSHA256
+    }
 }
 
 let supportedExtensions: Set<String> = ["opus", "ogg", "wav", "mp3", "m4a", "aac", "flac", "caf", "bin"]
