@@ -116,6 +116,9 @@ actor LocalArchiveRepository {
         let parent = exports.appendingPathComponent(UUID().uuidString,isDirectory:true)
         try FileManager.default.createDirectory(at:parent,withIntermediateDirectories:false,
             attributes:[.posixPermissions:0o700,.protectionKey:FileProtectionType.completeUntilFirstUserAuthentication])
+        // A private marker lets storage cleanup distinguish our generated copy
+        // (including a failed snapshot stage) from an unknown UUID directory.
+        try PortableExportCopies.writeOwnershipMarker(to: parent)
         let snapshot = try await store.exportSnapshot(recordingID:recordingID,revisions:revisions,toParentDirectory:parent)
         return try PortableArchiveZIP.create(snapshot)
     }
@@ -131,6 +134,10 @@ actor LocalArchiveRepository {
     func moveExportCopy(_ id: UUID, toTrash: Bool) throws {
         guard !portableExportActive else { throw LocalArchiveError.busy }
         try exportCopies().move(id, toTrash: toTrash)
+    }
+    func purgeExportTrash() throws -> Int64 {
+        guard !portableExportActive else { throw LocalArchiveError.busy }
+        return try exportCopies().purgeTrash()
     }
 
     private func verifiedNoteURL(receipt: ArchiveReceipt, revisionID: UUID) throws -> URL {
@@ -213,11 +220,15 @@ final class LocalArchiveController: ObservableObject {
     let audioInspection: AudioContainerInspectionController
     @Published var errorMessage: String?
     let allowsTestFixture: Bool
+    let rootDirectory: URL
     private let repository: LocalArchiveRepository
 
     init(rootDirectory: URL?, allowsTestFixture: Bool = false, limits: ArchiveLimits = ArchiveLimits()) {
+        let resolvedRoot = rootDirectory ?? FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("VerifiedRecordingArchiveV1", isDirectory: true)
         let repository = LocalArchiveRepository(rootDirectory: rootDirectory, limits: limits)
         self.repository = repository
+        self.rootDirectory = resolvedRoot
         audioInspection = AudioContainerInspectionController { identity in try await repository.sourceForContainerInspection(identity) }
         self.allowsTestFixture = allowsTestFixture
         audioInspection.onIntegrityFailure = { [weak self] identity, error in
@@ -247,6 +258,17 @@ final class LocalArchiveController: ObservableObject {
             self.exportCopies = try await self.repository.exportCopyCatalog()
             self.statusMessage = toTrash ? "已移入本机暂存箱，可恢复；未删除文件，不释放磁盘空间。" : "已恢复导出副本，未覆盖其他文件。"
         }
+    }
+    func purgeExportTrash() async throws -> Int64 {
+        guard !isBusy else { throw LocalArchiveError.busy }
+        isBusy = true; activity = "清理 ZIP 导出暂存箱…"
+        defer { isBusy = false; activity = "" }
+        let freed = try await repository.purgeExportTrash()
+        exportCopies = try await repository.exportCopyCatalog()
+        statusMessage = freed > 0
+            ? "已永久清理暂存箱中的已识别副本；原归档保留。"
+            : "没有可安全永久清理的副本；未标记或结构异常的目录已保留。"
+        return freed
     }
 
     @discardableResult func importFile(_ source: URL, title: String? = nil) async -> Bool {

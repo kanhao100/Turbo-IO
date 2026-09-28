@@ -15,6 +15,9 @@ struct ToolsView: View {
             NavigationLink { CodexCompanionView() } label: {
                 Card { FeatureRow(icon: "terminal", title: "Codex 控制台", subtitle: "电脑任务 · 进度 · 单次审批", status: "连接电脑") }
             }.buttonStyle(.plain).accessibilityIdentifier("codex-tool")
+            NavigationLink { StorageSpaceView() } label: {
+                Card { FeatureRow(icon: "internaldrive", title: "存储空间", subtitle: "查看录音与归档占用 · 选择清理", status: "本机", active: true) }
+            }.buttonStyle(.plain).accessibilityIdentifier("storage-space-tool")
             Card {
                 NavigationLink { TodoView() } label: {
                     FeatureRow(icon: "checklist", title: "待办清单", subtitle: "记录与管理任务", status: "本地可用", active: true)
@@ -379,10 +382,17 @@ struct SettingsView: View {
                 Label("模型密钥仅保存到系统钥匙串", systemImage: "key")
                 Label("不接管官方登录和绑定", systemImage: "lock.shield")
             }.font(.subheadline)
+            Section("本机存储") {
+                NavigationLink { StorageSpaceView() } label: {
+                    Label("存储空间与清理", systemImage: "internaldrive")
+                }.accessibilityIdentifier("storage-space-settings")
+                Text("查看本 App 保存的录音、字幕、导出副本和缓存，再按类别或会话清理。")
+                    .font(.footnote).foregroundStyle(Palette.muted)
+            }
             Section("当前构建") {
                 LabeledContent("版本", value: (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.2.0") + " · 研究版")
                 LabeledContent("设备通道", value: store.voice.supportsDevice ? "厂商核心适配 · 待真机复验" : "模拟器禁用")
-                LabeledContent("最低系统", value: "iOS 16")
+                LabeledContent("最低系统", value: "iOS 26")
                 Text("模拟器与编译通过不代表非越狱实机、配对或镜片效果已验证。")
                     .font(.footnote).foregroundStyle(Palette.muted)
             }

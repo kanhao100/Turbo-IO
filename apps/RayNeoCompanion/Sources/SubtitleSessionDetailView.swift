@@ -45,11 +45,11 @@ struct SubtitleSessionDetailView: View {
                             if runtime.active { Text("字幕运行时暂停回听，避免扬声器声音被重复识别。").font(.caption).foregroundStyle(Palette.amber) }
                             if let error = playback.error { Text(error).font(.caption).foregroundStyle(Palette.amber) }
                         }
-                    } else { Label(record.savesAudio ? "本次没有可播放的完整音频片段" : "本次选择仅保存文本", systemImage: "doc.text").font(.subheadline).foregroundStyle(Palette.muted) }
+                    } else { Label(record.audioPurgedAt != nil ? "本次录音已清理，字幕仍保留" : (record.savesAudio ? "本次没有可播放的完整音频片段" : "本次选择仅保存文本"), systemImage: "doc.text").font(.subheadline).foregroundStyle(Palette.muted) }
                     HStack {
                         Button("导出文字") { export(audio: false) }
                         Spacer()
-                        Button("打包文本与音频") { export(audio: true) }
+                        Button("打包文本与音频") { export(audio: true) }.disabled(audio.isEmpty)
                     }.font(.subheadline).disabled(exporting || runtime.active || runtime.saving)
                     if exporting { ProgressView("正在准备导出…") }
                     if let exported { ShareLink("分享导出文件", item: exported) }

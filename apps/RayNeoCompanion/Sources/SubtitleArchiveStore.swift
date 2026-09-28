@@ -60,6 +60,37 @@ struct SubtitleAudioFile: Identifiable {
             await load()
         } catch { self.error = "删除未完成，请稍后重试。" }
     }
+    /// Frees the saved WAV segments of a completed session, retaining its
+    /// manifest and caption journal. The original received-byte count remains
+    /// as historical metadata rather than claiming the audio is still present.
+    func purgeAudio(_ id: UUID) async throws -> Int64 {
+        guard isActive?(id) != true else { throw CaptionFailure.closed }
+        let root = root
+        let freed = try await Task.detached(priority: .utility) {
+            let directory = try SubtitleArchiveFiles.directory(root: root, id: id)
+            var record = try SubtitleSessionRecord.read(from: directory)
+            guard record.state != .active else { throw CaptionFailure.closed }
+            let children = try FileManager.default.contentsOfDirectory(at: directory,
+                includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
+            let audio = children.filter {
+                $0.lastPathComponent.range(of: #"^audio-[0-9]{4}\.wav$"#, options: .regularExpression) != nil
+            }
+            var bytes: Int64 = 0
+            for file in audio {
+                let values = try file.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
+                guard values.isRegularFile == true, values.isSymbolicLink != true,
+                      let size = values.fileSize, size >= 0 else { throw CaptionFailure.corruptArchive }
+                bytes += Int64(size)
+            }
+            guard !audio.isEmpty else { return Int64(0) }
+            for file in audio { try FileManager.default.removeItem(at: file) }
+            record.audioPurgedAt = Date()
+            try record.write(to: directory)
+            return bytes
+        }.value
+        await load()
+        return freed
+    }
     func export(_ id: UUID, includingAudio: Bool) async throws -> URL {
         guard isActive?(id) != true else { throw CaptionFailure.closed }
         let root = root

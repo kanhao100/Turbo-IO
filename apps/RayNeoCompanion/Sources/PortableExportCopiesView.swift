@@ -3,15 +3,20 @@ import SwiftUI
 struct PortableExportCopiesView: View {
     @EnvironmentObject private var archive: LocalArchiveController
     @State private var selected: PortableExportCopy?
+    @State private var confirmPurge = false
+    @State private var purgeError: String?
     var body: some View {
         List {
             Section {
                 Text("只管理 ZIP 导出时生成的副本目录（含快照和失败临时包），不触碰录音原归档、接收缓存或文字修订。")
-                Text("移入暂存箱可恢复，也会腾出导出次数名额，但不释放磁盘空间。两边各限 20 份；没有自动或永久删除。")
+                Text("移入暂存箱可恢复，也会腾出导出次数名额，但不释放磁盘空间。两边各限 20 份；永久清理暂存箱后才会释放其占用。")
                     .font(.caption).foregroundStyle(.secondary)
                 Text("目录扫描不是内容校验；需要重新分享时，请回录音详情生成新的校验包。")
                     .font(.caption).foregroundStyle(.secondary)
                 Button("刷新副本列表") { Task { await archive.loadExportCopies() } }.disabled(archive.isBusy)
+                Button("永久清理暂存箱", role: .destructive) { confirmPurge = true }
+                    .disabled(archive.isBusy || !archive.exportCopies.copies.contains(where: { $0.inTrash }))
+                if let purgeError { Text(purgeError).foregroundStyle(Palette.amber) }
                 if archive.exportCopies.unrecognized > 0 {
                     Text("\(archive.exportCopies.unrecognized) 个异常或未知目录保留原位，不提供移动操作。")
                         .foregroundStyle(Palette.amber)
@@ -44,6 +49,17 @@ struct PortableExportCopiesView: View {
                         Task { await archive.moveExportCopy(row.id, toTrash: !row.inTrash) }
                     }
                 }
+            }
+            .confirmationDialog("永久清理暂存箱中的已识别副本？", isPresented: $confirmPurge) {
+                Button("永久清理", role: .destructive) {
+                    Task {
+                        do { _ = try await archive.purgeExportTrash(); purgeError = nil }
+                        catch { purgeError = error.localizedDescription }
+                    }
+                }
+                Button("取消", role: .cancel) {}
+            } message: {
+                Text("副本清理后不可恢复；原始录音归档保留。结构异常的未知文件不会删除。")
             }
     }
 }

@@ -11,6 +11,9 @@ public struct SubtitleSessionRecord: Codable, Identifiable, Equatable {
     public let model: String?
     public let language: String
     public let savesAudio: Bool
+    /// Set when saved WAV segments are intentionally removed while keeping captions.
+    /// Absent in older session manifests.
+    public var audioPurgedAt: Date? = nil
     public var state: State = .active
     public var receivedPCMBytes = 0
     public var finalSentences = 0
