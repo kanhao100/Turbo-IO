@@ -97,7 +97,7 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
     private let scheduleTimers: Bool
     private static let pendingKey = "companion.realtimeSubtitles.exitPending.v1"
     private static let shortcutKey = "companion.realtimeSubtitles.shortcutEnabled.v1"
-    private var timer: Timer?, lifecycle: NSObjectProtocol?
+    private var timer: Timer?, displayTimingTimer: Timer?, lifecycle: NSObjectProtocol?
     private var provider: CaptionASRProvider?, decoder: SubtitlePCMDecoder?, writer: SubtitleSessionWriting?
     #if COMPANION_DEVICE
     private var microphone: SubtitleMicrophoneInput?
@@ -111,13 +111,50 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
     private var translationQueue: Task<Void, Never>?
     private var translatedRecent: [String] = []
     private var sentenceNumber = 0, displayedSentenceNumber = 0
+    private var newestRecognizedSentenceNumber = 0
+    private struct PendingPartialDisplay {
+        let source: String
+        let sentence: Int
+        let temporarySource: Bool
+        let dueAt: TimeInterval
+    }
+    private struct PendingTranslationReveal {
+        let source: String
+        let translation: String
+        let sentence: Int
+        let readyAt: TimeInterval
+    }
+    private struct PendingFinalDisplay {
+        let source: String
+        let sentence: Int
+        let completed: Bool
+        let temporarySource: Bool
+    }
+    private var pendingPartialDisplay: PendingPartialDisplay?
+    private var pendingFinalDisplay: PendingFinalDisplay?
+    private var pendingTranslationReveals: [Int: PendingTranslationReveal] = [:]
+    private var takeoverSentenceNumber = 0
+    private var isProcessingDisplayTransitions = false
+    private var partialFirstSeenSentenceNumber = 0
+    private var partialFirstSeenAt: TimeInterval = 0
+    private var lastPartialPublishedSentenceNumber = 0
+    private var lastPartialPublishedAt: TimeInterval = -.infinity
+    private var finalSourceShownSentenceNumber = 0
+    private var finalSourceShownAt: TimeInterval?
     private var firstPartialAudioBytes: Int?
     private var lastExpiredSentenceNumber = 0
     private var hasCompletedDisplayPair = false
     private var displayShowsTemporarySource = false
+    // Phone and lens have separate clocks: the lens deadline starts only after
+    // its final type-5 packet has actually been submitted.
     private var displayCompletedAt: TimeInterval?
     private var displayExpiresAt: TimeInterval?
+    private var pendingFinalLensSentenceNumber: Int?
+    private var lensCompletedSentenceNumber = 0
+    private var lensDisplayCompletedAt: TimeInterval?
+    private var lensDisplayExpiresAt: TimeInterval?
     private var displayPreferencesSignature = ""
+    private var displayLayoutSignature = ""
     private var displayRetentionSignature = ""
     private var pendingTranslations = 0, skippedTranslations = 0
     private var reportedLanguageMismatch = false
@@ -185,7 +222,10 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
         lifecycle = NotificationCenter.default.addObserver(forName: UIApplication.didBecomeActiveNotification,
             object: nil, queue: .main) { [weak self] _ in Task { @MainActor in self?.tick() } }
     }
-    deinit { timer?.invalidate(); if let lifecycle { NotificationCenter.default.removeObserver(lifecycle) } }
+    deinit {
+        timer?.invalidate(); displayTimingTimer?.invalidate()
+        if let lifecycle { NotificationCenter.default.removeObserver(lifecycle) }
+    }
     func prepare() {
         device.prepare(); settings.refresh()
     }
@@ -273,10 +313,20 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
         displaySourceText = ""; displayTranslationText = ""; displayText = ""
         displayIsPartial = false; displayIsAwaitingTranslation = false
         sentenceNumber = 0; displayedSentenceNumber = 0; lastExpiredSentenceNumber = 0
+        newestRecognizedSentenceNumber = 0
+        pendingPartialDisplay = nil; pendingFinalDisplay = nil
+        pendingTranslationReveals.removeAll(); takeoverSentenceNumber = 0
+        isProcessingDisplayTransitions = false
+        partialFirstSeenSentenceNumber = 0; partialFirstSeenAt = 0
+        lastPartialPublishedSentenceNumber = 0; lastPartialPublishedAt = -.infinity
+        finalSourceShownSentenceNumber = 0; finalSourceShownAt = nil
         firstPartialAudioBytes = nil
         hasCompletedDisplayPair = false; displayShowsTemporarySource = false
         displayCompletedAt = nil; displayExpiresAt = nil
+        pendingFinalLensSentenceNumber = nil; lensCompletedSentenceNumber = 0
+        lensDisplayCompletedAt = nil; lensDisplayExpiresAt = nil
         displayPreferencesSignature = currentDisplayPreferencesSignature
+        displayLayoutSignature = currentDisplayLayoutSignature
         displayRetentionSignature = currentDisplayRetentionSignature
         lastASRDiagnosticSummary = ""
         translationQueue?.cancel(); translationQueue = nil
@@ -385,7 +435,10 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
         return sourceIsChinese ? .chineseOnly : .englishOnly
     }
     private var currentDisplayPreferencesSignature: String {
-        "\(settings.displayMode.rawValue)|\(settings.bilingualOrder.rawValue)|\(settings.displayRetention.rawValue)|\(settings.customRetentionSeconds)|\(settings.showLiveSourceDuringTranslation)"
+        "\(settings.displayMode.rawValue)|\(settings.bilingualOrder.rawValue)|\(settings.displayRetention.rawValue)|\(settings.customRetentionSeconds)|\(settings.showLiveSourceDuringTranslation)|\(settings.partialUpdateIntervalSeconds)|\(settings.nextSentenceTakeoverDelaySeconds)|\(settings.minimumSourceVisibleSeconds)|\(settings.translationRevealDelaySeconds)|\(settings.lensUpdateIntervalSeconds)"
+    }
+    private var currentDisplayLayoutSignature: String {
+        "\(settings.displayMode.rawValue)|\(settings.bilingualOrder.rawValue)|\(settings.showLiveSourceDuringTranslation)"
     }
     private var currentDisplayRetentionSignature: String {
         "\(settings.displayRetention.rawValue)|\(settings.effectiveRetentionSeconds.map { String($0) } ?? "next")"
@@ -394,11 +447,14 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
         displayExpiresAt = displayCompletedAt.flatMap { completedAt in
             settings.effectiveRetentionSeconds.map { completedAt + $0 }
         }
+        lensDisplayExpiresAt = lensDisplayCompletedAt.flatMap { completedAt in
+            settings.effectiveRetentionSeconds.map { completedAt + $0 }
+        }
     }
     private func armDisplayExpiryIfNeeded() {
-        // With an intended lens target, wait for a successful type-5 submission.
-        // Otherwise a delayed type-8 ACK could consume the entire display duration.
-        guard hasCompletedDisplayPair, target == nil else { return }
+        // Phone display begins when composed; the lens has a separate deadline
+        // that starts after successful type-5 submission.
+        guard hasCompletedDisplayPair else { return }
         if displayCompletedAt == nil { displayCompletedAt = now }
         updateDisplayExpiryFromCompletion()
     }
@@ -439,7 +495,8 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
     private func showDisplay(source: String, translation: String, partial: Bool,
                              completed: Bool, sentence: Int,
                              temporarySource: Bool = false) {
-        guard sentence >= displayedSentenceNumber, sentence > lastExpiredSentenceNumber else {
+        guard sentence >= newestRecognizedSentenceNumber,
+              sentence >= displayedSentenceNumber, sentence > lastExpiredSentenceNumber else {
             if completed { appendControl("display_state=late_result_ignored") }
             return
         }
@@ -457,15 +514,177 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
         displayIsAwaitingTranslation = !partial && !completed && settings.translationEnabled
         displayShowsTemporarySource = temporarySource
         hasCompletedDisplayPair = completed
+        if !partial, !completed, settings.translationEnabled {
+            finalSourceShownSentenceNumber = sentence
+            finalSourceShownAt = now
+        }
         if visualChange {
             displayCompletedAt = nil; displayExpiresAt = nil
+            lensDisplayCompletedAt = nil; lensDisplayExpiresAt = nil
+            lensCompletedSentenceNumber = 0
+            pendingFinalLensSentenceNumber = completed ? sentence : nil
             if completed { armDisplayExpiryIfNeeded() }
         }
         guard visualChange else { return }
+        if partial {
+            lastPartialPublishedSentenceNumber = sentence
+            lastPartialPublishedAt = now
+        }
         pendingText = lensDisplayText(source: source, translation: translation,
                                       temporarySource: temporarySource)
         appendControl("display_state=updated mode=\(effectiveDisplayMode.rawValue) pair=\(completed) partial=\(partial) temporarySource=\(temporarySource)")
-        pumpDisplay()
+        if !isProcessingDisplayTransitions { pumpDisplay() }
+        scheduleDisplayWake()
+    }
+    private func offerPartialDisplay(source: String, sentence: Int, temporarySource: Bool) {
+        if partialFirstSeenSentenceNumber != sentence {
+            partialFirstSeenSentenceNumber = sentence
+            partialFirstSeenAt = now
+            if sentence > displayedSentenceNumber, !displayText.isEmpty {
+                takeoverSentenceNumber = sentence
+            }
+        }
+        let takeoverDeadline = takeoverDeadline(for: sentence)
+        let updateDeadline = lastPartialPublishedSentenceNumber == sentence
+            ? lastPartialPublishedAt + settings.partialUpdateIntervalSeconds : now
+        let due = max(takeoverDeadline, updateDeadline)
+        if due <= now {
+            pendingPartialDisplay = nil
+            claimDisplayForSentence(sentence)
+            showDisplay(source: source, translation: "", partial: true,
+                        completed: false, sentence: sentence,
+                        temporarySource: temporarySource)
+        } else {
+            pendingPartialDisplay = PendingPartialDisplay(
+                source: source, sentence: sentence, temporarySource: temporarySource, dueAt: due)
+            scheduleDisplayWake()
+        }
+    }
+    private func takeoverDeadline(for sentence: Int) -> TimeInterval {
+        // A missing gate must be a stable past deadline. Returning a fresh `now`
+        // here makes two comparisons in the same turn disagree and can spin timers.
+        guard takeoverSentenceNumber == sentence, !displayText.isEmpty else { return -.infinity }
+        return partialFirstSeenAt + settings.nextSentenceTakeoverDelaySeconds
+    }
+    private func offerFinalSourceDisplay(source: String, sentence: Int,
+                                         completed: Bool, temporarySource: Bool = false) {
+        let pending = PendingFinalDisplay(source: source, sentence: sentence,
+                                          completed: completed,
+                                          temporarySource: temporarySource)
+        if takeoverDeadline(for: sentence) > now {
+            pendingFinalDisplay = pending
+            appendControl("display_state=final_waits_for_takeover sentence=\(sentence)")
+            scheduleDisplayWake()
+        } else {
+            _ = deliverPendingFinalIfAllowed(pending)
+        }
+    }
+    private func currentFinalDisplayPlan(for pending: PendingFinalDisplay)
+        -> (completed: Bool, temporarySource: Bool)? {
+        let completed = !displayNeedsTranslationBeforeCommit
+        let canShowSource = completed ||
+            (settings.showLiveSourceDuringTranslation && settings.translationEnabled) ||
+            (effectiveDisplayMode == .bilingual && pending.sentence == 1 && !hasCompletedDisplayPair)
+        guard canShowSource else { return nil }
+        let temporarySource = !completed && !sourceCanShowWithoutTranslation
+        guard !composedDisplayText(source: pending.source, translation: "",
+                                   temporarySource: temporarySource).isEmpty else { return nil }
+        return (completed, temporarySource)
+    }
+    @discardableResult private func deliverPendingFinalIfAllowed(_ pending: PendingFinalDisplay) -> Bool {
+        guard let plan = currentFinalDisplayPlan(for: pending) else {
+            appendControl("display_state=pending_final_hidden_by_mode")
+            return false
+        }
+        claimDisplayForSentence(pending.sentence)
+        showDisplay(source: pending.source, translation: "", partial: false,
+                    completed: plan.completed, sentence: pending.sentence,
+                    temporarySource: plan.temporarySource)
+        return true
+    }
+    private func claimDisplayForSentence(_ sentence: Int) {
+        guard sentence > newestRecognizedSentenceNumber else { return }
+        newestRecognizedSentenceNumber = sentence
+        if takeoverSentenceNumber <= sentence { takeoverSentenceNumber = 0 }
+        if let pending = pendingFinalDisplay, pending.sentence <= sentence { pendingFinalDisplay = nil }
+        if let pending = pendingPartialDisplay, pending.sentence <= sentence { pendingPartialDisplay = nil }
+        let oldReveals = pendingTranslationReveals.keys.filter { $0 < sentence }
+        if !oldReveals.isEmpty {
+            for key in oldReveals { pendingTranslationReveals.removeValue(forKey: key) }
+            appendControl("display_state=old_translation_cancelled_by_new_display")
+        }
+        if let pendingFinal = pendingFinalLensSentenceNumber, pendingFinal < sentence {
+            pendingFinalLensSentenceNumber = nil
+            pendingText = nil
+            appendControl("display_state=old_lens_final_cancelled_by_new_display")
+        }
+    }
+    private func translationRevealDeadline(for value: PendingTranslationReveal) -> TimeInterval {
+        let sourceDeadline = finalSourceShownSentenceNumber == value.sentence
+            ? (finalSourceShownAt ?? value.readyAt) + settings.minimumSourceVisibleSeconds
+            : value.readyAt
+        return max(max(sourceDeadline, value.readyAt + settings.translationRevealDelaySeconds),
+                   takeoverDeadline(for: value.sentence))
+    }
+    private func offerTranslationReveal(source: String, translation: String, sentence: Int) {
+        guard sentence >= newestRecognizedSentenceNumber,
+              sentence >= displayedSentenceNumber, sentence > lastExpiredSentenceNumber else {
+            appendControl("display_state=late_translation_ignored")
+            return
+        }
+        let value = PendingTranslationReveal(
+            source: source, translation: translation, sentence: sentence, readyAt: now)
+        if translationRevealDeadline(for: value) <= now {
+            claimDisplayForSentence(sentence)
+            showDisplay(source: source, translation: translation, partial: false,
+                        completed: true, sentence: sentence)
+        } else {
+            pendingTranslationReveals[sentence] = value
+            appendControl("display_state=translation_reveal_scheduled sentence=\(sentence)")
+            scheduleDisplayWake()
+        }
+    }
+    private func processDisplayTransitions() {
+        isProcessingDisplayTransitions = true
+        defer {
+            isProcessingDisplayTransitions = false
+            pumpDisplay()
+            scheduleDisplayWake()
+        }
+        if let displayExpiresAt, now >= displayExpiresAt { clearVisibleDisplay() }
+        if let pending = pendingFinalDisplay,
+           takeoverDeadline(for: pending.sentence) <= now {
+            pendingFinalDisplay = nil
+            _ = deliverPendingFinalIfAllowed(pending)
+        }
+        if let pending = pendingPartialDisplay, now >= pending.dueAt {
+            pendingPartialDisplay = nil
+            if pending.sentence == sentenceNumber + 1 {
+                claimDisplayForSentence(pending.sentence)
+                showDisplay(source: pending.source, translation: "", partial: true,
+                            completed: false, sentence: pending.sentence,
+                            temporarySource: pending.temporarySource)
+            }
+        }
+        let dueReveals = pendingTranslationReveals.values
+            .filter { now >= translationRevealDeadline(for: $0) }
+        if !dueReveals.isEmpty {
+            for pending in dueReveals {
+                pendingTranslationReveals.removeValue(forKey: pending.sentence)
+            }
+            // Only the newest eligible result from this timer turn reaches the
+            // outputs. Older results are archived but cannot consume a lens slot.
+            if let pending = dueReveals
+                .filter({ $0.sentence >= newestRecognizedSentenceNumber &&
+                           $0.sentence >= displayedSentenceNumber &&
+                           $0.sentence > lastExpiredSentenceNumber })
+                .max(by: { $0.sentence < $1.sentence }) {
+                claimDisplayForSentence(pending.sentence)
+                showDisplay(source: pending.source, translation: pending.translation,
+                            partial: false, completed: true, sentence: pending.sentence)
+            }
+        }
+        if let lensDisplayExpiresAt, now >= lensDisplayExpiresAt { expireLensDisplay() }
     }
     private func clearVisibleDisplay() {
         guard !displayText.isEmpty else { return }
@@ -474,33 +693,130 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
         displayIsPartial = false; displayIsAwaitingTranslation = false
         hasCompletedDisplayPair = false; displayShowsTemporarySource = false
         displayCompletedAt = nil; displayExpiresAt = nil
-        // Type-5 requires a nonempty string. A single space requests a visually blank lens.
-        pendingText = " "
-        appendControl("display_state=expired")
-        pumpDisplay()
+        takeoverSentenceNumber = 0
+        // The phone may expire before a throttled final type-5 reaches the lens.
+        // Preserve that packet until submitted; the lens uses its own expiry clock.
+        if pendingFinalLensSentenceNumber == nil, lensDisplayExpiresAt == nil,
+           target != nil, displayReady {
+            // No final packet is outstanding, so a blank can be sent now.
+            pendingText = " "
+        }
+        appendControl("display_state=phone_expired")
+        if let pending = pendingFinalDisplay,
+           pending.sentence == sentenceNumber {
+            pendingFinalDisplay = nil
+            if deliverPendingFinalIfAllowed(pending) { return }
+        }
+        if let pending = pendingPartialDisplay,
+           pending.sentence == sentenceNumber + 1 {
+            // Once the old caption expires there is nothing left to protect with a
+            // takeover delay. Show the latest partial instead of leaving a blank gap.
+            pendingPartialDisplay = nil
+            claimDisplayForSentence(pending.sentence)
+            showDisplay(source: pending.source, translation: "", partial: true,
+                        completed: false, sentence: pending.sentence,
+                        temporarySource: pending.temporarySource)
+            return
+        }
+        if !isProcessingDisplayTransitions { pumpDisplay() }
+        scheduleDisplayWake()
+    }
+    private func expireLensDisplay() {
+        guard lensDisplayExpiresAt != nil else { return }
+        lensDisplayCompletedAt = nil; lensDisplayExpiresAt = nil
+        lensCompletedSentenceNumber = 0
+        // Type-5 rejects an empty payload. A single space visually clears the lens.
+        if target != nil, displayReady { pendingText = " " }
+        appendControl("display_state=lens_expired")
+        if !isProcessingDisplayTransitions { pumpDisplay() }
+        scheduleDisplayWake()
     }
     private func refreshDisplayPreferences() {
         let signature = currentDisplayPreferencesSignature
         guard signature != displayPreferencesSignature else { return }
         let retentionSignature = currentDisplayRetentionSignature
         let retentionChanged = retentionSignature != displayRetentionSignature
+        let layoutSignature = currentDisplayLayoutSignature
+        let layoutChanged = layoutSignature != displayLayoutSignature
         displayPreferencesSignature = signature
+        displayLayoutSignature = layoutSignature
         displayRetentionSignature = retentionSignature
-        guard !displaySourceText.isEmpty || !displayTranslationText.isEmpty else { return }
+        if retentionChanged { updateDisplayExpiryFromCompletion() }
+        let liveSource = settings.showLiveSourceDuringTranslation && settings.translationEnabled
+        let strictFirstSource = sourceCanShowWithoutTranslation &&
+            (!displayNeedsTranslationBeforeCommit ||
+             (sentenceNumber == 0 && lastExpiredSentenceNumber == 0 &&
+              pendingTranslations == 0 && !hasCompletedDisplayPair))
+        if let pending = pendingPartialDisplay {
+            if liveSource || strictFirstSource {
+                // A product-tuning edit takes effect for a partial already waiting.
+                offerPartialDisplay(source: pending.source, sentence: pending.sentence,
+                                    temporarySource: !sourceCanShowWithoutTranslation)
+            } else {
+                pendingPartialDisplay = nil
+            }
+        }
+        if let pending = pendingFinalDisplay {
+            if let plan = currentFinalDisplayPlan(for: pending) {
+                pendingFinalDisplay = PendingFinalDisplay(
+                    source: pending.source, sentence: pending.sentence,
+                    completed: plan.completed, temporarySource: plan.temporarySource)
+            } else {
+                pendingFinalDisplay = nil
+                appendControl("display_state=pending_final_cancelled_by_mode")
+            }
+        }
+        if !liveSource, !strictFirstSource, pendingFinalDisplay == nil {
+            // No partial or final source will claim the screen in strict mode.
+            // Its translation is governed only by reveal/minimum-source timing.
+            takeoverSentenceNumber = 0
+        }
+        guard layoutChanged else { scheduleDisplayWake(); return }
+        guard !displaySourceText.isEmpty || !displayTranslationText.isEmpty else {
+            scheduleDisplayWake()
+            return
+        }
         if !settings.showLiveSourceDuringTranslation { displayShowsTemporarySource = false }
         let visible = composedDisplayText(source: displaySourceText,
                                           translation: displayTranslationText,
                                           temporarySource: displayShowsTemporarySource)
+        if visible.isEmpty {
+            // Switching to a translation-only layout can temporarily have no
+            // translated text. Hide the source without expiring this sentence;
+            // its pending translation must still be allowed to appear.
+            displayText = ""
+            displayIsPartial = false
+            displayIsAwaitingTranslation = settings.translationEnabled
+            hasCompletedDisplayPair = false
+            displayCompletedAt = nil; displayExpiresAt = nil
+            lensDisplayCompletedAt = nil; lensDisplayExpiresAt = nil
+            lensCompletedSentenceNumber = 0; pendingFinalLensSentenceNumber = nil
+            finalSourceShownSentenceNumber = 0; finalSourceShownAt = nil
+            if let pending = pendingPartialDisplay {
+                pendingPartialDisplay = nil
+                claimDisplayForSentence(pending.sentence)
+                showDisplay(source: pending.source, translation: "", partial: true,
+                            completed: false, sentence: pending.sentence,
+                            temporarySource: pending.temporarySource)
+                return
+            }
+            if target != nil { pendingText = " " }
+            appendControl("display_state=hidden_by_mode_change")
+            pumpDisplay()
+            scheduleDisplayWake()
+            return
+        }
         displayText = visible
-        // A layout or live-source toggle keeps the original completion deadline.
-        // A retention edit recalculates from the first final display, never from
-        // the settings edit or from a repeat type-5 submission.
-        if retentionChanged, hasCompletedDisplayPair { updateDisplayExpiryFromCompletion() }
-        pendingText = visible.isEmpty ? " " : lensDisplayText(source: displaySourceText,
-                                                               translation: displayTranslationText,
-                                                               temporarySource: displayShowsTemporarySource)
+        // Repaint only when layout changes. Timing edits keep each output's
+        // original completion timestamp and do not submit duplicate type-5 packets.
+        pendingText = lensDisplayText(source: displaySourceText,
+                                      translation: displayTranslationText,
+                                      temporarySource: displayShowsTemporarySource)
+        pendingFinalLensSentenceNumber = hasCompletedDisplayPair &&
+            lensCompletedSentenceNumber != displayedSentenceNumber ? displayedSentenceNumber : nil
         appendControl("display_state=preferences_changed mode=\(effectiveDisplayMode.rawValue) retentionChanged=\(retentionChanged)")
         pumpDisplay()
+        scheduleDisplayWake()
     }
     private func appendControl(_ event: String) {
         controlEvents.append("t=\(String(format: "%.3f", now)) \(event)")
@@ -649,6 +965,8 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
             appendControl("business=19 type=3 display_only=1 state=submitted")
         }
         displayOpening = false; displayReady = false; displayDeadline = 0; pendingText = nil
+        pendingFinalLensSentenceNumber = nil; lensCompletedSentenceNumber = 0
+        lensDisplayCompletedAt = nil; lensDisplayExpiresAt = nil
         target = nil
         if displayExpiresAt == nil { armDisplayExpiryIfNeeded() }
         if displayClaimed { device.ownDisplayForSubtitles(false); displayClaimed = false }
@@ -827,42 +1145,46 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
                 record?.finalSentences += 1; record?.preview = String(value.prefix(180)); writer?.event(entry)
                 sentenceNumber += 1
                 let sentence = sentenceNumber
+                pendingPartialDisplay = nil
                 if !displayNeedsTranslationBeforeCommit {
-                    showDisplay(source: value, translation: "", partial: false,
-                                completed: true, sentence: sentence)
+                    offerFinalSourceDisplay(source: value, sentence: sentence,
+                                            completed: true)
                 } else if settings.showLiveSourceDuringTranslation ||
                             (effectiveDisplayMode == .bilingual && sentence == 1 && !hasCompletedDisplayPair) {
                     // Keep the recognized original visible while its final translation runs.
-                    // A newer partial owns the next sentence number, so a late translation
-                    // from this sentence cannot replace newer live speech.
-                    showDisplay(source: value, translation: "", partial: false,
-                                completed: false, sentence: sentence,
-                                temporarySource: !sourceCanShowWithoutTranslation)
+                    // A short utterance still obeys the configured takeover gate.
+                    offerFinalSourceDisplay(source: value, sentence: sentence,
+                                            completed: false,
+                                            temporarySource: !sourceCanShowWithoutTranslation)
                 }
                 queueTranslation(value, sentence: sentence, audioOffset: audioOffset)
             }
             firstPartialAudioBytes = nil
             partial = ""
         } else if !value.isEmpty {
+            let sentence = sentenceNumber + 1
+            let liveSource = settings.showLiveSourceDuringTranslation && settings.translationEnabled
+            let firstSourceInStrictMode = sourceCanShowWithoutTranslation &&
+                (!displayNeedsTranslationBeforeCommit ||
+                 (sentenceNumber == 0 && lastExpiredSentenceNumber == 0 &&
+                  pendingTranslations == 0 && !hasCompletedDisplayPair))
+            // A pending takeover delay or strict translation layout leaves the
+            // previous sentence in charge until this partial is actually shown.
             if firstPartialAudioBytes == nil {
                 firstPartialAudioBytes = max(0, audioBytes - 96_000)
             }
-            if settings.showLiveSourceDuringTranslation && settings.translationEnabled {
+            if liveSource {
                 // New live speech takes precedence over an older translated sentence.
                 // In translation-only mode the original is explicitly temporary; the
                 // final translation still replaces it in the selected language.
-                showDisplay(source: value, translation: "", partial: true,
-                            completed: false, sentence: sentenceNumber + 1,
-                            temporarySource: !sourceCanShowWithoutTranslation)
-            } else if sourceCanShowWithoutTranslation,
-                      (!displayNeedsTranslationBeforeCommit ||
-                       (sentenceNumber == 0 && lastExpiredSentenceNumber == 0 &&
-                        pendingTranslations == 0 && !hasCompletedDisplayPair)) {
+                offerPartialDisplay(source: value, sentence: sentence,
+                                    temporarySource: !sourceCanShowWithoutTranslation)
+            } else if firstSourceInStrictMode {
                 // Strict translation mode allows the first bilingual utterance to
                 // appear while it is recognized. Later utterances wait for their
                 // translations even when the previous caption has timed out.
-                showDisplay(source: value, translation: "", partial: true,
-                            completed: false, sentence: sentenceNumber + 1)
+                offerPartialDisplay(source: value, sentence: sentence,
+                                    temporarySource: false)
             }
         }
     }
@@ -870,16 +1192,15 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
         switch effectiveDisplayMode {
         case .bilingual:
             appendControl("display_state=source_fallback translation_unavailable=1")
-            showDisplay(source: source, translation: "", partial: false,
-                        completed: true, sentence: sentence)
+            offerTranslationReveal(source: source, translation: "", sentence: sentence)
         case .chineseOnly, .englishOnly:
             guard !sourceCanShowWithoutTranslation else { return }
             let placeholder = effectiveDisplayMode == .chineseOnly
                 ? "本句翻译暂不可用" : "Translation unavailable"
             appendControl("display_state=translation_placeholder mode=\(effectiveDisplayMode.rawValue)")
             // This is display state only. Never archive it as a fabricated translation.
-            showDisplay(source: source, translation: placeholder, partial: false,
-                        completed: true, sentence: sentence)
+            offerTranslationReveal(source: source, translation: placeholder,
+                                   sentence: sentence)
         }
     }
     private func queueTranslation(_ source: String, sentence: Int, audioOffset: TimeInterval) {
@@ -931,8 +1252,8 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
                 self.writer?.event(CaptionEntry(kind: .translation, text: translated,
                                                 audioOffset: audioOffset))
                 self.appendControl("translation_state=ready source=\(self.options.language) target=\(Self.translationTarget(for: self.options.language))")
-                self.showDisplay(source: source, translation: translated, partial: false,
-                                 completed: true, sentence: sentence)
+                self.offerTranslationReveal(source: source, translation: translated,
+                                            sentence: sentence)
             } catch {
                 guard self.generation == token, self.active else { return }
                 self.appendControl("translation_state=failed")
@@ -945,8 +1266,19 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
         #endif
     }
     private func pumpDisplay() {
-        guard phase == .listening, displayReady, now - lastDisplayAt >= 0.5, let text = pendingText, let sid else { return }
-        pendingText = nil; lastDisplayAt = now
+        let lensInterval = max(0.5, settings.lensUpdateIntervalSeconds)
+        guard phase == .listening, displayReady, target != nil,
+              now - lastDisplayAt >= lensInterval, let text = pendingText, let sid else {
+            scheduleDisplayWake()
+            return
+        }
+        guard let target, device.deviceID == target else {
+            // A disconnected display is terminal for this output. Do not spin on
+            // an already-due packet deadline while waiting for a matching device.
+            connectionChanged()
+            return
+        }
+        let submittedFinalSentence = pendingFinalLensSentenceNumber
         var submitted = false
         if sessionInputSource == .glasses {
             do {
@@ -954,17 +1286,25 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
                     submitted = true; latency.resultSubmittedToGlasses(at: now)
                 }
             } catch { fail("无法编码字幕文字。") }
-        } else if let target, device.deviceID == target {
+        } else {
             do {
                 try device.sendDisplaySubtitle(target: target, payload: SubtitleDisplayWire.text(text, sid: sid))
                 submitted = true
                 latency.resultSubmittedToGlasses(at: now)
             } catch { dropDisplayOnly(reason: "字幕文字未能发送", notifyGlasses: true) }
         }
-        if submitted, hasCompletedDisplayPair, text != " ", displayCompletedAt == nil {
-            displayCompletedAt = now
-            updateDisplayExpiryFromCompletion()
+        if submitted {
+            pendingText = nil
+            pendingFinalLensSentenceNumber = nil
+            lastDisplayAt = now
         }
+        if submitted, let sentence = submittedFinalSentence, text != " " {
+            lensCompletedSentenceNumber = sentence
+            lensDisplayCompletedAt = now
+            updateDisplayExpiryFromCompletion()
+            appendControl("display_state=lens_final_submitted sentence=\(sentence)")
+        }
+        scheduleDisplayWake()
     }
     private func markGap(_ note: String) {
         guard !gapOpen else { return }; gapOpen = true; gaps += 1; record?.gaps = gaps
@@ -1026,6 +1366,10 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
         shortcutSuppressedUntil = max(shortcutSuppressedUntil, now + 1.5)
         generation = UUID(); status = reason
         translationQueue?.cancel(); translationQueue = nil
+        pendingPartialDisplay = nil; pendingFinalDisplay = nil
+        pendingTranslationReveals.removeAll(); takeoverSentenceNumber = 0
+        isProcessingDisplayTransitions = false
+        displayTimingTimer?.invalidate(); displayTimingTimer = nil
         pendingTranslations = 0
         #if COMPANION_DEVICE
         translator?.cancel(); translator = nil
@@ -1075,7 +1419,9 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
         }
     }
     private func release() {
-        timer?.invalidate(); timer = nil; phase = .idle; target = nil; sid = nil
+        timer?.invalidate(); timer = nil
+        displayTimingTimer?.invalidate(); displayTimingTimer = nil
+        phase = .idle; target = nil; sid = nil
         lastPickupDirectionMessageID = nil; pickupDirectionNeedsRetry = false; pickupDirectionMessage = nil
         pendingPickupDirection = nil
         displayOpening = false; displayReady = false; displayDeadline = 0
@@ -1107,14 +1453,42 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
         }
         if cloudStarted, !cloudReady, now >= cloudDeadline { fail("转写连接超时，请检查服务配置和网络。" ); return }
         refreshDisplayPreferences()
-        if let displayExpiresAt, now >= displayExpiresAt { clearVisibleDisplay() }
+        processDisplayTransitions()
         pumpDisplay()
+        scheduleDisplayWake()
     }
     private func installTimer() {
         timer?.invalidate(); timer = nil
         guard scheduleTimers else { return }
         let timer = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in Task { @MainActor in self?.tick() } }
         self.timer = timer; RunLoop.main.add(timer, forMode: .common)
+        scheduleDisplayWake()
+    }
+    private func scheduleDisplayWake() {
+        displayTimingTimer?.invalidate(); displayTimingTimer = nil
+        guard scheduleTimers, active else { return }
+        var deadlines: [TimeInterval] = []
+        if let pendingPartialDisplay { deadlines.append(pendingPartialDisplay.dueAt) }
+        if let pendingFinalDisplay {
+            deadlines.append(takeoverDeadline(for: pendingFinalDisplay.sentence))
+        }
+        deadlines.append(contentsOf: pendingTranslationReveals.values.map {
+            translationRevealDeadline(for: $0)
+        })
+        if let displayExpiresAt { deadlines.append(displayExpiresAt) }
+        if let lensDisplayExpiresAt { deadlines.append(lensDisplayExpiresAt) }
+        if pendingText != nil, sid != nil, let target, device.deviceID == target,
+           phase == .listening, displayReady {
+            deadlines.append(lastDisplayAt + max(0.5, settings.lensUpdateIntervalSeconds))
+        }
+        guard let next = deadlines.min() else { return }
+        // Deadlines have millisecond precision in settings. Main-run-loop scheduling and
+        // the glasses transport still determine actual presentation latency.
+        let timer = Timer(timeInterval: max(0.001, next - now), repeats: false) { [weak self] _ in
+            Task { @MainActor in self?.tick() }
+        }
+        displayTimingTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
     }
     private func endBackgroundTask() {
         guard backgroundTask != .invalid else { return }
@@ -1125,7 +1499,8 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
         let controls = controlEvents.isEmpty ? "none" : controlEvents.joined(separator: "\n")
         let requestedDirection = active ? sessionPickupDirection : settings.pickupDirection
         let asrSummary = provider?.diagnosticSummary ?? lastASRDiagnosticSummary
-        let retentionSeconds = settings.effectiveRetentionSeconds.map { String(format: "%.1f", $0) } ?? "next_sentence"
-        return "Turbo IO 实时字幕\nphase=\(phase.rawValue) inputSource=\(sessionInputSource.rawValue) inputRouteType=\(inputRouteType ?? "none") displayOpening=\(displayOpening) displayReady=\(displayReady)\npackets=\(packets) pcmBytes=\(audioBytes) gaps=\(gaps)\nseqStrideChanges=\(sequenceJumps) maxSeqStep=\(maximumSequenceStep) discardedSeq=\(discardedSequencePackets)\nseqSteps=\(steps.isEmpty ? "none" : steps) otherSteps=\(otherSequenceSteps)\nmaxArrivalMs=\(maximumArrivalIntervalMilliseconds) maxDispatchMs=\(maximumDispatchDelayMilliseconds)\nASR=\(options.service.name) model=\(options.selectedModel) ready=\(cloudReady) directionRequested=\(requestedDirection.rawValue) translationEnabled=\(settings.translationEnabled) translationQuality=\(sessionTranslationQuality.rawValue) displayMode=\(effectiveDisplayMode.rawValue) retention=\(settings.displayRetention.rawValue) retentionSeconds=\(retentionSeconds) liveSourceDuringTranslation=\(settings.showLiveSourceDuringTranslation)\n\(asrSummary)\ncontrolEvents:\n\(controls)\n不包含音频、正文、密钥、原始序号或设备标识。"
+        let timingMilliseconds: (Double) -> Int = { Int(($0 * 1_000).rounded()) }
+        let retention = settings.effectiveRetentionSeconds.map { String(timingMilliseconds($0)) } ?? "next_sentence"
+        return "Turbo IO 实时字幕\nphase=\(phase.rawValue) inputSource=\(sessionInputSource.rawValue) inputRouteType=\(inputRouteType ?? "none") displayOpening=\(displayOpening) displayReady=\(displayReady)\npackets=\(packets) pcmBytes=\(audioBytes) gaps=\(gaps)\nseqStrideChanges=\(sequenceJumps) maxSeqStep=\(maximumSequenceStep) discardedSeq=\(discardedSequencePackets)\nseqSteps=\(steps.isEmpty ? "none" : steps) otherSteps=\(otherSequenceSteps)\nmaxArrivalMs=\(maximumArrivalIntervalMilliseconds) maxDispatchMs=\(maximumDispatchDelayMilliseconds)\nASR=\(options.service.name) model=\(options.selectedModel) ready=\(cloudReady) directionRequested=\(requestedDirection.rawValue) translationEnabled=\(settings.translationEnabled) translationQuality=\(sessionTranslationQuality.rawValue) displayMode=\(effectiveDisplayMode.rawValue) retention=\(settings.displayRetention.rawValue) retentionMs=\(retention) liveSourceDuringTranslation=\(settings.showLiveSourceDuringTranslation)\npartialUpdateMs=\(timingMilliseconds(settings.partialUpdateIntervalSeconds)) takeoverMs=\(timingMilliseconds(settings.nextSentenceTakeoverDelaySeconds)) minSourceMs=\(timingMilliseconds(settings.minimumSourceVisibleSeconds)) revealMs=\(timingMilliseconds(settings.translationRevealDelaySeconds)) lensIntervalMs=\(timingMilliseconds(max(0.5, settings.lensUpdateIntervalSeconds)))\n\(asrSummary)\ncontrolEvents:\n\(controls)\n不包含音频、正文、密钥、原始序号或设备标识。"
     }
 }

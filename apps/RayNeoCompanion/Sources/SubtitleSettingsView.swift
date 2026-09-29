@@ -30,6 +30,17 @@ struct SubtitleSettingsView: View {
     @State private var draftDisplayRetention: SubtitleDisplayRetention = .untilNextSentence
     @State private var draftShowLiveSourceDuringTranslation = true
     @State private var draftCustomRetentionSeconds = 5.0
+    @State private var draftPartialUpdateIntervalSeconds = 0.0
+    @State private var draftNextSentenceTakeoverDelaySeconds = 0.0
+    @State private var draftMinimumSourceVisibleSeconds = 0.0
+    @State private var draftTranslationRevealDelaySeconds = 0.0
+    @State private var draftLensUpdateIntervalSeconds = 0.5
+    @State private var retentionMilliseconds = "5000"
+    @State private var partialMilliseconds = "0"
+    @State private var takeoverMilliseconds = "0"
+    @State private var sourceMilliseconds = "0"
+    @State private var revealMilliseconds = "0"
+    @State private var lensMilliseconds = "500"
     @State private var advancedDisplayExpanded = false
     @State private var inputPorts: [SubtitleMicrophoneInput.Port] = []
     @State private var inputStatus = ""
@@ -204,6 +215,48 @@ struct SubtitleSettingsView: View {
                             .accessibilityIdentifier("subtitle-advanced-live-source")
                         Text("开启后，即使只看译文，新一句流式原文也会覆盖上一句译文；本句识别完成后继续保留原文，直到译文返回并替换。关闭后优先保留上一句；首句混合模式仍显示已识别原文。")
                             .font(.caption).foregroundStyle(.secondary)
+                        Text("识别与换句")
+                            .font(.subheadline.weight(.semibold))
+                        SubtitleMillisecondControl(title: "流式原文更新间隔", detail: "0 ms 表示收到可显示的临时识别就更新；较大的值会合并频繁修订。每句第一段仍立即显示。", range: 0...1000,
+                                                     seconds: $draftPartialUpdateIntervalSeconds,
+                                                     milliseconds: $partialMilliseconds,
+                                                     identifier: "subtitle-partial-update-ms")
+                            .disabled(!draftCanShowAnySourceBeforeTranslation)
+                        SubtitleMillisecondControl(title: "新一句接管延迟", detail: "从新一句第一段临时识别开始计时；到时显示该句最新原文。0 ms 表示立即接管。", range: 0...1000,
+                                                     seconds: $draftNextSentenceTakeoverDelaySeconds,
+                                                     milliseconds: $takeoverMilliseconds,
+                                                     identifier: "subtitle-next-takeover-ms")
+                            .disabled(!draftCanShowLaterSourceBeforeTranslation)
+                        if !draftCanShowLaterSourceBeforeTranslation {
+                            Text(draftDisplayMode == .bilingual && draftTranslationEnabled
+                                 ? "关闭流式原文时，混合模式只在首句暂显原文；后续换句接管参数不生效。"
+                                 : "当前只看译文且关闭了流式原文；识别中的更新与换句接管参数不会影响画面。")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        Text("译文替换")
+                            .font(.subheadline.weight(.semibold))
+                        SubtitleMillisecondControl(title: "原文最短可见", detail: "从该句完整原文出现开始计时，译文不会提前取代它。0 ms 不额外等待。", range: 0...3000,
+                                                     seconds: $draftMinimumSourceVisibleSeconds,
+                                                     milliseconds: $sourceMilliseconds,
+                                                     identifier: "subtitle-source-minimum-ms")
+                            .disabled(!draftNeedsTranslationDisplay || !draftCanShowAnySourceBeforeTranslation)
+                        SubtitleMillisecondControl(title: "译文就绪后延迟", detail: "翻译返回后额外等待。实际替换时间取“原文最短可见”和此项两个截止时间中较晚者。", range: 0...3000,
+                                                     seconds: $draftTranslationRevealDelaySeconds,
+                                                     milliseconds: $revealMilliseconds,
+                                                     identifier: "subtitle-translation-reveal-ms")
+                            .disabled(!draftNeedsTranslationDisplay)
+                        if !draftNeedsTranslationDisplay {
+                            Text("当前显示模式只看识别原文，译文替换参数暂不生效。")
+                                .font(.caption).foregroundStyle(.secondary)
+                        } else if !draftCanShowAnySourceBeforeTranslation {
+                            Text("当前不显示临时原文，“原文最短可见”暂不生效；译文就绪后延迟仍生效。")
+                                .font(.caption).foregroundStyle(.secondary)
+                        } else if !draftShowLiveSourceDuringTranslation && draftDisplayMode == .bilingual {
+                            Text("混合模式关闭流式原文后，“原文最短可见”只影响首句；后续句子等待译文。")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        Text("完成与镜片")
+                            .font(.subheadline.weight(.semibold))
                         Picker("最终字幕停留", selection: $draftDisplayRetention) {
                             ForEach(SubtitleDisplayRetention.allCases, id: \.self) { retention in
                                 Text(retention.name).tag(retention)
@@ -211,29 +264,33 @@ struct SubtitleSettingsView: View {
                         }
                         .accessibilityIdentifier("subtitle-display-retention")
                         if draftDisplayRetention == .custom {
-                            HStack {
-                                Text("自定义时长")
-                                Spacer()
-                                Text("\(Int(draftCustomRetentionSeconds)) 秒")
-                                    .monospacedDigit().foregroundStyle(.secondary)
-                            }
-                            Slider(value: $draftCustomRetentionSeconds, in: 1...30, step: 1)
-                                .accessibilityLabel("最终字幕自定义停留秒数")
-                                .accessibilityIdentifier("subtitle-custom-retention-seconds")
+                            SubtitleMillisecondControl(title: "最终字幕停留", detail: "0 ms 表示手机最终字幕尽快清空；镜片仍需先送最终内容再送清空指令。一直保留请选“直到下一句”。", range: 0...30000,
+                                                         seconds: $draftCustomRetentionSeconds,
+                                                         milliseconds: $retentionMilliseconds,
+                                                         identifier: "subtitle-custom-retention-ms")
+                        }
+                        SubtitleMillisecondControl(title: "眼镜字幕最短发送间隔", detail: "眼镜通信保持至少 500 ms 间隔；调高可减少连续更新，但会让镜片字幕更慢。", range: 500...2000,
+                                                     seconds: $draftLensUpdateIntervalSeconds,
+                                                     milliseconds: $lensMilliseconds,
+                                                     identifier: "subtitle-lens-update-ms")
+                            .disabled(draftInputSource != .glasses && !draftShowOnGlasses)
+                        if draftInputSource != .glasses && !draftShowOnGlasses {
+                            Text("当前只在手机显示；镜片发送间隔将在启用眼镜显示时生效。")
+                                .font(.caption).foregroundStyle(.secondary)
                         }
                         Text("停留计时从最终字幕出现时开始；开启流式原文时，新一句会提前替换。选择“直到下一句”则保持最后一句，直到后续可显示的字幕出现。")
                             .font(.caption).foregroundStyle(.secondary)
                         Button("恢复显示时序默认值") {
                             draftShowLiveSourceDuringTranslation = true
                             draftDisplayRetention = .untilNextSentence
-                            draftCustomRetentionSeconds = 5
+                            setTimingDefaults()
                         }
                         .accessibilityIdentifier("subtitle-advanced-reset")
                     }
                 } header: {
                     Label("产品测试选项", systemImage: "slider.horizontal.3")
                 } footer: {
-                    Text("翻译策略会影响译文质量、耗时及设备资源；显示选项只改变字幕何时出现和消失。")
+                    Text("毫秒输入可精确设定到 1 ms，滑杆可连续拖动。实际出现时间受识别、翻译、iOS 调度及眼镜通信影响；手机 0 ms 停留可能只闪现一帧，镜片仍需先发送最终内容再清空，且两次发送至少间隔 500 ms。")
                 }
                 .disabled(!settings.allowsChanges)
                 Section("显示预览") {
@@ -243,7 +300,12 @@ struct SubtitleSettingsView: View {
                                            order: draftBilingualOrder,
                                            retention: draftDisplayRetention,
                                            customRetentionSeconds: draftCustomRetentionSeconds,
-                                           showLiveSourceDuringTranslation: draftShowLiveSourceDuringTranslation)
+                                           showLiveSourceDuringTranslation: draftShowLiveSourceDuringTranslation,
+                                           partialUpdateIntervalSeconds: draftPartialUpdateIntervalSeconds,
+                                           nextSentenceTakeoverDelaySeconds: draftNextSentenceTakeoverDelaySeconds,
+                                           minimumSourceVisibleSeconds: draftMinimumSourceVisibleSeconds,
+                                           translationRevealDelaySeconds: draftTranslationRevealDelaySeconds,
+                                           lensUpdateIntervalSeconds: draftLensUpdateIntervalSeconds)
                 }
                 if draftInputSource == .glasses { Section("实时字幕收音方向") {
                     Picker("收音范围", selection: Binding(
@@ -335,6 +397,12 @@ struct SubtitleSettingsView: View {
                 draftDisplayRetention = settings.displayRetention
                 draftShowLiveSourceDuringTranslation = settings.showLiveSourceDuringTranslation
                 draftCustomRetentionSeconds = settings.customRetentionSeconds
+                draftPartialUpdateIntervalSeconds = settings.partialUpdateIntervalSeconds
+                draftNextSentenceTakeoverDelaySeconds = settings.nextSentenceTakeoverDelaySeconds
+                draftMinimumSourceVisibleSeconds = settings.minimumSourceVisibleSeconds
+                draftTranslationRevealDelaySeconds = settings.translationRevealDelaySeconds
+                draftLensUpdateIntervalSeconds = settings.lensUpdateIntervalSeconds
+                refreshTimingTexts()
             }
             .onChange(of: draft.service) { _ in key = ""; saved = false }
             .onChange(of: draft) { _ in saved = false }
@@ -358,6 +426,17 @@ struct SubtitleSettingsView: View {
             .onChange(of: sampleText) { _ in sampleDetection = nil; sampleDetectionStatus = "" }
             .onChange(of: draftShowLiveSourceDuringTranslation) { _ in saved = false }
             .onChange(of: draftCustomRetentionSeconds) { _ in saved = false }
+            .onChange(of: draftPartialUpdateIntervalSeconds) { _ in saved = false }
+            .onChange(of: draftNextSentenceTakeoverDelaySeconds) { _ in saved = false }
+            .onChange(of: draftMinimumSourceVisibleSeconds) { _ in saved = false }
+            .onChange(of: draftTranslationRevealDelaySeconds) { _ in saved = false }
+            .onChange(of: draftLensUpdateIntervalSeconds) { _ in saved = false }
+            .onChange(of: retentionMilliseconds) { _ in saved = false }
+            .onChange(of: partialMilliseconds) { _ in saved = false }
+            .onChange(of: takeoverMilliseconds) { _ in saved = false }
+            .onChange(of: sourceMilliseconds) { _ in saved = false }
+            .onChange(of: revealMilliseconds) { _ in saved = false }
+            .onChange(of: lensMilliseconds) { _ in saved = false }
             .translationTask(translationConfiguration) { session in
                 #if COMPANION_DEVICE
                 guard let requestID = translationPreparationID else { return }
@@ -397,11 +476,20 @@ struct SubtitleSettingsView: View {
             dismissAfterSave = false
             return
         }
+        guard validateTimingInputs() else {
+            dismissAfterSave = false
+            return
+        }
         if !hasSpeechOrInputChanges {
             saved = !hasDisplayPreferenceChanges || settings.saveDisplayPreferences(
                 mode: draftDisplayMode, order: draftBilingualOrder, retention: draftDisplayRetention,
                 showLiveSourceDuringTranslation: draftShowLiveSourceDuringTranslation,
-                customRetentionSeconds: draftCustomRetentionSeconds)
+                customRetentionSeconds: draftCustomRetentionSeconds,
+                partialUpdateIntervalSeconds: draftPartialUpdateIntervalSeconds,
+                nextSentenceTakeoverDelaySeconds: draftNextSentenceTakeoverDelaySeconds,
+                minimumSourceVisibleSeconds: draftMinimumSourceVisibleSeconds,
+                translationRevealDelaySeconds: draftTranslationRevealDelaySeconds,
+                lensUpdateIntervalSeconds: draftLensUpdateIntervalSeconds)
             finishSave()
         } else if alwaysOn.activeTask && !busy && settings.allowsChanges {
             confirmApply = true
@@ -413,12 +501,26 @@ struct SubtitleSettingsView: View {
     private var sourceOnlyMode: SubtitleDisplayMode {
         draft.language.hasPrefix("zh") ? .chineseOnly : .englishOnly
     }
+    private var draftNeedsTranslationDisplay: Bool {
+        draftTranslationEnabled && draftDisplayMode != sourceOnlyMode
+    }
+    private var draftCanShowAnySourceBeforeTranslation: Bool {
+        !draftNeedsTranslationDisplay || draftDisplayMode == .bilingual || draftShowLiveSourceDuringTranslation
+    }
+    private var draftCanShowLaterSourceBeforeTranslation: Bool {
+        !draftNeedsTranslationDisplay || draftShowLiveSourceDuringTranslation
+    }
 
     private var hasDisplayPreferenceChanges: Bool {
         draftDisplayMode != settings.displayMode || draftBilingualOrder != settings.bilingualOrder ||
             draftDisplayRetention != settings.displayRetention ||
             draftShowLiveSourceDuringTranslation != settings.showLiveSourceDuringTranslation ||
-            draftCustomRetentionSeconds != settings.customRetentionSeconds
+            draftCustomRetentionSeconds != settings.customRetentionSeconds ||
+            draftPartialUpdateIntervalSeconds != settings.partialUpdateIntervalSeconds ||
+            draftNextSentenceTakeoverDelaySeconds != settings.nextSentenceTakeoverDelaySeconds ||
+            draftMinimumSourceVisibleSeconds != settings.minimumSourceVisibleSeconds ||
+            draftTranslationRevealDelaySeconds != settings.translationRevealDelaySeconds ||
+            draftLensUpdateIntervalSeconds != settings.lensUpdateIntervalSeconds
     }
 
     private var hasSpeechOrInputChanges: Bool {
@@ -441,6 +543,70 @@ struct SubtitleSettingsView: View {
             return false
         }
         return true
+    }
+
+    private func validateTimingInputs() -> Bool {
+        let inputs: [(String, String, ClosedRange<Int>, Bool)] = [
+            ("流式原文更新间隔", partialMilliseconds, 0...1000, draftCanShowAnySourceBeforeTranslation),
+            ("新一句接管延迟", takeoverMilliseconds, 0...1000, draftCanShowLaterSourceBeforeTranslation),
+            ("原文最短可见", sourceMilliseconds, 0...3000,
+             draftNeedsTranslationDisplay && draftCanShowAnySourceBeforeTranslation),
+            ("译文就绪后延迟", revealMilliseconds, 0...3000, draftNeedsTranslationDisplay),
+            ("最终字幕停留", retentionMilliseconds, 0...30000, draftDisplayRetention == .custom),
+            ("眼镜字幕最短发送间隔", lensMilliseconds, 500...2000,
+             draftInputSource == .glasses || draftShowOnGlasses)
+        ]
+        for (name, text, range, isActive) in inputs where isActive {
+            guard let value = Int(text), range.contains(value) else {
+                saveErrorMessage = "\(name)须填写 \(range.lowerBound)–\(range.upperBound) ms 的整数。"
+                showSaveError = true
+                return false
+            }
+        }
+        // Commit the text fields synchronously before the save action reads the draft.
+        if draftCanShowAnySourceBeforeTranslation, let value = Int(partialMilliseconds) {
+            draftPartialUpdateIntervalSeconds = Double(value) / 1000
+        }
+        if draftCanShowLaterSourceBeforeTranslation, let value = Int(takeoverMilliseconds) {
+            draftNextSentenceTakeoverDelaySeconds = Double(value) / 1000
+        }
+        if draftNeedsTranslationDisplay && draftCanShowAnySourceBeforeTranslation,
+           let value = Int(sourceMilliseconds) {
+            draftMinimumSourceVisibleSeconds = Double(value) / 1000
+        }
+        if draftNeedsTranslationDisplay, let value = Int(revealMilliseconds) {
+            draftTranslationRevealDelaySeconds = Double(value) / 1000
+        }
+        if draftDisplayRetention == .custom, let value = Int(retentionMilliseconds) {
+            draftCustomRetentionSeconds = Double(value) / 1000
+        }
+        if draftInputSource == .glasses || draftShowOnGlasses,
+           let value = Int(lensMilliseconds) {
+            draftLensUpdateIntervalSeconds = Double(value) / 1000
+        }
+        // Hidden or disabled experiments keep their previous valid values; clear any
+        // unfinished text so it cannot block a later save when re-enabled.
+        refreshTimingTexts()
+        return true
+    }
+
+    private func refreshTimingTexts() {
+        retentionMilliseconds = String(Int((draftCustomRetentionSeconds * 1000).rounded()))
+        partialMilliseconds = String(Int((draftPartialUpdateIntervalSeconds * 1000).rounded()))
+        takeoverMilliseconds = String(Int((draftNextSentenceTakeoverDelaySeconds * 1000).rounded()))
+        sourceMilliseconds = String(Int((draftMinimumSourceVisibleSeconds * 1000).rounded()))
+        revealMilliseconds = String(Int((draftTranslationRevealDelaySeconds * 1000).rounded()))
+        lensMilliseconds = String(Int((draftLensUpdateIntervalSeconds * 1000).rounded()))
+    }
+
+    private func setTimingDefaults() {
+        draftCustomRetentionSeconds = 5
+        draftPartialUpdateIntervalSeconds = 0
+        draftNextSentenceTakeoverDelaySeconds = 0
+        draftMinimumSourceVisibleSeconds = 0
+        draftTranslationRevealDelaySeconds = 0
+        draftLensUpdateIntervalSeconds = 0.5
+        refreshTimingTexts()
     }
 
     private func applyAlwaysOn(_ policy: AlwaysOnApplyPolicy) {
@@ -520,7 +686,12 @@ struct SubtitleSettingsView: View {
         return settings.saveDisplayPreferences(mode: draftDisplayMode, order: draftBilingualOrder,
                                                retention: draftDisplayRetention,
                                                showLiveSourceDuringTranslation: draftShowLiveSourceDuringTranslation,
-                                               customRetentionSeconds: draftCustomRetentionSeconds)
+                                               customRetentionSeconds: draftCustomRetentionSeconds,
+                                               partialUpdateIntervalSeconds: draftPartialUpdateIntervalSeconds,
+                                               nextSentenceTakeoverDelaySeconds: draftNextSentenceTakeoverDelaySeconds,
+                                               minimumSourceVisibleSeconds: draftMinimumSourceVisibleSeconds,
+                                               translationRevealDelaySeconds: draftTranslationRevealDelaySeconds,
+                                               lensUpdateIntervalSeconds: draftLensUpdateIntervalSeconds)
     }
     private func saveDraft() {
         saved = settings.save(draft, key: key)
@@ -539,6 +710,61 @@ struct SubtitleSettingsView: View {
     }
 }
 
+/// Continuous dragging plus an exact millisecond entry for product experiments.
+private struct SubtitleMillisecondControl: View {
+    let title: String
+    let detail: String
+    let range: ClosedRange<Int>
+    @Binding var seconds: Double
+    @Binding var milliseconds: String
+    let identifier: String
+
+    private var parsedMilliseconds: Int? { Int(milliseconds) }
+    private var valid: Bool { parsedMilliseconds.map(range.contains) ?? false }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Text(title)
+                Spacer(minLength: 8)
+                TextField("毫秒", text: $milliseconds)
+                    .keyboardType(.numberPad)
+                    .multilineTextAlignment(.trailing)
+                    .font(.body.monospacedDigit())
+                    .frame(width: 76)
+                    .accessibilityIdentifier(identifier)
+                Text("ms").foregroundStyle(.secondary)
+            }
+            Slider(value: Binding(
+                get: { seconds },
+                set: { raw in
+                    let millisecondValue = min(range.upperBound, max(range.lowerBound, Int((raw * 1000).rounded())))
+                    seconds = Double(millisecondValue) / 1000
+                    milliseconds = String(millisecondValue)
+                }), in: (Double(range.lowerBound) / 1000)...(Double(range.upperBound) / 1000))
+                .accessibilityLabel(title)
+                .accessibilityIdentifier(identifier + "-slider")
+            HStack {
+                Text(detail)
+                Spacer(minLength: 4)
+                Text(String(format: "%.3f s", seconds))
+                    .monospacedDigit()
+            }
+            .font(.caption)
+            .foregroundStyle(valid ? Color.secondary : Palette.amber)
+            if !valid {
+                Text("请输入 \(range.lowerBound)–\(range.upperBound) ms 的整数；无效值不会保存。")
+                    .font(.caption2)
+                    .foregroundStyle(Palette.amber)
+            }
+        }
+        .onChange(of: milliseconds) { input in
+            guard let value = Int(input), range.contains(value) else { return }
+            seconds = Double(value) / 1000
+        }
+    }
+}
+
 /// Local sample-only preview. It follows the display rules but never opens an
 /// audio input, recognition provider, or TranslationSession.
 private struct SubtitleDisplayPreview: View {
@@ -549,14 +775,20 @@ private struct SubtitleDisplayPreview: View {
     let retention: SubtitleDisplayRetention
     let customRetentionSeconds: Double
     let showLiveSourceDuringTranslation: Bool
+    let partialUpdateIntervalSeconds: Double
+    let nextSentenceTakeoverDelaySeconds: Double
+    let minimumSourceVisibleSeconds: Double
+    let translationRevealDelaySeconds: Double
+    let lensUpdateIntervalSeconds: Double
 
     private enum Scenario: String, CaseIterable {
-        case normal, rapidTurns, secondTranslationFails
+        case normal, rapidTurns, shortReply, secondTranslationFails
 
         var name: String {
             switch self {
             case .normal: return "连续对话"
             case .rapidTurns: return "快速插话"
+            case .shortReply: return "极短应答"
             case .secondTranslationFails: return "译文失败"
             }
         }
@@ -567,16 +799,27 @@ private struct SubtitleDisplayPreview: View {
         let status: String
         let explanation: String
         let isPartial: Bool
+        let clearedAt: Double?
+
+        init(caption: String, status: String, explanation: String, isPartial: Bool,
+             clearedAt: Double? = nil) {
+            self.caption = caption
+            self.status = status
+            self.explanation = explanation
+            self.isPartial = isPartial
+            self.clearedAt = clearedAt
+        }
     }
 
     @State private var scenario: Scenario = .normal
     @State private var playhead: Double = 8.6
+    @State private var scrubMilliseconds = "8600"
     @State private var playing = false
     @State private var lastTick: Date?
     private var retentionSeconds: Double? {
-        retention == .custom ? min(30, max(1, customRetentionSeconds)) : retention.seconds
+        retention == .custom ? customRetentionSeconds : retention.seconds
     }
-    private var duration: Double { max(29, 23 + (retentionSeconds ?? 0)) }
+    private var duration: Double { max(29, 24 + (retentionSeconds ?? 0)) }
 
     var body: some View {
         let state = previewState(at: playhead)
@@ -635,12 +878,32 @@ private struct SubtitleDisplayPreview: View {
                 .accessibilityLabel("预览进度")
                 .accessibilityIdentifier("subtitle-preview-scrub")
             HStack {
+                Text("精确位置")
+                Spacer()
+                TextField("毫秒", text: $scrubMilliseconds)
+                    .keyboardType(.numberPad)
+                    .multilineTextAlignment(.trailing)
+                    .font(.body.monospacedDigit())
+                    .frame(width: 86)
+                    .accessibilityIdentifier("subtitle-preview-position-ms")
+                Text("ms")
+            }
+            .font(.caption)
+            HStack {
                 Text(timeLabel(playhead))
                 Spacer()
                 Text(timeLabel(duration))
             }
             .font(.caption.monospacedDigit())
             .foregroundStyle(.secondary)
+            LabeledContent("眼镜最短发送间隔", value: "\(Int((lensUpdateIntervalSeconds * 1000).rounded())) ms（不改变手机画面）")
+                .font(.caption)
+            HStack(spacing: 8) {
+                previewJump("首句识别", to: 0.8)
+                previewJump("第二句", to: 10)
+                previewJump("译文就绪", to: scenario == .shortReply ? 10.5 : 16.4)
+                if scenario == .rapidTurns { previewJump("插话", to: 17.4) }
+            }
             HStack(spacing: 10) {
                 Button {
                     togglePlayback()
@@ -659,13 +922,13 @@ private struct SubtitleDisplayPreview: View {
                 .buttonStyle(.bordered)
                 .accessibilityIdentifier("subtitle-preview-replay")
             }
-            Text("示例演示临时原文、译文等待、下一句覆盖和停留时间。翻译返回时间是固定示例，不代表低延迟或高保真策略的实测耗时。眼镜排版以真机为准；不会启动麦克风、转写或翻译服务。")
+            Text("手机画面按上方时序参数模拟连续修订、译文就绪、新句接管和清空；镜片发送间隔不会改变手机预览。示例的识别与翻译返回时间固定，不代表真机耗时；眼镜发送仍受 ACK、链路和系统调度影响。不会启动麦克风、转写或翻译服务。")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         }
-        .onReceive(Timer.publish(every: 0.1, on: .main, in: .common).autoconnect()) { tick in
+        .onReceive(Timer.publish(every: 0.02, on: .main, in: .common).autoconnect()) { tick in
             guard playing else { return }
-            let elapsed = max(0, min(0.25, lastTick.map { tick.timeIntervalSince($0) } ?? 0.1))
+            let elapsed = max(0, min(0.1, lastTick.map { tick.timeIntervalSince($0) } ?? 0.02))
             lastTick = tick
             playhead = min(duration, playhead + elapsed)
             if playhead >= duration { playing = false; lastTick = nil }
@@ -674,6 +937,13 @@ private struct SubtitleDisplayPreview: View {
             playhead = min(playhead, newDuration)
             if playhead >= newDuration { playing = false; lastTick = nil }
         }
+        .onChange(of: playhead) { value in
+            scrubMilliseconds = String(Int((value * 1000).rounded()))
+        }
+        .onChange(of: scrubMilliseconds) { value in
+            guard let milliseconds = Int(value), (0...Int((duration * 1000).rounded())).contains(milliseconds) else { return }
+            playhead = Double(milliseconds) / 1000
+        }
     }
 
     private var sourceIsChinese: Bool { language.lowercased().hasPrefix("zh") }
@@ -681,6 +951,9 @@ private struct SubtitleDisplayPreview: View {
     private var effectiveMode: SubtitleDisplayMode { translationEnabled ? mode : sourceOnlyMode }
     private var sourceOnly: Bool { effectiveMode == sourceOnlyMode }
     private var bilingual: Bool { effectiveMode == .bilingual }
+    private func sourceVisibleBeforeTranslation(for sentence: SampleSentence) -> Bool {
+        sourceOnly || showLiveSourceDuringTranslation || (bilingual && sentence.number == 1)
+    }
 
     private var firstSource: String {
         sourceIsChinese
@@ -693,10 +966,12 @@ private struct SubtitleDisplayPreview: View {
             : "今天我们沿着河边慢慢走，前面的路口有一家刚开门的书店。"
     }
     private var secondSource: String {
-        sourceIsChinese ? "等一下，左边那辆车正在转弯。" : "Wait, the car on the left is turning."
+        if scenario == .shortReply { return sourceIsChinese ? "好。" : "Okay." }
+        return sourceIsChinese ? "等一下，左边那辆车正在转弯。" : "Wait, the car on the left is turning."
     }
     private var secondTranslation: String {
-        sourceIsChinese ? "Wait, the car on the left is turning." : "等一下，左边那辆车正在转弯。"
+        if scenario == .shortReply { return sourceIsChinese ? "Okay." : "好。" }
+        return sourceIsChinese ? "Wait, the car on the left is turning." : "等一下，左边那辆车正在转弯。"
     }
     private var thirdSource: String {
         sourceIsChinese ? "好，我已经看到了，我们从后面绕过去。" :
@@ -707,107 +982,148 @@ private struct SubtitleDisplayPreview: View {
             "好，我已经看到了，我们从后面绕过去。"
     }
 
+    private struct SampleSentence {
+        let source: String
+        let translation: String
+        let start: Double
+        let completedAt: Double
+        let translationReady: Double
+        let number: Int
+    }
+
+    private var emptyPreview: PreviewState {
+        PreviewState(caption: "", status: "待播放", explanation: "播放或拖动到毫秒位置，观察连续对话和译文切换。", isPartial: false)
+    }
+
     private func previewState(at time: Double) -> PreviewState {
-        if time < 0.8 {
-            return PreviewState(caption: "", status: "待播放", explanation: "播放或拖动进度，查看长句识别、翻译延迟及下一句切换。", isPartial: false)
+        let first = SampleSentence(source: firstSource, translation: firstTranslation,
+                                   start: 0.8, completedAt: 6, translationReady: 8.4, number: 1)
+        let second = SampleSentence(source: secondSource, translation: secondTranslation,
+                                    start: 10,
+                                    completedAt: scenario == .shortReply ? 10.25 : 14,
+                                    translationReady: scenario == .shortReply ? 10.5 : 16.4,
+                                    number: 2)
+        let third = SampleSentence(source: thirdSource, translation: thirdTranslation,
+                                   start: 17.4, completedAt: 20.4, translationReady: 22.4, number: 3)
+        if time < first.start { return emptyPreview }
+        let firstAtSecondStart = sentenceState(first, at: second.start, prior: emptyPreview,
+                                               priorVisibleAtStart: false, supersededAt: nil)
+        let secondTakeover = estimatedTakeover(of: second,
+                                                priorVisibleAtStart: !firstAtSecondStart.caption.isEmpty,
+                                                priorExpiryAt: estimatedExpiry(of: first))
+        let firstNow = sentenceState(first, at: time, prior: emptyPreview,
+                                     priorVisibleAtStart: false, supersededAt: secondTakeover)
+        if time < second.start { return firstNow }
+        let firstAtThirdStart = sentenceState(first, at: third.start, prior: emptyPreview,
+                                              priorVisibleAtStart: false, supersededAt: secondTakeover)
+        let secondAtThirdStart = sentenceState(second, at: third.start,
+                                              prior: firstAtThirdStart,
+                                              priorVisibleAtStart: !firstAtSecondStart.caption.isEmpty,
+                                              ownTakeoverAt: secondTakeover,
+                                              supersededAt: nil)
+        let thirdPriorExpiry = secondAtThirdStart.caption == firstAtThirdStart.caption
+            ? estimatedExpiry(of: first) : estimatedExpiry(of: second, ownTakeoverAt: secondTakeover)
+        let thirdTakeover = scenario == .rapidTurns
+            ? estimatedTakeover(of: third,
+                                priorVisibleAtStart: !secondAtThirdStart.caption.isEmpty,
+                                priorExpiryAt: thirdPriorExpiry) : nil
+        let secondNow = sentenceState(second, at: time, prior: firstNow,
+                                      priorVisibleAtStart: !firstAtSecondStart.caption.isEmpty,
+                                      ownTakeoverAt: secondTakeover,
+                                      supersededAt: thirdTakeover)
+        if scenario != .rapidTurns || time < third.start { return secondNow }
+        return sentenceState(third, at: time, prior: secondNow,
+                             priorVisibleAtStart: !secondAtThirdStart.caption.isEmpty,
+                             ownTakeoverAt: thirdTakeover,
+                             supersededAt: nil)
+    }
+
+    private func estimatedReveal(of sentence: SampleSentence,
+                                 ownTakeoverAt: Double? = nil) -> Double {
+        let sourceDeadline = sourceVisibleBeforeTranslation(for: sentence)
+            ? max(sentence.completedAt, ownTakeoverAt ?? sentence.start) + minimumSourceVisibleSeconds
+            : sentence.translationReady
+        return max(sourceDeadline, sentence.translationReady + translationRevealDelaySeconds)
+    }
+
+    private func estimatedExpiry(of sentence: SampleSentence,
+                                 ownTakeoverAt: Double? = nil) -> Double? {
+        guard let retentionSeconds else { return nil }
+        if sourceOnly { return max(sentence.completedAt, ownTakeoverAt ?? sentence.start) + retentionSeconds }
+        return estimatedReveal(of: sentence, ownTakeoverAt: ownTakeoverAt) + retentionSeconds
+    }
+
+    private func estimatedTakeover(of sentence: SampleSentence,
+                                   priorVisibleAtStart: Bool,
+                                   priorExpiryAt: Double?) -> Double {
+        if !sourceVisibleBeforeTranslation(for: sentence) {
+            return estimatedReveal(of: sentence)
         }
-        if time < 6 {
-            let caption = sourceOnly || bilingual || showLiveSourceDuringTranslation
-                ? partial(firstSource, progress: (time - 0.8) / 5.2) : ""
-            return PreviewState(caption: caption, status: caption.isEmpty ? "等待译文" : "临时识别",
-                                explanation: "第一位说话者说出较长的句子；临时识别会逐步修订。", isPartial: !caption.isEmpty)
-        }
-        if time < 8.4 {
-            if sourceOnly {
-                return finalized(firstSource, completedAt: 6, now: time,
-                                 explanation: "第一句识别完成；所选语言就是识别原文。")
+        let requested = sentence.start + (priorVisibleAtStart ? nextSentenceTakeoverDelaySeconds : 0)
+        guard priorVisibleAtStart, let priorExpiryAt,
+              priorExpiryAt > sentence.start, priorExpiryAt < requested else { return requested }
+        // Once the old caption is gone, the pending new partial may take over
+        // before the requested hold. The preview shows this transition at expiry.
+        return min(requested, priorExpiryAt)
+    }
+
+    private func sentenceState(_ sentence: SampleSentence, at time: Double,
+                               prior: PreviewState, priorVisibleAtStart: Bool,
+                               ownTakeoverAt: Double? = nil,
+                               supersededAt: Double?) -> PreviewState {
+        if time < sentence.start { return prior }
+        let showsSource = sourceVisibleBeforeTranslation(for: sentence)
+        let requestedTakeover = sentence.start + (priorVisibleAtStart ? nextSentenceTakeoverDelaySeconds : 0)
+        // Runtime reevaluates the held caption on each partial callback. Once the
+        // previous final subtitle expires, the next partial can take over early.
+        let takeover = ownTakeoverAt ?? min(requestedTakeover,
+                                            prior.clearedAt.map { max(sentence.start, $0) } ?? requestedTakeover)
+        if time < sentence.completedAt {
+            guard showsSource, time >= takeover else {
+                return prior
             }
-            let caption = bilingual || showLiveSourceDuringTranslation ? firstSource : ""
-            return PreviewState(caption: caption, status: caption.isEmpty ? "等待译文" : "翻译中",
-                                explanation: caption.isEmpty
-                                    ? "第一句已识别，译文还未生成；当前设置等待译文。"
-                                    : "第一句已识别，译文还未生成；本句完整原文继续显示。",
+            // Sample recognition updates arrive every 50 ms. A longer user interval
+            // merges them; the first eligible update is still immediate.
+            let cadence = max(0.05, partialUpdateIntervalSeconds)
+            let publishedAt = takeover + floor((time - takeover) / cadence) * cadence
+            let progress = max(0, min(1, (publishedAt - sentence.start) / (sentence.completedAt - sentence.start)))
+            return PreviewState(caption: partial(sentence.source, progress: progress),
+                                status: "临时识别",
+                                explanation: "示例每 50 ms 到来一段识别；第\(sentence.number)句最近一次显示于 \(timeLabel(publishedAt))。更新间隔与换句接管延迟已应用。",
+                                isPartial: true)
+        }
+        if showsSource && time < takeover { return prior }
+        if sourceOnly {
+            return finalized(sentence.source, completedAt: max(sentence.completedAt, takeover), now: time,
+                             explanation: "第\(sentence.number)句原文完成，开始最终字幕停留计时。")
+        }
+        let revealAt = estimatedReveal(of: sentence, ownTakeoverAt: takeover)
+        let supersededBeforeReveal = supersededAt.map { time >= $0 && revealAt >= $0 } ?? false
+        if scenario == .secondTranslationFails && sentence.number == 2 && time >= revealAt {
+            let fallback = bilingual ? sentence.source :
+                (effectiveMode == .chineseOnly ? "本句翻译暂不可用" : "Translation unavailable")
+            return finalized(fallback, completedAt: revealAt, now: time,
+                             explanation: "第二句翻译失败，显示当前语言模式的失败回退。")
+        }
+        if time < revealAt || supersededBeforeReveal {
+            guard showsSource else { return prior }
+            return PreviewState(caption: sentence.source, status: "翻译中",
+                                explanation: supersededBeforeReveal
+                                    ? "新一句已开始；本句迟到的译文不会覆盖后续原文。"
+                                    : "完整原文已显示；译文须同时满足原文最短可见和就绪后延迟。",
                                 isPartial: false)
         }
-        let firstCompleted = composed(source: firstSource, translation: firstTranslation)
-        if time < 10 {
-            return sourceOnly
-                ? finalized(firstSource, completedAt: 6, now: time,
-                            explanation: "第一句已完成，按所选停留时间显示。")
-                : finalized(firstCompleted, completedAt: 8.4, now: time,
-                            explanation: "第一句译文生成，按所选语言和混合顺序显示。")
-        }
-        if time < 14 {
-            if sourceOnly || showLiveSourceDuringTranslation {
-                return PreviewState(caption: partial(secondSource, progress: (time - 10) / 4),
-                                    status: "临时识别",
-                                    explanation: "第二位说话者开始；新一句原文逐步覆盖上一句译文。", isPartial: true)
-            }
-            return finalized(firstCompleted, completedAt: 8.4, now: time,
-                             explanation: "第二位说话者开始；当前模式保留上一句，等待新译文。")
-        }
-        if time < 16.4 {
-            return sourceOnly || showLiveSourceDuringTranslation
-                ? finalized(secondSource, completedAt: 14, now: time,
-                            explanation: "第二句识别完成；本句原文保留到译文返回。",
-                            awaitingTranslation: !sourceOnly)
-                : finalized(firstCompleted, completedAt: 8.4, now: time,
-                            explanation: "第二句已识别，新译文仍在生成；上一句继续停留或到时清空。")
-        }
-        if scenario == .rapidTurns && time >= 17.4 {
-            let secondCompleted = composed(source: secondSource, translation: secondTranslation)
-            if time < 20.4 {
-                if sourceOnly || showLiveSourceDuringTranslation {
-                    return PreviewState(caption: partial(thirdSource, progress: (time - 17.4) / 3),
-                                        status: "临时识别",
-                                        explanation: "第三位说话者很快插话；原文立即更新，而非等待整句翻译。",
-                                        isPartial: true)
-                }
-                return finalized(secondCompleted, completedAt: 16.4, now: time,
-                                 explanation: "快速插话发生；当前设置继续显示上一句译文。")
-            }
-            if time < 22.4 {
-                return sourceOnly || showLiveSourceDuringTranslation
-                    ? finalized(thirdSource, completedAt: 20.4, now: time,
-                                explanation: "第三句已识别，原文保留直到译文返回。",
-                                awaitingTranslation: !sourceOnly)
-                    : finalized(secondCompleted, completedAt: 16.4, now: time,
-                                explanation: "第三句译文生成中；上一句仍按停留时间显示。")
-            }
-            return sourceOnly
-                ? finalized(thirdSource, completedAt: 20.4, now: time,
-                            explanation: "第三句原文按停留时间显示。")
-                : finalized(composed(source: thirdSource, translation: thirdTranslation),
-                            completedAt: 22.4, now: time,
-                            explanation: "第三句译文返回；立即替换暂显原文，开始最终字幕停留计时。")
-        }
-        if sourceOnly {
-            return finalized(secondSource, completedAt: 14, now: time,
-                             explanation: scenario == .secondTranslationFails && translationEnabled
-                                ? "第二句翻译失败；所选识别原文仍正常显示。"
-                                : "第二句识别原文继续显示，直到下一句或停留时间结束。")
-        }
-        if scenario == .secondTranslationFails {
-            let fallback = bilingual ? secondSource :
-                (effectiveMode == .chineseOnly ? "本句翻译暂不可用" : "Translation unavailable")
-            return finalized(fallback, completedAt: 16.4, now: time,
-                             explanation: bilingual
-                                ? "第二句翻译失败；混合模式只显示已识别原文。"
-                                : (showLiveSourceDuringTranslation
-                                   ? "第二句翻译失败；临时原文结束后，换成所选语言的失败提示。"
-                                   : "第二句翻译失败；仅用所选语言显示失败提示。"))
-        }
-        return finalized(composed(source: secondSource, translation: secondTranslation),
-                         completedAt: 16.4, now: time,
-                         explanation: "第二句译文已生成；可继续拖动观察 3、5、10 秒清空或持续显示。")
+        return finalized(composed(source: sentence.source, translation: sentence.translation),
+                         completedAt: revealAt, now: time,
+                         explanation: "第\(sentence.number)句译文显示；最终字幕停留从此刻计时。")
     }
 
     private func finalized(_ caption: String, completedAt: Double, now: Double,
                            explanation: String, awaitingTranslation: Bool = false) -> PreviewState {
         if !awaitingTranslation, let seconds = retentionSeconds, now >= completedAt + seconds {
             return PreviewState(caption: "", status: "已清空",
-                                explanation: "最终字幕显示 \(Int(seconds)) 秒后清空；下一句生成时会重新显示。",
-                                isPartial: false)
+                                explanation: "最终字幕停留 \(Int((seconds * 1000).rounded())) ms 后清空；下一句生成时会重新显示。",
+                                isPartial: false, clearedAt: completedAt + seconds)
         }
         return PreviewState(caption: caption, status: awaitingTranslation ? "翻译中" : "最终字幕",
                             explanation: explanation, isPartial: false)
@@ -840,7 +1156,16 @@ private struct SubtitleDisplayPreview: View {
     }
 
     private func timeLabel(_ value: Double) -> String {
-        let whole = Int(value)
-        return String(format: "%02d:%02d", whole / 60, whole % 60)
+        String(format: "%.3f s", value)
+    }
+
+    private func previewJump(_ name: String, to time: Double) -> some View {
+        Button(name) {
+            playhead = min(duration, time)
+            playing = false
+            lastTick = nil
+        }
+        .buttonStyle(.bordered)
+        .font(.caption2)
     }
 }
