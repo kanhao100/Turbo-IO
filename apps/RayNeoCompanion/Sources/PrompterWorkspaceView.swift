@@ -283,7 +283,7 @@ private struct PrompterSessionView: View {
                 Label(followLabel, systemImage: runtime.active ? "mic.fill" : "mic.slash")
                     .foregroundStyle(runtime.followState == .uncertain ? Palette.amber : Palette.green)
                 Spacer()
-                Text("\(Int(Double(position) / Double(max(1, script.utf8.count)) * 100))%")
+                Text(readingProgressLabel)
                     .font(.caption.monospacedDigit())
             }.font(.subheadline.weight(.medium)).accessibilityIdentifier("prompter-follow-state")
             Text(runtime.status).font(.caption).foregroundStyle(Palette.muted)
@@ -316,6 +316,11 @@ private struct PrompterSessionView: View {
         case .paused: return "暂停跟随 · 仍在监听"
         case .finished: return "稿件已读完"
         }
+    }
+    private var readingProgressLabel: String {
+        let total = Double(max(1, script.utf8.count))
+        let percent = Int(Double(position) * 100 / total)
+        return "\(percent)%"
     }
     private var speechControls: some View {
         HStack(spacing: 12) {

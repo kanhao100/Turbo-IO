@@ -152,7 +152,7 @@ import RayNeoDisplay
     private var timer: Timer?
     private var now: TimeInterval { uptime() }
     func canStart(output: Output, input: Input) -> Bool {
-        guard canStart, settings.missingRequirements.isEmpty,
+        guard canStart, settings.requirements.isEmpty,
               (try? settings.options.validated()) != nil,
               input != .glasses || output == .glasses,
               output != .glasses || (transport.ready && transport.deviceID != nil) else { return false }
