@@ -14,6 +14,7 @@ import RayNeoDisplay
     var onControl: ((UInt32) -> Void)? { get set }
     var onAudio: ((Data, Int?) -> Void)? { get set }
     var onFailure: ((String) -> Void)? { get set }
+    var onPositionUnavailable: (() -> Void)? { get set }
     func prepare(text: String, scrollMode: Int, initialOffset: Int) -> Bool
     func start() -> Bool
     func seek(page: Int, highlight: Int) -> Bool
@@ -39,6 +40,7 @@ import RayNeoDisplay
     var onControl: ((UInt32) -> Void)?
     var onAudio: ((Data, Int?) -> Void)?
     var onFailure: ((String) -> Void)?
+    var onPositionUnavailable: (() -> Void)?
     init(_ features: CompanionDeviceFeatures) {
         self.features = features
         features.onTeleprompterProgress = { [weak self] value in
@@ -47,6 +49,7 @@ import RayNeoDisplay
         features.onTeleprompterControl = { [weak self] in self?.onControl?($0) }
         features.onTeleprompterAudio = { [weak self] in self?.onAudio?($0, $1) }
         features.onTeleprompterFailure = { [weak self] in self?.onFailure?($0) }
+        features.onTeleprompterPositionUnavailable = { [weak self] in self?.onPositionUnavailable?() }
     }
     func prepare(text: String, scrollMode: Int, initialOffset: Int) -> Bool {
         features.prepareTeleprompter(text, speed: 120, scrollMode: scrollMode, initialOffset: initialOffset)
@@ -319,6 +322,12 @@ import RayNeoDisplay
             guard let self, self.generation == token, self.active, self.output == .glasses else { return }
             self.fail(reason)
         }
+        transport.onPositionUnavailable = { [weak self] in
+            guard let self, self.generation == token, self.active else { return }
+            self.pendingPosition = nil
+            if let update = self.follower?.resetRecognitionEvidence() { self.apply(update, sendPosition: false) }
+            self.status = "滑动位置暂未确认，识别继续；可在手机辅助定位"
+        }
     }
 
     private func startRecognizer(token: UUID) {
@@ -456,7 +465,8 @@ import RayNeoDisplay
         provider?.onText = nil; provider?.onFailure = nil; provider?.stop(); provider = nil
         microphone?.stop(); microphone = nil; decoder = nil
         transport.onAudio = nil; transport.onProgress = nil; transport.onControl = nil; transport.onFailure = nil
-        if notifyGlasses, output == .glasses, transport.sessionID == ownedSession { transport.stop() }
+        transport.onPositionUnavailable = nil
+        if notifyGlasses, output == .glasses, let ownedSession, transport.sessionID == ownedSession { transport.stop() }
         ownedSession = nil; retryAt = nil; bufferedPCM = Data(); pendingPosition = nil
         sessionKey = ""; asrReady = false; audioLevel = 0
         status = error == nil ? "演讲已结束，阅读位置已保存" : "跟随已停止，稿件和阅读位置已保留"

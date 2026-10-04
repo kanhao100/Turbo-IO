@@ -4,6 +4,10 @@ import Foundation
 /// and type 3 start carry the same mode, position, size and FNV-1a checksum.
 /// Native field evidence is in the official AppCueingStartRequest serializer
 /// (0x25d45b8 → 0x25d4628), plus the existing Harmony/official-addon path.
+/// The official headless page calculation maps byte offset → character/line
+/// → byte table entry (0x166feb0/0x166fca4/0x166fa80/0x166fbc8). Its protocol-Y
+/// cache is not the returned page offset. Firmware normalization and non-ASCII
+/// highlight behavior still require hardware calibration.
 struct TeleprompterNativeDocument {
     let data: Data
     let speed: Int

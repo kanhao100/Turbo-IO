@@ -49,8 +49,8 @@ import CryptoKit
             self?.store?.realtimeSubtitles.transportFailed(device: $0, packet: $1, code: $2, messageID: $3)
             self?.store?.alwaysOn.displayTransportFailed(device: $0, packet: $1, code: $2)
         }
-        voice.onTeleprompterSendError = { [weak self] in
-            self?.teleprompterTransportFailed(device: $0, packet: $1, code: $2)
+        voice.onTeleprompterSendError = { [weak self] device, packet, code, _ in
+            self?.teleprompterTransportFailed(device: device, packet: packet, code: code)
         }
         voice.onSubtitleEnvelope = { [weak self] in self?.store?.realtimeSubtitles.receive(device: $0, packet: $1, arrival: $2) }
         // One automatic weather owner. Legacy Weatherstack stays manual to avoid overwrites.
@@ -471,6 +471,7 @@ import CryptoKit
     @Published private(set) var teleprompterOffset: Int64 = 0
     @Published private(set) var teleprompterStarted = false
     var onTeleprompterProgress: ((TeleprompterPositionObserved) -> Void)?
+    var onTeleprompterPositionUnavailable: (() -> Void)?
     var onTeleprompterControl: ((UInt32) -> Void)?
     var onTeleprompterAudio: ((Data, Int?) -> Void)?
     var onTeleprompterFailure: ((String) -> Void)?
@@ -617,12 +618,18 @@ extension CompanionDeviceFeatures {
             try voice.sendBusiness(20,payload:DeviceBusinessWire.encode(type:UInt32(ack.type),json:JSONSerialization.jsonObject(with:ack.payload) as! [String:Any]))
             switch event {
             case .progress(let p):
-                guard teleprompterStarted,
+                guard teleprompterStarted else { return }
+                guard
                       p.pageOffset >= 0, p.pageOffset <= 48_000,
                       p.highLightOffset >= 0, p.highLightOffset <= 48_000,
                       teleprompterBoundaries.contains(Int(p.pageOffset)),
                       teleprompterBoundaries.contains(Int(p.highLightOffset)) else {
-                    throw DeviceFeatureError.invalidPacket
+                    // A gesture must never tear down the recognizer. Firmware
+                    // layout/normalization can report an unmappable position;
+                    // preserve the current anchor instead of guessing a unit.
+                    teleprompterStatus = "眼镜滑动位置暂无法对应原稿；语音识别继续，保留当前位置。"
+                    onTeleprompterPositionUnavailable?()
+                    return
                 }
                 teleprompterOffset = p.pageOffset
                 teleprompterStatus = "眼镜滑动辅助定位：UTF-8 偏移 \(p.pageOffset)"

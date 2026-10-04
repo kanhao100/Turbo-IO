@@ -4,6 +4,23 @@ import RayNeoCaptions
 @testable import RayNeoCompanion
 
 final class SpeechPrompterRuntimeTests: XCTestCase {
+    @MainActor func testUnmappedEyeSwipeHoldsAndKeepsMicrophoneAndRecognizerAlive() async throws {
+        let f = fixture()
+        defer { f.runtime.stop() }
+        try await XCTUnwrap(f.runtime.start(document: f.document, output: .glasses, input: .iPhone)).value
+        f.provider.onText?("今天我们介绍", false)
+        f.provider.onText?("今天我们介绍产品", false)
+        let anchor = f.runtime.confirmedUTF8Offset
+        let seeks = f.transport.seeks.count
+        f.transport.onPositionUnavailable?()
+        f.clock.now += 1; f.runtime.tick()
+        XCTAssertEqual(f.runtime.confirmedUTF8Offset, anchor)
+        XCTAssertEqual(f.transport.seeks.count, seeks)
+        XCTAssertEqual(f.runtime.phase, .listening)
+        XCTAssertEqual(f.provider.stops, 0)
+        XCTAssertEqual(f.microphone.stops, 0)
+    }
+
     @MainActor func testPhoneAssistKeepsCaptureAndRecognizerRunningAndThenFollowsNearbySpeech() async throws {
         let f = fixture()
         defer { f.runtime.stop() }
@@ -355,6 +372,7 @@ final class SpeechPrompterRuntimeTests: XCTestCase {
         var prepared = false, started = false, errorMessage: String?
         var onProgress: ((Int, Int) -> Void)?, onControl: ((UInt32) -> Void)?
         var onAudio: ((Data, Int?) -> Void)?, onFailure: ((String) -> Void)?
+        var onPositionUnavailable: (() -> Void)?
         var prepares = 0, starts = 0, stops = 0, scrollModes: [Int] = []
         var seeks: [(page: Int, highlight: Int)] = []
         var autoStarted = true, echoSeekSynchronously = false
