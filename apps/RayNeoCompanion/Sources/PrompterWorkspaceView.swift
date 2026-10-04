@@ -292,8 +292,8 @@ private struct PrompterSessionView: View {
                 Text("请先连接眼镜，或选择手机提词并使用 iPhone 麦克风。")
                     .font(.caption).foregroundStyle(Palette.muted)
             }
-            if !runtime.active && !recognitionSettings.missingRequirements.isEmpty {
-                Button("配置语音识别：\(recognitionSettings.missingRequirements.joined(separator: "、"))") { settings = true }
+            if !runtime.active && !recognitionSettings.requirements.isEmpty {
+                Button("配置语音识别：\(recognitionSettings.requirements.joined(separator: "、"))") { settings = true }
                     .font(.caption).foregroundStyle(Palette.green)
             }
             if !runtime.active && input == .glasses && output != .glasses {
