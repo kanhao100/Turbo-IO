@@ -226,6 +226,7 @@ private struct CaptionRollingToken: Sendable {
 
 private struct CaptionRollingLayout: Sendable {
     let columns: Int
+    init(columns: Int) { self.columns = columns }
     // Four separators plus five rows of at most 76 bytes fit the 384-byte wire
     // budget. The budget is independent of which channel owns a particular row.
     private static let rowByteLimit = 76
