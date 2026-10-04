@@ -30,7 +30,7 @@ run('xcodebuild', [
   '-parallel-testing-enabled', 'NO',
   '-derivedDataPath', 'apps/RayNeoCompanion/build-subtitle-rolling',
   '-resultBundlePath', 'apps/RayNeoCompanion/build-subtitle-rolling/Tests.xcresult',
-  'CODE_SIGNING_ALLOWED=NO', 'test'
+  'CODE_SIGN_IDENTITY=-', 'CODE_SIGNING_ALLOWED=YES', 'test'
 ]);
 } finally {
   const exported = spawnSync('xcrun', ['xcresulttool', 'export', 'attachments',

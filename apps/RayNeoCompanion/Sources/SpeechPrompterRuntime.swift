@@ -212,6 +212,7 @@ import RayNeoDisplay
         generation = UUID(); let token = generation
         phase = .preparing; error = nil; status = "正在准备稿件和识别服务"
         documentID = document.id; text = document.text; recognitionText = ""
+        lastPersistedAt = now; lastPersistedOffset = document.readingUTF8Offset
         follower = SpeechScriptFollower(text: text)
         apply(follower!.assist(toUTF8Offset: document.readingUTF8Offset), sendPosition: false)
         candidateUTF8Offset = nil; microphoneRoute = nil; audioLevel = 0

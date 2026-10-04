@@ -29,13 +29,23 @@ final class PrompterUITests: XCTestCase {
         app.buttons["prompter-new"].tap()
         let title = app.textFields["prompter-editor-title"]
         XCTAssertTrue(title.waitForExistence(timeout: 5)); title.tap(); title.typeText("Unfinished draft")
-        app.buttons["取消"].tap()
-        XCTAssertTrue(app.buttons["继续编辑"].waitForExistence(timeout: 3)); app.buttons["继续编辑"].tap()
+        app.buttons["prompter-editor-cancel"].tap()
+        XCTAssertTrue(app.buttons["prompter-discard-cancel"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.buttons["prompter-discard-confirm"].exists)
+        app.buttons["prompter-discard-cancel"].tap()
         XCTAssertEqual(title.value as? String, "Unfinished draft")
         app.buttons["prompter-save"].tap()
         XCTAssertEqual(app.staticTexts["prompter-selected-title"].label, "Unfinished draft")
         XCTAssertFalse(app.buttons["prompter-open-session"].isEnabled)
         capture(app, "prompter-empty-draft-preserved")
+        app.buttons["prompter-new"].tap()
+        XCTAssertTrue(title.waitForExistence(timeout: 5)); title.tap(); title.typeText("Discard this draft")
+        app.buttons["prompter-editor-cancel"].tap()
+        XCTAssertTrue(app.buttons["prompter-discard-confirm"].waitForExistence(timeout: 3))
+        app.buttons["prompter-discard-confirm"].tap()
+        XCTAssertTrue(app.buttons["prompter-new"].waitForExistence(timeout: 5))
+        XCTAssertEqual(app.staticTexts["prompter-selected-title"].label, "Unfinished draft")
+        XCTAssertEqual(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "prompter-manuscript-")).count, 1)
     }
 
     func testSearchDuplicateAndDeleteRequireExplicitChoice() {
@@ -57,10 +67,13 @@ final class PrompterUITests: XCTestCase {
         let copyTitle = app.staticTexts["prompter-selected-title"].label
         let copy = manuscript(copyTitle, in: app)
         reveal(copy, in: app); copy.press(forDuration: 1); app.buttons["删除"].tap()
-        XCTAssertTrue(app.buttons["删除稿件"].waitForExistence(timeout: 3))
-        app.buttons["取消"].tap()
+        XCTAssertTrue(app.buttons["prompter-delete-confirm"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.buttons["prompter-delete-cancel"].exists)
+        app.buttons["prompter-delete-cancel"].tap()
         XCTAssertTrue(copy.exists)
-        copy.press(forDuration: 1); app.buttons["删除"].tap(); app.buttons["删除稿件"].tap()
+        copy.press(forDuration: 1); app.buttons["删除"].tap()
+        XCTAssertTrue(app.buttons["prompter-delete-confirm"].waitForExistence(timeout: 3))
+        app.buttons["prompter-delete-confirm"].tap()
         XCTAssertFalse(manuscript(copyTitle, in: app).exists)
         capture(app, "prompter-library-delete-confirmed")
     }
