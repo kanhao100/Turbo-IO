@@ -125,8 +125,8 @@ final class SubtitleRealtimeTests: XCTestCase {
         XCTAssertTrue(shown.allSatisfy { $0.components(separatedBy: "\n").count == 5 && $0.utf8.count <= 384 })
     }
 
-    @MainActor func testFourProvidersReceiveOnlyMatchingNativeCaptionAudioAndPersistFinal() async throws {
-        for service in CaptionService.allCases {
+    @MainActor func testCloudProvidersReceiveOnlyMatchingNativeCaptionAudioAndPersistFinal() async throws {
+        for service in CaptionService.allCases.filter({ $0.requiresCredential }) {
             let f = fixture(service)
             await f.runtime.start()?.value
             XCTAssertEqual(try f.types(), [1]); XCTAssertEqual(f.provider.starts, 0)

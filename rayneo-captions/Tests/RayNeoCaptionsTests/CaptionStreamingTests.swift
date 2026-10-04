@@ -24,7 +24,7 @@ final class CaptionStreamingTests: XCTestCase {
         }
     }
     func testCredentialScopesAreSeparateAndAzureScopeIsStable() {
-        XCTAssertEqual(Set(CaptionService.allCases.map(\.keychainService)).count, 5)
+        XCTAssertEqual(Set(CaptionService.allCases.map(\.keychainService)).count, CaptionService.allCases.count)
         var options = CaptionOptions(); options.region = " EastUS\n"
         XCTAssertEqual(options.credentialAccount, "eastus")
         options.service = .deepgram; XCTAssertEqual(options.credentialAccount, "default")
