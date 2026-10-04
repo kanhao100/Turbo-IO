@@ -9,6 +9,8 @@ final class SubtitleSettingsTests: XCTestCase {
         let settings = makeStore(defaults)
         XCTAssertEqual(settings.displayLayout, .rolling)
         XCTAssertEqual(settings.rollingConfiguration, CaptionRollingConfiguration())
+        XCTAssertEqual(settings.rollingConfiguration.columns, 40)
+        XCTAssertEqual(settings.rollingConfiguration.englishWidthPercent, 140)
         XCTAssertEqual(settings.translationMinimumVisibleSeconds, 1.5)
         XCTAssertEqual(settings.bilingualOrder, .sourceFirst)
         XCTAssertEqual(settings.displayRetention, .untilNextSentence)
@@ -41,7 +43,8 @@ final class SubtitleSettingsTests: XCTestCase {
         let defaults = isolatedDefaults()
         defer { defaults.removePersistentDomain(forName: defaultsSuite) }
         let settings = makeStore(defaults)
-        let configuration = CaptionRollingConfiguration(sourceLines: 4, columns: 36, scrollUnit: .word)
+        let configuration = CaptionRollingConfiguration(sourceLines: 4, columns: 36, scrollUnit: .word,
+                                                       englishWidthPercent: 160)
         XCTAssertTrue(settings.saveDisplayPreferences(mode: .bilingual, order: .sourceFirst,
             retention: .untilNextSentence, translationMinimumVisibleSeconds: 2.25,
             displayLayout: .rolling, rollingConfiguration: configuration))
@@ -77,6 +80,41 @@ final class SubtitleSettingsTests: XCTestCase {
                 retention: .untilNextSentence, translationMinimumVisibleSeconds: hold))
             XCTAssertEqual(defaults.data(forKey: SubtitleSettingsStore.displayPreferencesKey), saved)
         }
+        for percent in [90, 145, 210] {
+            var invalid = CaptionRollingConfiguration()
+            invalid.englishWidthPercent = percent
+            XCTAssertFalse(settings.saveDisplayPreferences(mode: .bilingual, order: .sourceFirst,
+                retention: .untilNextSentence, rollingConfiguration: invalid))
+            XCTAssertEqual(defaults.data(forKey: SubtitleSettingsStore.displayPreferencesKey), saved)
+        }
+    }
+
+    @MainActor func testBuild22Width40MigratesWithoutResettingUserChoices() throws {
+        let defaults = isolatedDefaults()
+        defer { defaults.removePersistentDomain(forName: defaultsSuite) }
+        defaults.set(try JSONSerialization.data(withJSONObject: [
+            "mode": "bilingual", "order": "sourceFirst", "retention": "untilNextSentence",
+            "displayLayout": "rolling",
+            "rollingConfiguration": ["sourceLines": 3, "columns": 40, "scrollUnit": "line"]
+        ]), forKey: SubtitleSettingsStore.displayPreferencesKey)
+        let settings = makeStore(defaults)
+        XCTAssertEqual(settings.rollingConfiguration.columns, 40)
+        XCTAssertEqual(settings.rollingConfiguration.englishWidthPercent, 140)
+        XCTAssertFalse(settings.translationEnabled)
+    }
+
+    @MainActor func testBuild22RecommendedWidthMigratesToDenseDefault() throws {
+        let defaults = isolatedDefaults()
+        defer { defaults.removePersistentDomain(forName: defaultsSuite) }
+        defaults.set(try JSONSerialization.data(withJSONObject: [
+            "mode": "bilingual", "order": "sourceFirst", "retention": "untilNextSentence",
+            "displayLayout": "rolling",
+            "rollingConfiguration": ["sourceLines": 3, "columns": 28, "scrollUnit": "line"]
+        ]), forKey: SubtitleSettingsStore.displayPreferencesKey)
+        let settings = makeStore(defaults)
+        XCTAssertEqual(settings.rollingConfiguration.columns, 40)
+        XCTAssertEqual(settings.rollingConfiguration.englishWidthPercent, 140)
+        XCTAssertEqual(settings.rollingConfiguration.sourceLines, 3)
     }
 
     @MainActor func testSavedRollingBoundsAreNormalizedOnRead() throws {

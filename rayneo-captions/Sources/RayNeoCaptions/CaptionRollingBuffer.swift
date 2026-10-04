@@ -7,18 +7,40 @@ public enum CaptionScrollUnit: String, Codable, CaseIterable, Sendable {
 public struct CaptionRollingConfiguration: Codable, Equatable, Sendable {
     public var sourceLines: Int
     public var columns: Int
+    /// Latin text capacity relative to the original approximation. CJK width
+    /// stays fixed, including in rows that contain both scripts.
+    public var englishWidthPercent: Int
     public var scrollUnit: CaptionScrollUnit
 
-    public init(sourceLines: Int = 3, columns: Int = 28,
-                scrollUnit: CaptionScrollUnit = .line) {
+    public static let allowedEnglishWidthPercents = Array(stride(from: 100, through: 200, by: 10))
+
+    public init(sourceLines: Int = 3, columns: Int = 40,
+                scrollUnit: CaptionScrollUnit = .line,
+                englishWidthPercent: Int = 140) {
         self.sourceLines = sourceLines
         self.columns = columns
+        self.englishWidthPercent = englishWidthPercent
         self.scrollUnit = scrollUnit
     }
 
+    private enum CodingKeys: String, CodingKey {
+        case sourceLines, columns, englishWidthPercent, scrollUnit
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        sourceLines = try values.decode(Int.self, forKey: .sourceLines)
+        columns = try values.decode(Int.self, forKey: .columns)
+        englishWidthPercent = try values.decodeIfPresent(Int.self, forKey: .englishWidthPercent) ?? 140
+        scrollUnit = try values.decode(CaptionScrollUnit.self, forKey: .scrollUnit)
+    }
+
     public var normalized: Self {
-        Self(sourceLines: min(4, max(1, sourceLines)),
-             columns: min(40, max(16, columns)), scrollUnit: scrollUnit)
+        let boundedPercent = min(200, max(100, englishWidthPercent))
+        return Self(sourceLines: min(4, max(1, sourceLines)),
+                    columns: min(40, max(16, columns)),
+                    scrollUnit: scrollUnit,
+                    englishWidthPercent: ((boundedPercent + 5) / 10) * 10)
     }
 
     public var translationLines: Int { 5 - normalized.sourceLines }
@@ -94,7 +116,8 @@ public struct CaptionRollingBuffer: Sendable {
         let tokens = CaptionRollingText.tokens(normalized)
         var boundaries: [Int] = []
         var consumed = 0
-        var layout = CaptionRollingLayout(columns: configuration.columns)
+        var layout = CaptionRollingLayout(columns: configuration.columns,
+                                          englishWidthPercent: configuration.englishWidthPercent)
         for token in tokens {
             if configuration.scrollUnit == .line {
                 boundaries.append(contentsOf: layout.append(token).map { consumed + $0 })
@@ -145,10 +168,15 @@ private struct CaptionRollingChannel: Sendable {
     }
 }
 
-/// Keeping the last five rows for every supported width bounds memory without
-/// moving a completed line's wrap origin when its predecessors are discarded.
+/// Keeping the last five rows for every supported width and Latin capacity
+/// bounds memory without moving a completed line's wrap origin when its
+/// predecessors are discarded or the workbench settings change.
 private struct CaptionRollingHistory: Sendable {
-    private var layouts = (16...40).map { CaptionRollingLayout(columns: $0) }
+    private var layouts = (16...40).flatMap { columns in
+        CaptionRollingConfiguration.allowedEnglishWidthPercents.map {
+            CaptionRollingLayout(columns: columns, englishWidthPercent: $0)
+        }
+    }
     private var tail: [CaptionRollingToken] = []
     private var tailBytes = 0
     private var lastCharacter: Character?
@@ -181,7 +209,10 @@ private struct CaptionRollingHistory: Sendable {
 
     func rows(count: Int, configuration: CaptionRollingConfiguration) -> [String] {
         if configuration.scrollUnit == .line {
-            return Array(layouts[configuration.columns - 16].rows.suffix(count))
+            let percentageIndex = (configuration.englishWidthPercent - 100) / 10
+            let index = (configuration.columns - 16) * CaptionRollingConfiguration.allowedEnglishWidthPercents.count
+                + percentageIndex
+            return Array(layouts[index].rows.suffix(count))
         }
         // Re-anchor only at word boundaries (one CJK grapheme is one unit).
         // Unlike line scrolling, a partially occupied oldest row is retained
@@ -189,7 +220,7 @@ private struct CaptionRollingHistory: Sendable {
         var lower = 0, upper = tail.count
         while lower < upper {
             let middle = lower + (upper - lower) / 2
-            if wrappedTail(from: middle, columns: configuration.columns).lineCount <= count {
+            if wrappedTail(from: middle, configuration: configuration).lineCount <= count {
                 upper = middle
             } else {
                 lower = middle + 1
@@ -199,13 +230,14 @@ private struct CaptionRollingHistory: Sendable {
             // A single word longer than the entire window cannot be retained as
             // a word. Keep its newest grapheme-wrapped rows rather than blanking
             // the channel merely because the speaker used a long identifier.
-            return Array(wrappedTail(from: tail.count - 1, columns: configuration.columns).rows.suffix(count))
+            return Array(wrappedTail(from: tail.count - 1, configuration: configuration).rows.suffix(count))
         }
-        return wrappedTail(from: lower, columns: configuration.columns).rows
+        return wrappedTail(from: lower, configuration: configuration).rows
     }
 
-    private func wrappedTail(from start: Int, columns: Int) -> CaptionRollingLayout {
-        var result = CaptionRollingLayout(columns: columns)
+    private func wrappedTail(from start: Int, configuration: CaptionRollingConfiguration) -> CaptionRollingLayout {
+        var result = CaptionRollingLayout(columns: configuration.columns,
+                                          englishWidthPercent: configuration.englishWidthPercent)
         for token in tail.dropFirst(start) { _ = result.append(token) }
         return result
     }
@@ -213,20 +245,35 @@ private struct CaptionRollingHistory: Sendable {
 
 private struct CaptionRollingToken: Sendable {
     let text: String
-    let columns: Int
+    let latinColumns: Int
+    let wideColumns: Int
     let bytes: Int
     var isSpace: Bool { text == " " }
 
     init(_ text: String) {
         self.text = text
-        self.columns = text.reduce(0) { $0 + CaptionRollingText.width($1) }
+        var latinColumns = 0, wideColumns = 0
+        for character in text {
+            let width = CaptionRollingText.width(character)
+            if width == 2 { wideColumns += width } else { latinColumns += width }
+        }
+        self.latinColumns = latinColumns
+        self.wideColumns = wideColumns
         self.bytes = text.utf8.count
+    }
+
+    func measuredColumns(englishWidthPercent: Int) -> Int {
+        latinColumns * 100 + wideColumns * englishWidthPercent
     }
 }
 
 private struct CaptionRollingLayout: Sendable {
-    let columns: Int
-    init(columns: Int) { self.columns = columns }
+    let columnCapacity: Int
+    let englishWidthPercent: Int
+    init(columns: Int, englishWidthPercent: Int) {
+        columnCapacity = columns * englishWidthPercent
+        self.englishWidthPercent = englishWidthPercent
+    }
     // Four separators plus five rows of at most 76 bytes fit the 384-byte wire
     // budget. The budget is independent of which channel owns a particular row.
     private static let rowByteLimit = 76
@@ -244,16 +291,17 @@ private struct CaptionRollingLayout: Sendable {
         }
         guard !token.text.isEmpty else { return [] }
         var breaks: [Int] = []
-        if token.columns <= columns, token.bytes <= Self.rowByteLimit {
+        let measuredColumns = token.measuredColumns(englishWidthPercent: englishWidthPercent)
+        if measuredColumns <= columnCapacity, token.bytes <= Self.rowByteLimit {
             let separator = pendingSpace && !rows.isEmpty ? 1 : 0
-            if !rows.isEmpty, !fits(columns: token.columns + separator, bytes: token.bytes + separator) {
+            if !rows.isEmpty, !fits(columns: measuredColumns + separator * 100, bytes: token.bytes + separator) {
                 beginLine()
                 breaks.append(0)
             }
             if rows.isEmpty { beginLine() }
-            if pendingSpace { appendDirect(" ", columns: 1, bytes: 1) }
+            if pendingSpace { appendDirect(" ", columns: 100, bytes: 1) }
             pendingSpace = false
-            appendDirect(token.text, columns: token.columns, bytes: token.bytes)
+            appendDirect(token.text, columns: measuredColumns, bytes: token.bytes)
         } else {
             // Long Latin words may exceed a row; split only between graphemes.
             // A single pathological cluster over 76 bytes is represented by an
@@ -261,15 +309,18 @@ private struct CaptionRollingLayout: Sendable {
             for (offset, character) in token.text.enumerated() {
                 let original = String(character)
                 let value = original.utf8.count <= Self.rowByteLimit ? original : "…"
-                let width = value == original ? CaptionRollingText.width(character) : 1
+                // Tokenization isolates each wide grapheme; a Latin word has
+                // no wide columns. Reuse that classification across the cache.
+                let width = value == original && token.wideColumns > 0
+                    ? 2 * englishWidthPercent : 100
                 let bytes = value.utf8.count
                 let separator = pendingSpace && !rows.isEmpty ? 1 : 0
-                if !rows.isEmpty, !fits(columns: width + separator, bytes: bytes + separator) {
+                if !rows.isEmpty, !fits(columns: width + separator * 100, bytes: bytes + separator) {
                     beginLine()
                     breaks.append(offset)
                 }
                 if rows.isEmpty { beginLine() }
-                if pendingSpace { appendDirect(" ", columns: 1, bytes: 1) }
+                if pendingSpace { appendDirect(" ", columns: 100, bytes: 1) }
                 pendingSpace = false
                 appendDirect(value, columns: width, bytes: bytes)
             }
@@ -278,7 +329,7 @@ private struct CaptionRollingLayout: Sendable {
     }
 
     private func fits(columns extraColumns: Int, bytes extraBytes: Int) -> Bool {
-        currentColumns + extraColumns <= columns && currentBytes + extraBytes <= Self.rowByteLimit
+        currentColumns + extraColumns <= columnCapacity && currentBytes + extraBytes <= Self.rowByteLimit
     }
 
     private mutating func beginLine() {

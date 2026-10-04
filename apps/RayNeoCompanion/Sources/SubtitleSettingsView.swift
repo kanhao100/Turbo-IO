@@ -227,7 +227,10 @@ struct SubtitleSettingsView: View {
                             Stepper("每行宽度 \(draftRollingConfiguration.columns)",
                                     value: $draftRollingConfiguration.columns, in: 16...40)
                                 .accessibilityIdentifier("subtitle-rolling-columns")
-                            Text("推荐原文 3 行、译文 2 行，每行宽度 28，按行滚动。宽度以拉丁字符为近似单位，汉字约占两个单位；实际镜片换行还受字体影响。按词滚动用于比较文本窗口变化，不代表眼镜支持平滑动画。")
+                            Stepper("英文行宽 \(String(format: "%.1f", Double(draftRollingConfiguration.englishWidthPercent) / 100)) 倍",
+                                    value: $draftRollingConfiguration.englishWidthPercent, in: 100...200, step: 10)
+                                .accessibilityIdentifier("subtitle-rolling-english-width")
+                            Text("推荐原文 3 行、译文 2 行，每行宽度 40，英文行宽 1.4 倍，按行滚动。宽度 40 约容纳 20 个汉字或 56 个普通英文字符；英文倍率调大可放入更多英文，中文容量不变。实际换行还受镜片字体影响；过大时眼镜可能再次换行，请按实测校准。按词滚动用于比较文本窗口变化，不代表眼镜支持平滑动画。")
                                 .font(.caption).foregroundStyle(.secondary)
                         } else {
                             Text("按段替换保留原有显示方式；新段接管延迟、原文最短可见与双语顺序只在此模式生效。")

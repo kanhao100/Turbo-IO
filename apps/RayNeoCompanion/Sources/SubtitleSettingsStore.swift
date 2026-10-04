@@ -139,6 +139,7 @@ private struct SubtitleDisplayPreferences: Codable {
         case translationMinimumVisibleSeconds
         case displayLayout, rollingConfiguration
     }
+    private enum RollingMigrationKeys: String, CodingKey { case englishWidthPercent }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -165,6 +166,13 @@ private struct SubtitleDisplayPreferences: Codable {
             SubtitleDisplayLayout.self, forKey: .displayLayout) ?? .rolling
         rollingConfiguration = try container.decodeIfPresent(
             CaptionRollingConfiguration.self, forKey: .rollingConfiguration) ?? CaptionRollingConfiguration()
+        if container.contains(.rollingConfiguration) {
+            let saved = try container.nestedContainer(keyedBy: RollingMigrationKeys.self, forKey: .rollingConfiguration)
+            if !saved.contains(.englishWidthPercent), rollingConfiguration.sourceLines == 3,
+               rollingConfiguration.columns == 28, rollingConfiguration.scrollUnit == .line {
+                rollingConfiguration.columns = 40
+            }
+        }
     }
 }
 
@@ -331,8 +339,9 @@ struct SubtitleKeychainStorage: SubtitleCredentialStorage {
             let lensSeconds = lensUpdateIntervalSeconds ?? self.lensUpdateIntervalSeconds
             let layout = displayLayout ?? self.displayLayout
             let rolling = rollingConfiguration ?? self.rollingConfiguration
-            guard (1...4).contains(rolling.sourceLines), (16...40).contains(rolling.columns) else {
-                error = "原文须占 1–4 行，每行宽度须为 16–40，请检查滚动分区设置。"
+            guard (1...4).contains(rolling.sourceLines), (16...40).contains(rolling.columns),
+                  (100...200).contains(rolling.englishWidthPercent), rolling.englishWidthPercent % 10 == 0 else {
+                error = "原文须占 1–4 行，每行宽度须为 16–40，英文行宽倍率须为 1.0–2.0 倍（每档 0.1）。"
                 return false
             }
             guard Self.isValidSeconds(customSeconds, range: 0...30),

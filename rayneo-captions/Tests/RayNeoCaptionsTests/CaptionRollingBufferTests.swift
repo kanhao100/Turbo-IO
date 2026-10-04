@@ -84,6 +84,8 @@ final class CaptionRollingBufferTests: XCTestCase {
     }
 
     func testConfigurationClampsAndRoundTrips() throws {
+        XCTAssertEqual(configuration.columns, 40)
+        XCTAssertEqual(configuration.englishWidthPercent, 140)
         let low = CaptionRollingConfiguration(sourceLines: -1, columns: 2)
         XCTAssertEqual(low.normalized.sourceLines, 1)
         XCTAssertEqual(low.normalized.columns, 16)
@@ -95,10 +97,85 @@ final class CaptionRollingBufferTests: XCTestCase {
                                               from: JSONEncoder().encode(high)), high)
     }
 
+    func testEnglishWidthPercentClampsQuantizesAndRoundTrips() throws {
+        XCTAssertEqual(CaptionRollingConfiguration(englishWidthPercent: Int.min).normalized.englishWidthPercent, 100)
+        XCTAssertEqual(CaptionRollingConfiguration(englishWidthPercent: Int.max).normalized.englishWidthPercent, 200)
+        XCTAssertEqual(CaptionRollingConfiguration(englishWidthPercent: 134).normalized.englishWidthPercent, 130)
+        XCTAssertEqual(CaptionRollingConfiguration(englishWidthPercent: 135).normalized.englishWidthPercent, 140)
+        XCTAssertEqual(CaptionRollingConfiguration.allowedEnglishWidthPercents, Array(stride(from: 100, through: 200, by: 10)))
+        let selected = CaptionRollingConfiguration(sourceLines: 2, columns: 32,
+                                                   scrollUnit: .word, englishWidthPercent: 180)
+        XCTAssertEqual(try JSONDecoder().decode(CaptionRollingConfiguration.self,
+                                              from: JSONEncoder().encode(selected)), selected)
+    }
+
+    func testBuild22RollingConfigurationDecodesWithoutLosingSavedChoices() throws {
+        let saved = Data(#"{"sourceLines":4,"columns":28,"scrollUnit":"word"}"#.utf8)
+        let restored = try JSONDecoder().decode(CaptionRollingConfiguration.self, from: saved)
+        XCTAssertEqual(restored, CaptionRollingConfiguration(sourceLines: 4, columns: 28,
+                                                            scrollUnit: .word, englishWidthPercent: 140))
+    }
+
+    func testEnglishPhotoUsesTwoRowsWithRecommendedCapacityAndThreeWithOriginalCapacity() {
+        let text = "secretly left the audio recorder in the office. Oh, better control. I want to see them."
+        var buffer = CaptionRollingBuffer()
+        buffer.updateSource(text, sentence: 1, final: true)
+        let original = CaptionRollingConfiguration(columns: 40, englishWidthPercent: 100)
+        XCTAssertEqual(buffer.snapshot(configuration: original).sourceLines,
+                       ["secretly left the audio recorder in the",
+                        "office. Oh, better control. I want to", "see them."])
+        XCTAssertEqual(buffer.snapshot(configuration: configuration).sourceLines,
+                       ["secretly left the audio recorder in the office. Oh,",
+                        "better control. I want to see them.", " "])
+        XCTAssertEqual(CaptionRollingBuffer.translationSteps(text, configuration: configuration),
+                       ["secretly left the audio recorder in the office. Oh,", text])
+    }
+
+    func testEnglishCapacityDoesNotChangeChineseRows() {
+        let row = "一二三四五六七八九十甲乙丙丁戊己庚辛壬癸"
+        var buffer = CaptionRollingBuffer()
+        buffer.updateSource(row + row + "字", sentence: 1, final: true)
+        for percent in CaptionRollingConfiguration.allowedEnglishWidthPercents {
+            for scrollUnit in CaptionScrollUnit.allCases {
+                let selected = CaptionRollingConfiguration(columns: 40, scrollUnit: scrollUnit,
+                                                           englishWidthPercent: percent)
+                XCTAssertEqual(buffer.snapshot(configuration: selected).sourceLines, [row, row, "字"])
+                XCTAssertEqual(CaptionRollingBuffer.translationSteps(row + row + "字", configuration: selected).last,
+                               row + row + "字")
+            }
+        }
+    }
+
+    func testMixedScriptsKeepDigitsNarrowAndWideCharactersUnchanged() {
+        let text = "0123456789 12 世界Ａ"
+        var buffer = CaptionRollingBuffer()
+        buffer.updateSource(text, sentence: 1, final: true)
+        let original = CaptionRollingConfiguration(columns: 16, englishWidthPercent: 100)
+        XCTAssertEqual(buffer.snapshot(configuration: original).sourceLines,
+                       ["0123456789 12 世", "界Ａ", " "])
+        let expanded = CaptionRollingConfiguration(columns: 16, englishWidthPercent: 140)
+        XCTAssertEqual(buffer.snapshot(configuration: expanded).sourceLines, [text, " ", " "])
+        buffer.updateSource("字", sentence: 2, final: true)
+        XCTAssertEqual(buffer.snapshot(configuration: expanded).sourceLines, [text, "字", " "])
+    }
+
+    func testMaximumEnglishCapacityStillRespectsExactWireBudget() {
+        let sourceRow = String(repeating: "x", count: 76)
+        let translationRow = String(repeating: "y", count: 76)
+        var buffer = CaptionRollingBuffer()
+        buffer.updateSource(String(repeating: sourceRow, count: 3), sentence: 1, final: true)
+        buffer.appendTranslation(String(repeating: translationRow, count: 2), sentence: 1)
+        let expanded = CaptionRollingConfiguration(columns: 40, englishWidthPercent: 200)
+        let snapshot = buffer.snapshot(configuration: expanded)
+        XCTAssertEqual(snapshot.sourceLines, Array(repeating: sourceRow, count: 3))
+        XCTAssertEqual(snapshot.translationLines, Array(repeating: translationRow, count: 2))
+        XCTAssertEqual(snapshot.text.utf8.count, 384)
+    }
+
     func testEnglishWrapPreservesWordsThatFitOneRow() {
         var buffer = CaptionRollingBuffer()
         buffer.updateSource("We enjoy reliable real time captions.", sentence: 1, final: true)
-        let snapshot = buffer.snapshot(configuration: CaptionRollingConfiguration(columns: 16))
+        let snapshot = buffer.snapshot(configuration: CaptionRollingConfiguration(columns: 16, englishWidthPercent: 100))
         XCTAssertEqual(snapshot.sourceLines, ["We enjoy", "reliable real", "time captions."])
     }
 
@@ -123,8 +200,29 @@ final class CaptionRollingBufferTests: XCTestCase {
         let row = "abcdefghijklmnop"
         buffer.updateSource(String(repeating: row, count: 500), sentence: 1, final: true)
         buffer.updateSource("q", sentence: 2, final: false)
-        let snapshot = buffer.snapshot(configuration: CaptionRollingConfiguration(columns: 16))
+        let snapshot = buffer.snapshot(configuration: CaptionRollingConfiguration(columns: 16, englishWidthPercent: 100))
         XCTAssertEqual(snapshot.sourceLines, [row, row, "q"])
+    }
+
+    func testLongHistoryKeepsWrapOriginAtEveryCachedEnglishCapacity() {
+        var buffer = CaptionRollingBuffer()
+        buffer.updateSource(String(repeating: "x", count: 8_000), sentence: 1, final: true)
+        buffer.updateSource("q", sentence: 2, final: false)
+        for columns in [16, 28, 40] {
+            for percent in CaptionRollingConfiguration.allowedEnglishWidthPercents {
+                let selected = CaptionRollingConfiguration(columns: columns, englishWidthPercent: percent)
+                let rowLength = min(76, columns * percent / 100)
+                let remainder = 8_000 % rowLength
+                let row = String(repeating: "x", count: rowLength)
+                let tail = remainder == 0 ? "q" : String(repeating: "x", count: remainder) + " q"
+                if tail.count <= rowLength {
+                    XCTAssertEqual(buffer.snapshot(configuration: selected).sourceLines, [row, row, tail])
+                } else {
+                    XCTAssertEqual(buffer.snapshot(configuration: selected).sourceLines,
+                                   [row, String(repeating: "x", count: remainder), "q"])
+                }
+            }
+        }
     }
 
     func testOversizedEnglishWordRemainsVisibleInExperimentalWordMode() {
@@ -142,13 +240,16 @@ final class CaptionRollingBufferTests: XCTestCase {
         var buffer = CaptionRollingBuffer()
         buffer.updateSource(String(repeating: family + accent + "字", count: 100), sentence: 1, final: true)
         buffer.appendTranslation(String(repeating: family + accent + "語", count: 100), sentence: 1)
-        for scrollUnit in CaptionScrollUnit.allCases {
-            let snapshot = buffer.snapshot(configuration: CaptionRollingConfiguration(columns: 40, scrollUnit: scrollUnit))
-            XCTAssertLessThanOrEqual(snapshot.text.utf8.count, 384)
-            XCTAssertEqual(snapshot.text.components(separatedBy: "\n").count, 5)
-            for row in snapshot.sourceLines + snapshot.translationLines {
-                XCTAssertLessThanOrEqual(row.utf8.count, 76)
-                XCTAssertTrue(row.allSatisfy { [Character(family), Character(accent), "字", "語", " "].contains($0) })
+        for percent in [100, 140, 200] {
+            for scrollUnit in CaptionScrollUnit.allCases {
+                let snapshot = buffer.snapshot(configuration: CaptionRollingConfiguration(columns: 40,
+                    scrollUnit: scrollUnit, englishWidthPercent: percent))
+                XCTAssertLessThanOrEqual(snapshot.text.utf8.count, 384)
+                XCTAssertEqual(snapshot.text.components(separatedBy: "\n").count, 5)
+                for row in snapshot.sourceLines + snapshot.translationLines {
+                    XCTAssertLessThanOrEqual(row.utf8.count, 76)
+                    XCTAssertTrue(row.allSatisfy { [Character(family), Character(accent), "字", "語", " "].contains($0) })
+                }
             }
         }
     }
@@ -189,7 +290,7 @@ final class CaptionRollingBufferTests: XCTestCase {
     }
 
     func testTranslationStepsUseTheSameWordWrappingAndUnicodeBudget() {
-        let line = CaptionRollingConfiguration(columns: 16)
+        let line = CaptionRollingConfiguration(columns: 16, englishWidthPercent: 100)
         XCTAssertEqual(CaptionRollingBuffer.translationSteps("We enjoy reliable real time captions.", configuration: line),
                        ["We enjoy", "We enjoy reliable real", "We enjoy reliable real time captions."])
         var word = line
