@@ -144,6 +144,7 @@ import RayNeoDisplay
     private var recognitionDeadline: TimeInterval = 0
     private var bufferedPCM = Data()
     private var lastAudioAt: TimeInterval = 0
+    private var audioGapOpen = false
     private var lastAudioSequence: Int?
     private var lastSentAt: TimeInterval = -.infinity
     private var pendingPosition: (page: Int, highlight: Int)?
@@ -218,7 +219,7 @@ import RayNeoDisplay
         candidateUTF8Offset = nil; microphoneRoute = nil; audioLevel = 0
         deviceAtStart = output == .glasses ? transport.deviceID : nil
         ownedSession = nil; pendingPosition = nil; recentSentPositions = []
-        lastSentAt = -.infinity; lastAudioAt = now; lastAudioSequence = nil
+        lastSentAt = -.infinity; lastAudioAt = now; lastAudioSequence = nil; audioGapOpen = false
         lastPersistedAt = now; lastPersistedOffset = confirmedUTF8Offset
         retry = CaptionRetryBudget(); retryAt = nil; bufferedPCM = Data()
         sessionOptions = configuration.options; sessionKey = configuration.key
@@ -342,7 +343,7 @@ import RayNeoDisplay
         }
         provider?.onText = { [weak self] recognized, final in
             guard let self, self.generation == token, self.recognitionGeneration == recognitionToken,
-                  self.phase == .listening, recognized.utf8.count <= 32_768 else { return }
+                  self.phase == .listening, !self.audioGapOpen, recognized.utf8.count <= 32_768 else { return }
             self.retry.recognized(); self.recognitionText = recognized
             if let update = self.follower?.recognize(recognized, final: final) { self.apply(update) }
         }
@@ -357,6 +358,10 @@ import RayNeoDisplay
     private func acceptPCM(_ pcm: Data) {
         guard active, !pcm.isEmpty, pcm.count % 2 == 0, pcm.count <= 64_000 else { return }
         lastAudioAt = now
+        if audioGapOpen {
+            audioGapOpen = false
+            status = followState == .paused ? "跟随已暂停 · 识别继续" : "收音已恢复 · 等待附近稿件重新匹配"
+        }
         let samples = pcm.withUnsafeBytes { Array($0.bindMemory(to: Int16.self)) }
         audioLevel = min(1, sqrt(samples.reduce(0) { $0 + pow(Double($1) / 32768, 2) } / Double(samples.count)) * 5)
         if asrReady { provider?.append(pcm) }
@@ -476,7 +481,11 @@ import RayNeoDisplay
     func tick() {
         guard phase == .listening else { return }
         if output == .glasses, transport.deviceID != deviceAtStart { fail("眼镜连接中断；已保持阅读位置。"); return }
-        if now - lastAudioAt >= 15 { fail("长时间没有收到音频，请检查所选麦克风。"); return }
+        if now - lastAudioAt >= 15, !audioGapOpen {
+            audioGapOpen = true; pendingPosition = nil; audioLevel = 0
+            if let update = follower?.resetRecognitionEvidence() { apply(update, sendPosition: false) }
+            status = "暂未收到音频，位置保持；监听继续，请检查所选麦克风"
+        }
         if let retryAt, now >= retryAt { self.retryAt = nil; startRecognizer(token: generation) }
         if !asrReady, retryAt == nil, now >= recognitionDeadline { recognitionFailed(.connection) }
         pumpPosition(); persistPosition(force: false)

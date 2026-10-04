@@ -153,6 +153,70 @@ final class SpeechScriptFollowerTests: XCTestCase {
         XCTAssertEqual(generic.confirmedUTF8Offset, 0)
     }
 
+    func testManualParagraphSelectionResolvesOnlyTheSelectedRepeatedOccurrence() {
+        let paragraph = "今天我们介绍产品的工作原理"
+        let section = paragraph + "。\n"
+        let script = section + section + section
+        var follower = SpeechScriptFollower(text: script)
+        XCTAssertFalse(follower.recognize(paragraph, final: true).shouldMove)
+        XCTAssertEqual(follower.confirmedUTF8Offset, 0)
+
+        let selected = section.utf8.count
+        XCTAssertEqual(follower.assist(toUTF8Offset: selected).state, .waiting)
+        // Ignore the identical callback that was already received before the
+        // gesture, then use fresh speech to confirm the explicitly selected B.
+        XCTAssertFalse(follower.recognize(paragraph, final: true).shouldMove)
+        let result = follower.recognize(paragraph, final: true)
+        XCTAssertTrue(result.shouldMove)
+        XCTAssertEqual(result.confirmedUTF8Offset, (section + paragraph).utf8.count)
+        XCTAssertLessThan(result.confirmedUTF8Offset, (section + section).utf8.count)
+        XCTAssertEqual(result.state, .following)
+
+        follower.assist(toUTF8Offset: 0)
+        XCTAssertFalse(follower.recognize(paragraph, final: true).shouldMove)
+        let reread = follower.recognize(paragraph, final: true)
+        XCTAssertTrue(reread.shouldMove)
+        XCTAssertEqual(reread.confirmedUTF8Offset, paragraph.utf8.count)
+    }
+
+    func testManualPriorAtRepeatedParagraphWorksBeforeAnyRecognition() {
+        let paragraph = "今天我们介绍产品的工作原理"
+        let section = paragraph + "。\n"
+        var follower = SpeechScriptFollower(text: section + section + section)
+        follower.assist(toUTF8Offset: section.utf8.count)
+        let result = follower.recognize(paragraph, final: true)
+        XCTAssertTrue(result.shouldMove)
+        XCTAssertEqual(result.confirmedUTF8Offset, (section + paragraph).utf8.count)
+    }
+
+    func testManualPriorExpiresAfterTheSelectedParagraphIsConfirmed() {
+        let paragraph = "今天我们介绍产品的工作原理"
+        let section = paragraph + "。\n"
+        var follower = SpeechScriptFollower(text: section + section + section)
+        follower.assist(toUTF8Offset: section.utf8.count)
+        XCTAssertTrue(follower.recognize(paragraph, final: true).shouldMove)
+        let anchor = follower.confirmedUTF8Offset
+        follower.recognize("观众临时问了一个新问题", final: true)
+        // Speech alone cannot distinguish a repeat of B from starting C. The
+        // consumed manual prior must not keep choosing occurrences forever.
+        XCTAssertFalse(follower.recognize(paragraph, final: true).shouldMove)
+        XCTAssertEqual(follower.confirmedUTF8Offset, anchor)
+        XCTAssertEqual(follower.state, .uncertain)
+    }
+
+    func testManualPriorDoesNotAuthorizeDistantJumpOrWeakRepeatedSpeech() {
+        let paragraph = "今天我们介绍产品的工作原理"
+        let section = paragraph + "。\n"
+        let distant = "最后总结项目成果和后续计划"
+        var follower = SpeechScriptFollower(text: section + section
+            + String(repeating: "我们展示新的设备参数以及设计要求。", count: 10) + distant + "。")
+        follower.assist(toUTF8Offset: section.utf8.count)
+        let anchor = follower.confirmedUTF8Offset
+        XCTAssertFalse(follower.recognize("我们", final: true).shouldMove)
+        XCTAssertFalse(follower.recognize(distant, final: true).shouldMove)
+        XCTAssertEqual(follower.confirmedUTF8Offset, anchor)
+    }
+
     func testManualSwipeAssistsWithoutEnteringPauseAndFreshSpeechContinues() {
         let first = "今天我们介绍产品的工作原理"
         let second = "随后讨论具体应用以及实施方法"

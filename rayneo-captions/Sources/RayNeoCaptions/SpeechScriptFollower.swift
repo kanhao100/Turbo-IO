@@ -64,6 +64,9 @@ public struct SpeechScriptFollower: Sendable {
     private let source: [SpeechScriptUnit]
     private let boundaries: [Int]
     private var confirmedUnit = 0
+    /// A deliberate gesture/paragraph selection provides a stronger local
+    /// starting prior than speech alone. It expires on the first confirmation.
+    private var assistedUnit: Int?
     private var committed: [String] = []
     private var pending: SpeechScriptMatch?
     private var stableUpdates = 0
@@ -178,6 +181,7 @@ public struct SpeechScriptFollower: Sendable {
         }
 
         confirmedUnit = match.end
+        assistedUnit = nil
         confirmedUTF8Offset = offset(after: confirmedUnit)
         state = confirmedUnit == source.count ? .finished : .following
         // Keep the alignment for overlap, but the next movement needs fresh
@@ -195,6 +199,7 @@ public struct SpeechScriptFollower: Sendable {
         let bounded = min(text.utf8.count, max(0, offset))
         confirmedUTF8Offset = boundaries.last(where: { $0 <= bounded }) ?? 0
         confirmedUnit = source.prefix(while: { $0.endUTF8 <= confirmedUTF8Offset }).count
+        assistedUnit = confirmedUnit
         clearEvidence()
         state = wasPaused ? .paused : (confirmedUnit == source.count ? .finished : .waiting)
         return snapshot(shouldMove: previous != confirmedUTF8Offset)
@@ -311,6 +316,21 @@ public struct SpeechScriptFollower: Sendable {
             return abs($0.end - confirmedUnit) < abs($1.end - confirmedUnit)
         }
         guard let best = candidates.first else { return nil }
+        if let anchor = assistedUnit {
+            // A selected paragraph can intentionally repeat an earlier one.
+            // Resolve only near-exact starts at this explicit anchor (at most
+            // two omitted normalized units), never a distant occurrence. All
+            // normal length, similarity and forward-distance guards still apply.
+            let anchored = candidates.filter {
+                $0.start >= anchor && $0.start <= anchor + 2 && $0.end > anchor
+                    && $0.similarity >= best.similarity - 0.04
+            }.min {
+                if $0.start != $1.start { return $0.start < $1.start }
+                if $0.similarity != $1.similarity { return $0.similarity > $1.similarity }
+                return $0.matches > $1.matches
+            }
+            if let anchored { return anchored }
+        }
         // Similar alignments to different occurrences are unresolved evidence,
         // even when a nearest occurrence looks tempting. Minor endpoint edits
         // within one occurrence are not separate interpretations.

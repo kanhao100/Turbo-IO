@@ -68,9 +68,8 @@ struct PrompterWorkspaceView: View {
             Button("删除稿件", role: .destructive) {
                 if !occupied, let document = deleting { _ = library.delete(document.id) }
                 deleting = nil
-            }.accessibilityIdentifier("prompter-delete-confirm")
+            }
             Button("保留稿件", role: .cancel) { deleting = nil }
-                .accessibilityIdentifier("prompter-delete-cancel")
         } message: { Text("删除“\(deleting?.title ?? "")”？删除后无法恢复。") }
         .alert("稿件提示", isPresented: Binding(get: { library.error != nil }, set: { if !$0 { library.error = nil } })) {
             Button("知道了", role: .cancel) { library.error = nil }
@@ -180,9 +179,7 @@ private struct ManuscriptEditorView: View {
                 .interactiveDismissDisabled(changed)
                 .alert("尚有未保存的修改", isPresented: $confirmDiscard) {
                     Button("放弃修改", role: .destructive) { dismiss() }
-                        .accessibilityIdentifier("prompter-discard-confirm")
                     Button("继续编辑", role: .cancel) {}
-                        .accessibilityIdentifier("prompter-discard-cancel")
                 } message: { Text("继续编辑可以保留当前输入；放弃修改会丢弃尚未保存的内容。") }
         }
     }

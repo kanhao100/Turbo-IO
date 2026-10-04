@@ -4,6 +4,25 @@ import RayNeoCaptions
 @testable import RayNeoCompanion
 
 final class SpeechPrompterRuntimeTests: XCTestCase {
+    @MainActor func testLongAudioGapHoldsWithoutClosingRecognitionAndFreshAudioCanResume() async throws {
+        let f = fixture()
+        defer { f.runtime.stop() }
+        try await XCTUnwrap(f.runtime.start(document: f.document, output: .phone, input: .iPhone)).value
+        f.provider.onText?(f.firstSentence, true)
+        let anchor = f.runtime.confirmedUTF8Offset
+        f.clock.now += 20; f.runtime.tick()
+        XCTAssertEqual(f.runtime.phase, .listening)
+        XCTAssertEqual(f.runtime.confirmedUTF8Offset, anchor)
+        XCTAssertEqual(f.provider.stops, 0)
+        XCTAssertEqual(f.microphone.stops, 0)
+        f.provider.onText?(f.secondSentence, true) // Old results during the gap do not move.
+        XCTAssertEqual(f.runtime.confirmedUTF8Offset, anchor)
+        f.microphone.onPCM?(Data(repeating: 1, count: 640))
+        f.provider.onText?(f.secondSentence, true)
+        XCTAssertEqual(f.runtime.followState, .finished)
+        XCTAssertEqual(f.microphone.starts, 1)
+    }
+
     @MainActor func testUnmappedEyeSwipeHoldsAndKeepsMicrophoneAndRecognizerAlive() async throws {
         let f = fixture()
         defer { f.runtime.stop() }
