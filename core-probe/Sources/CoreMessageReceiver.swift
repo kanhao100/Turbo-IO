@@ -21,6 +21,7 @@ final class CoreMessageReceiver: RNMessageDelegate {
     var onBusinessLoss: (() -> Void)?
     var onSubtitleLoss: (() -> Void)?
     var onSubtitleSendError: ((String, Data, Int, String) -> Void)?
+    var onTeleprompterSendError: ((String, Data, Int, String) -> Void)?
     private let businessSlots = DispatchSemaphore(value: 128)
     private var businessLossQueued = false
     private func reportBusinessLoss() {
@@ -118,6 +119,10 @@ final class CoreMessageReceiver: RNMessageDelegate {
         if handle.businessIndex() == SubtitleDisplayWire.business, let payload = handle.payload(), payload.count <= 4096 {
             let device = handle.deviceID(), messageID = handle.messageID()
             DispatchQueue.main.async { [weak self] in self?.onSubtitleSendError?(device, payload, code, messageID) }
+        }
+        if handle.businessIndex() == 20, let payload = handle.payload(), payload.count <= 4096 {
+            let device = handle.deviceID(), messageID = handle.messageID()
+            DispatchQueue.main.async { [weak self] in self?.onTeleprompterSendError?(device, payload, code, messageID) }
         }
     }
     func messageDecryptFail(_ core: RNCoreConnect, device: RNDevice, sourceData: Data, sourceLen: Int, destLen: Int) {

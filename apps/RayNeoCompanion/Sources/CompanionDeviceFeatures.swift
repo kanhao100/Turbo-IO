@@ -49,6 +49,9 @@ import CryptoKit
             self?.store?.realtimeSubtitles.transportFailed(device: $0, packet: $1, code: $2, messageID: $3)
             self?.store?.alwaysOn.displayTransportFailed(device: $0, packet: $1, code: $2)
         }
+        voice.onTeleprompterSendError = { [weak self] in
+            self?.teleprompterTransportFailed(device: $0, packet: $1, code: $2)
+        }
         voice.onSubtitleEnvelope = { [weak self] in self?.store?.realtimeSubtitles.receive(device: $0, packet: $1, arrival: $2) }
         // One automatic weather owner. Legacy Weatherstack stays manual to avoid overwrites.
         voice.onRuntimeRefresh = { [weak self] in self?.store?.qweather.tick() }
@@ -478,34 +481,33 @@ import CryptoKit
     var teleprompterTransferTask: String?
     private var teleprompterScrollMode = 2
     private var teleprompterBoundaries = Set<Int>()
+    private var teleprompterDocument: TeleprompterNativeDocument?
 }
 
 extension CompanionDeviceFeatures {
     func prepareTeleprompter(_ text: String, speed: Int, scrollMode: Int = 2, initialOffset: Int = 0) {
         perform {
             guard canControl, recordingID == nil, teleprompterID == nil, let device = voice.deviceID else { throw DeviceFeatureError.busy }
-            guard !text.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty, text.count <= 12_000,
-                  text.utf8.count <= 48_000, (60...240).contains(speed), (1...3).contains(scrollMode),
-                  scrollMode != 2 || store?.speechPrompter.active != true else { throw DeviceFeatureError.invalidPacket }
-            var boundaries: Set<Int> = [0]
-            var offset = 0
-            for character in text { offset += String(character).utf8.count; boundaries.insert(offset) }
-            guard boundaries.contains(initialOffset) else { throw DeviceFeatureError.invalidPacket }
+            guard scrollMode != 2 || store?.speechPrompter.active != true else { throw DeviceFeatureError.invalidPacket }
+            let document = try TeleprompterNativeDocument(text: text, speed: speed,
+                                                        scrollMode: scrollMode, initialOffset: initialOffset)
             if voice.enabled { voice.stop() }
             let did = UUID().uuidString
             let dir = inbox.root.deletingLastPathComponent().appendingPathComponent("TeleprompterOutboxV1")
             try FileManager.default.createDirectory(at:dir,withIntermediateDirectories:true)
             guard try FileManager.default.contentsOfDirectory(atPath:dir.path).count < 100 else { throw DeviceFeatureError.storageLimit }
             let url = dir.appendingPathComponent(did + ".txt")
-            try Data(text.utf8).write(to:url,options:[.withoutOverwriting,.completeFileProtectionUntilFirstUserAuthentication])
+            try document.data.write(to:url,options:[.withoutOverwriting,.completeFileProtectionUntilFirstUserAuthentication])
             teleprompterID = did; teleprompterDevice = device; teleprompterFile = url
             teleprompterOffset = Int64(initialOffset); teleprompterPrepared = false; teleprompterSentFile = false
-            teleprompterStarted = false; teleprompterScrollMode = scrollMode; teleprompterBoundaries = boundaries
+            teleprompterStarted = false; teleprompterScrollMode = scrollMode
+            teleprompterBoundaries = document.boundaries; teleprompterDocument = document
             // Optional layout fields intentionally omitted: never guess pixel/gear defaults.
             do {
-                try send(20,2,["action":1,"did":did,"total":text.utf8.count,"scroll":scrollMode,"speed":speed,"pageOffset":initialOffset,"highLightOffset":initialOffset])
+                try send(20,2,document.command(type: 2, did: did))
             } catch {
                 teleprompterFailed("提词准备发送失败，尚未开始跟随。")
+                discardTeleprompterFile()
                 throw error
             }
             teleprompterStatus = "已请求准备稿件，等待眼镜收稿回应"
@@ -522,6 +524,10 @@ extension CompanionDeviceFeatures {
                   type == 6 || teleprompterPrepared else { throw DeviceFeatureError.noSession }
             guard [3,4,5,6,7].contains(type) else { throw DeviceFeatureError.invalidPacket }
             var body: [String:Any] = ["action":1,"did":did]
+            if type == 3 {
+                guard let document = teleprompterDocument else { throw DeviceFeatureError.noSession }
+                body = try document.command(type: 3, did: did)
+            }
             if type == 4 { body["offset"] = teleprompterOffset; body["code"] = 1; body["isCompleted"] = false }
             if type == 7 { guard (60...240).contains(speed) else { throw DeviceFeatureError.invalidPacket }; body["scroll"] = teleprompterScrollMode; body["speed"] = speed }
             try send(20,type,body)
@@ -555,6 +561,30 @@ extension CompanionDeviceFeatures {
         teleprompterStatus = message
         error = message
         onTeleprompterFailure?(message)
+    }
+    /// Removes only this session's generated regular file after transfer has
+    /// stopped. Manuscripts are separately stored in the manuscript library.
+    private func discardTeleprompterFile() {
+        guard let did = teleprompterID, let file = teleprompterFile else { return }
+        let directory = inbox.root.deletingLastPathComponent()
+            .appendingPathComponent("TeleprompterOutboxV1").standardizedFileURL
+        let target = file.standardizedFileURL
+        guard target.deletingLastPathComponent() == directory,
+              target.lastPathComponent == did + ".txt",
+              let attributes = try? FileManager.default.attributesOfItem(atPath: target.path),
+              attributes[.type] as? FileAttributeType == .typeRegular else { return }
+        try? FileManager.default.removeItem(at: target)
+    }
+    /// SDK submission is not delivery. A delayed failure from another device or
+    /// an older manuscript is ignored; an owned failure freezes voice following.
+    func teleprompterTransportFailed(device: String, packet: Data, code: Int) {
+        guard device == voice.deviceID, device == teleprompterDevice,
+              let did = teleprompterID,
+              let wire = try? DeviceBusinessWire(packet),
+              [2, 3, 4, 5, 6, 7, 8].contains(wire.type),
+              DeviceBusinessWire.identifier(wire.json, "did") == did,
+              DeviceBusinessWire.integer(wire.json, "action") == 1 else { return }
+        teleprompterFailed("眼镜提词命令发送失败 code=\(code)；已停止自动跟随，请结束本轮后重试。")
     }
     private func teleprompterReceive(_ device: String, _ wire: DeviceBusinessWire) throws {
         guard let did = DeviceBusinessWire.identifier(wire.json,"did"), did == teleprompterID, teleprompterDevice == device else { return }
@@ -618,8 +648,10 @@ extension CompanionDeviceFeatures {
         }
         if control == .stop, action == 1 || code == 1 {
             if let task = teleprompterTransferTask { voice.cancelFile(task); teleprompterTransferTask = nil }
+            discardTeleprompterFile()
             teleprompterID = nil; teleprompterPrepared = false; teleprompterStarted = false; teleprompterFile = nil
             teleprompterBoundaries.removeAll()
+            teleprompterDocument = nil
         }
     }
 }

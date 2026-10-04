@@ -22,6 +22,7 @@ import Combine
     var onBusinessLoss: (() -> Void)?
     var onSubtitleLoss: (() -> Void)?
     var onSubtitleSendError: ((String, Data, Int, String) -> Void)?
+    var onTeleprompterSendError: ((String, Data, Int, String) -> Void)?
     @Published private(set) var subtitleOwnsDisplay = false
     var voiceEnabled: Bool { enabled }
     func ownDisplayForSubtitles(_ owns: Bool) {
@@ -111,6 +112,7 @@ import Combine
         controller.companionBusinessLoss = { [weak self] in self?.onBusinessLoss?() }
         controller.companionSubtitleLoss = { [weak self] in self?.onSubtitleLoss?() }
         controller.companionSubtitleSendError = { [weak self] in self?.onSubtitleSendError?($0, $1, $2, $3) }
+        controller.companionTeleprompterSendError = { [weak self] in self?.onTeleprompterSendError?($0, $1, $2, $3) }
         controller.companionLog = { [weak self] line in self?.latestEvent = String(line.prefix(200)) }
         controller.companionTranscript = { [weak self] id, text, final in
             guard let self, !text.isEmpty else { return }

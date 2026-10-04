@@ -60,6 +60,7 @@ final class ProbeController: UIViewController, CBCentralManagerDelegate, StreamD
     var companionBusinessLoss: (() -> Void)?
     var companionSubtitleLoss: (() -> Void)?
     var companionSubtitleSendError: ((String, Data, Int, String) -> Void)?
+    var companionTeleprompterSendError: ((String, Data, Int, String) -> Void)?
     private(set) var companionSubtitleOwnsDisplay = false
     func companionOwnDisplayForSubtitles(_ owns: Bool) {
         if owns { companionStop(); voiceProbe.stopDisplayTest() }
@@ -452,6 +453,7 @@ final class ProbeController: UIViewController, CBCentralManagerDelegate, StreamD
             receiver.onBusinessLoss = { [weak self] in DisplayObservation.shared.loss(); self?.companionBusinessLoss?() }
             receiver.onSubtitleLoss = { [weak self] in DisplayObservation.shared.loss(); self?.companionSubtitleLoss?() }
             receiver.onSubtitleSendError = { [weak self] in self?.companionSubtitleSendError?($0, $1, $2, $3) }
+            receiver.onTeleprompterSendError = { [weak self] in self?.companionTeleprompterSendError?($0, $1, $2, $3) }
             #endif
             receiver.onVoiceEnvelope = { [weak self] deviceID, metadata, audio, arrival in
                 guard self?.voiceDiagnosticsAllowed == true else { return }
