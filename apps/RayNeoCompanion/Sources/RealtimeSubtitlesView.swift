@@ -97,10 +97,28 @@ struct RealtimeSubtitlesView: View {
                         .font(.title3).foregroundStyle(Palette.muted).lineSpacing(7)
                         .frame(maxWidth: .infinity, minHeight: 95, alignment: .leading)
                 } else {
+                    if settings.displayLayout == .rolling {
+                        VStack(alignment: .leading, spacing: 6) {
+                            ForEach(runtime.displaySourceLines.indices, id: \.self) { index in
+                                Text(runtime.displaySourceLines[index])
+                                    .foregroundStyle(runtime.displayIsPartial ? Palette.green : Palette.ink)
+                            }
+                            if !runtime.displaySourceLines.isEmpty && !runtime.displayTranslationLines.isEmpty {
+                                Divider()
+                            }
+                            ForEach(runtime.displayTranslationLines.indices, id: \.self) { index in
+                                Text(runtime.displayTranslationLines[index]).foregroundStyle(Palette.ink)
+                            }
+                        }
+                        .font(.system(.title3, design: .monospaced)).lineLimit(1).minimumScaleFactor(0.5)
+                        .textSelection(.enabled).privacySensitive()
+                        .accessibilityIdentifier("realtime-display-text")
+                    } else {
                     Text(runtime.displayText).font(.title3).lineSpacing(6)
                         .foregroundStyle(runtime.displayIsPartial ? Palette.green : Palette.ink)
                         .textSelection(.enabled).privacySensitive()
                         .accessibilityIdentifier("realtime-display-text")
+                    }
                     if runtime.displayIsPartial {
                         Text("识别中 · 内容可能修订").font(.caption).foregroundStyle(Palette.muted)
                     } else if runtime.displayIsAwaitingTranslation {

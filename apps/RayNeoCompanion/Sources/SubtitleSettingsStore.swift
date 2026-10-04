@@ -38,6 +38,17 @@ enum SubtitleBilingualOrder: String, CaseIterable, Codable {
     }
 }
 
+enum SubtitleDisplayLayout: String, CaseIterable, Codable {
+    case rolling, sentence
+
+    var name: String {
+        switch self {
+        case .rolling: return "滚动分区"
+        case .sentence: return "按段替换"
+        }
+    }
+}
+
 enum SubtitleTranslationQuality: String, CaseIterable, Codable {
     case lowLatency, highFidelity
 
@@ -90,7 +101,10 @@ private struct SubtitleDisplayPreferences: Codable {
     var nextSentenceTakeoverDelaySeconds: Double
     var minimumSourceVisibleSeconds: Double
     var translationRevealDelaySeconds: Double
+    var translationMinimumVisibleSeconds: Double
     var lensUpdateIntervalSeconds: Double
+    var displayLayout: SubtitleDisplayLayout
+    var rollingConfiguration: CaptionRollingConfiguration
 
     init(mode: SubtitleDisplayMode, order: SubtitleBilingualOrder,
          retention: SubtitleDisplayRetention, showLiveSourceDuringTranslation: Bool = true,
@@ -99,7 +113,10 @@ private struct SubtitleDisplayPreferences: Codable {
          nextSentenceTakeoverDelaySeconds: Double = 0,
          minimumSourceVisibleSeconds: Double = 0,
          translationRevealDelaySeconds: Double = 0,
-         lensUpdateIntervalSeconds: Double = 0.5) {
+         translationMinimumVisibleSeconds: Double = 1.5,
+         lensUpdateIntervalSeconds: Double = 0.5,
+         displayLayout: SubtitleDisplayLayout = .rolling,
+         rollingConfiguration: CaptionRollingConfiguration = CaptionRollingConfiguration()) {
         self.mode = mode
         self.order = order
         self.retention = retention
@@ -109,13 +126,18 @@ private struct SubtitleDisplayPreferences: Codable {
         self.nextSentenceTakeoverDelaySeconds = nextSentenceTakeoverDelaySeconds
         self.minimumSourceVisibleSeconds = minimumSourceVisibleSeconds
         self.translationRevealDelaySeconds = translationRevealDelaySeconds
+        self.translationMinimumVisibleSeconds = translationMinimumVisibleSeconds
         self.lensUpdateIntervalSeconds = lensUpdateIntervalSeconds
+        self.displayLayout = displayLayout
+        self.rollingConfiguration = rollingConfiguration
     }
 
     private enum CodingKeys: String, CodingKey {
         case mode, order, retention, showLiveSourceDuringTranslation, customRetentionSeconds
         case partialUpdateIntervalSeconds, nextSentenceTakeoverDelaySeconds
         case minimumSourceVisibleSeconds, translationRevealDelaySeconds, lensUpdateIntervalSeconds
+        case translationMinimumVisibleSeconds
+        case displayLayout, rollingConfiguration
     }
 
     init(from decoder: Decoder) throws {
@@ -135,8 +157,14 @@ private struct SubtitleDisplayPreferences: Codable {
             Double.self, forKey: .minimumSourceVisibleSeconds) ?? 0
         translationRevealDelaySeconds = try container.decodeIfPresent(
             Double.self, forKey: .translationRevealDelaySeconds) ?? 0
+        translationMinimumVisibleSeconds = try container.decodeIfPresent(
+            Double.self, forKey: .translationMinimumVisibleSeconds) ?? 1.5
         lensUpdateIntervalSeconds = try container.decodeIfPresent(
             Double.self, forKey: .lensUpdateIntervalSeconds) ?? 0.5
+        displayLayout = try container.decodeIfPresent(
+            SubtitleDisplayLayout.self, forKey: .displayLayout) ?? .rolling
+        rollingConfiguration = try container.decodeIfPresent(
+            CaptionRollingConfiguration.self, forKey: .rollingConfiguration) ?? CaptionRollingConfiguration()
     }
 }
 
@@ -178,7 +206,10 @@ struct SubtitleKeychainStorage: SubtitleCredentialStorage {
     @Published private(set) var nextSentenceTakeoverDelaySeconds: Double
     @Published private(set) var minimumSourceVisibleSeconds: Double
     @Published private(set) var translationRevealDelaySeconds: Double
+    @Published private(set) var translationMinimumVisibleSeconds: Double
     @Published private(set) var lensUpdateIntervalSeconds: Double
+    @Published private(set) var displayLayout: SubtitleDisplayLayout
+    @Published private(set) var rollingConfiguration: CaptionRollingConfiguration
     var effectiveRetentionSeconds: TimeInterval? {
         displayRetention == .custom ? customRetentionSeconds : displayRetention.seconds
     }
@@ -219,7 +250,10 @@ struct SubtitleKeychainStorage: SubtitleCredentialStorage {
         nextSentenceTakeoverDelaySeconds = Self.clampSeconds(display.nextSentenceTakeoverDelaySeconds, range: 0...1, fallback: 0)
         minimumSourceVisibleSeconds = Self.clampSeconds(display.minimumSourceVisibleSeconds, range: 0...3, fallback: 0)
         translationRevealDelaySeconds = Self.clampSeconds(display.translationRevealDelaySeconds, range: 0...3, fallback: 0)
+        translationMinimumVisibleSeconds = Self.clampSeconds(display.translationMinimumVisibleSeconds, range: 0...5, fallback: 1.5)
         lensUpdateIntervalSeconds = Self.clampSeconds(display.lensUpdateIntervalSeconds, range: 0.5...2, fallback: 0.5)
+        displayLayout = display.displayLayout
+        rollingConfiguration = display.rollingConfiguration.normalized
         if let saved = defaults.data(forKey: Self.preferencesKey),
            let decoded = try? JSONDecoder().decode(CaptionOptions.self, from: saved) {
             options = decoded
@@ -280,7 +314,10 @@ struct SubtitleKeychainStorage: SubtitleCredentialStorage {
         nextSentenceTakeoverDelaySeconds: Double? = nil,
         minimumSourceVisibleSeconds: Double? = nil,
         translationRevealDelaySeconds: Double? = nil,
-        lensUpdateIntervalSeconds: Double? = nil
+        translationMinimumVisibleSeconds: Double? = nil,
+        lensUpdateIntervalSeconds: Double? = nil,
+        displayLayout: SubtitleDisplayLayout? = nil,
+        rollingConfiguration: CaptionRollingConfiguration? = nil
     ) -> Bool {
         guard allowsChanges else { error = "当前设备不能修改字幕显示设置。"; return false }
         do {
@@ -290,12 +327,20 @@ struct SubtitleKeychainStorage: SubtitleCredentialStorage {
             let takeoverSeconds = nextSentenceTakeoverDelaySeconds ?? self.nextSentenceTakeoverDelaySeconds
             let sourceSeconds = minimumSourceVisibleSeconds ?? self.minimumSourceVisibleSeconds
             let revealSeconds = translationRevealDelaySeconds ?? self.translationRevealDelaySeconds
+            let translationHoldSeconds = translationMinimumVisibleSeconds ?? self.translationMinimumVisibleSeconds
             let lensSeconds = lensUpdateIntervalSeconds ?? self.lensUpdateIntervalSeconds
+            let layout = displayLayout ?? self.displayLayout
+            let rolling = rollingConfiguration ?? self.rollingConfiguration
+            guard (1...4).contains(rolling.sourceLines), (16...40).contains(rolling.columns) else {
+                error = "原文须占 1–4 行，每行宽度须为 16–40，请检查滚动分区设置。"
+                return false
+            }
             guard Self.isValidSeconds(customSeconds, range: 0...30),
                   Self.isValidSeconds(partialSeconds, range: 0...1),
                   Self.isValidSeconds(takeoverSeconds, range: 0...1),
                   Self.isValidSeconds(sourceSeconds, range: 0...3),
                   Self.isValidSeconds(revealSeconds, range: 0...3),
+                  Self.isValidSeconds(translationHoldSeconds, range: 0...5),
                   Self.isValidSeconds(lensSeconds, range: 0.5...2) else {
                 error = "字幕时序超出允许范围，请检查毫秒输入。"
                 return false
@@ -307,7 +352,10 @@ struct SubtitleKeychainStorage: SubtitleCredentialStorage {
                                                    nextSentenceTakeoverDelaySeconds: takeoverSeconds,
                                                    minimumSourceVisibleSeconds: sourceSeconds,
                                                    translationRevealDelaySeconds: revealSeconds,
-                                                   lensUpdateIntervalSeconds: lensSeconds)
+                                                   translationMinimumVisibleSeconds: translationHoldSeconds,
+                                                   lensUpdateIntervalSeconds: lensSeconds,
+                                                   displayLayout: layout,
+                                                   rollingConfiguration: rolling)
             defaults.set(try JSONEncoder().encode(value), forKey: Self.displayPreferencesKey)
             displayMode = mode
             bilingualOrder = order
@@ -318,7 +366,10 @@ struct SubtitleKeychainStorage: SubtitleCredentialStorage {
             self.nextSentenceTakeoverDelaySeconds = takeoverSeconds
             self.minimumSourceVisibleSeconds = sourceSeconds
             self.translationRevealDelaySeconds = revealSeconds
+            self.translationMinimumVisibleSeconds = translationHoldSeconds
             self.lensUpdateIntervalSeconds = lensSeconds
+            self.displayLayout = layout
+            self.rollingConfiguration = rolling
             error = nil
             return true
         } catch {

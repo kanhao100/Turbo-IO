@@ -4,6 +4,98 @@ import RayNeoCaptions
 @testable import RayNeoCompanion
 
 final class SubtitleRealtimeTests: XCTestCase {
+    @MainActor func testRollingIgnoresLegacySourceGateAndRetainsDraftWhenSwitchingLayout() async throws {
+        let f = Fixture(.deepgram, rolling: true, translator: Translator())
+        addTeardownBlock { await self.cleanup(f) }
+        XCTAssertTrue(f.settings.saveDisplayPreferences(mode: .bilingual, order: .sourceFirst,
+            retention: .untilNextSentence, showLiveSourceDuringTranslation: false, displayLayout: .rolling))
+        await f.runtime.start()?.value
+        let sid = try f.sid()
+        f.feed(2, sid: sid, code: 1); f.feed(8, sid: sid, code: 1)
+        f.provider.onText?("latest draft", false)
+        XCTAssertEqual(f.runtime.displaySourceText, "latest draft")
+        XCTAssertTrue(f.settings.saveDisplayPreferences(mode: .bilingual, order: .sourceFirst,
+            retention: .untilNextSentence, displayLayout: .sentence))
+        f.clock.now += 0.5; f.runtime.tick()
+        f.provider.onText?("revised draft", false)
+        XCTAssertTrue(f.settings.saveDisplayPreferences(mode: .bilingual, order: .sourceFirst,
+            retention: .untilNextSentence, displayLayout: .rolling))
+        f.clock.now += 0.5; f.runtime.tick()
+        XCTAssertEqual(f.runtime.displaySourceText, "revised draft")
+    }
+
+    @MainActor func testRollingTranslationSurvivesNewSourceAndNextPartial() async throws {
+        let translator = Translator()
+        let f = Fixture(.deepgram, rolling: true, translator: translator)
+        addTeardownBlock { await self.cleanup(f) }
+        await f.runtime.start()?.value
+        let sid = try f.sid()
+        f.feed(2, sid: sid, code: 1); f.feed(8, sid: sid, code: 1)
+        let requested = expectation(description: "first translation requested")
+        translator.onRequest = { requested.fulfill() }
+        f.provider.onText?("first source", true)
+        await fulfillment(of: [requested], timeout: 3)
+        translator.onRequest = nil
+        f.clock.now += 0.6
+        f.provider.onText?("second source is growing", false)
+        let translated = expectation(description: "translation archived")
+        f.writer.onTranslation = { translated.fulfill() }
+        translator.complete("第一段译文")
+        await fulfillment(of: [translated], timeout: 3)
+        f.clock.now += 0.6; f.runtime.tick()
+        XCTAssertTrue(f.runtime.displaySourceText.contains("second"))
+        XCTAssertEqual(f.runtime.displayTranslationText, "第一段译文")
+        let rows = try f.lensText().components(separatedBy: "\n")
+        XCTAssertEqual(rows.count, 5)
+        XCTAssertTrue(rows.prefix(3).joined().contains("second"))
+        XCTAssertTrue(rows.suffix(2).joined().contains("第一段译文"))
+        f.provider.onText?("second source has been revised", false)
+        XCTAssertEqual(f.runtime.displayTranslationText, "第一段译文")
+        XCTAssertFalse(f.runtime.displaySourceText.contains("growing"))
+    }
+
+    @MainActor func testLongRollingTranslationShowsEveryStepAndHonorsLensReadingTime() async throws {
+        let translator = Translator()
+        let f = Fixture(.deepgram, rolling: true, translator: translator)
+        addTeardownBlock { await self.cleanup(f) }
+        let configuration = CaptionRollingConfiguration(sourceLines: 3, columns: 16)
+        XCTAssertTrue(f.settings.saveDisplayPreferences(mode: .bilingual, order: .sourceFirst,
+            retention: .untilNextSentence, translationMinimumVisibleSeconds: 1.5,
+            displayLayout: .rolling, rollingConfiguration: configuration))
+        await f.runtime.start()?.value
+        let sid = try f.sid()
+        f.feed(2, sid: sid, code: 1); f.feed(8, sid: sid, code: 1)
+        let requested = expectation(description: "long translation requested")
+        translator.onRequest = { requested.fulfill() }
+        f.provider.onText?("original", true)
+        await fulfillment(of: [requested], timeout: 3)
+        translator.onRequest = nil
+        f.provider.onText?("current speech", false)
+        let result = "甲乙丙丁戊己庚辛壬癸子丑寅卯辰巳午未申酉戌亥天地玄黄宇宙洪荒"
+        let archived = expectation(description: "long translation archived")
+        f.writer.onTranslation = { archived.fulfill() }
+        translator.complete(result)
+        await fulfillment(of: [archived], timeout: 3)
+        // The first source frame used the current 500 ms transport slot. Reading
+        // time must start when the first translated frame is submitted later.
+        f.clock.now += 0.5; f.runtime.tick()
+        var shown = [try f.lensText()]
+        let firstTranslation = f.runtime.displayTranslationText
+        f.clock.now += 1.4; f.runtime.tick()
+        XCTAssertEqual(f.runtime.displayTranslationText, firstTranslation)
+        let steps = CaptionRollingBuffer.translationSteps(result, configuration: configuration)
+        for index in 1..<steps.count {
+            f.clock.now += 1.6
+            f.feed(4, sid: sid, seq: index, bytes: Data([1]))
+            f.runtime.tick()
+            shown.append(try f.lensText())
+        }
+        for character in result { XCTAssertTrue(shown.contains { $0.contains(character) }) }
+        XCTAssertTrue(f.runtime.displaySourceText.contains("current"))
+        XCTAssertEqual(f.writer.entries.filter { $0.kind == .translation }.map(\.text), [result])
+        XCTAssertTrue(shown.allSatisfy { $0.components(separatedBy: "\n").count == 5 && $0.utf8.count <= 384 })
+    }
+
     @MainActor func testFourProvidersReceiveOnlyMatchingNativeCaptionAudioAndPersistFinal() async throws {
         for service in CaptionService.allCases {
             let f = fixture(service)
@@ -379,20 +471,30 @@ final class SubtitleRealtimeTests: XCTestCase {
         let defaults:UserDefaults,settings:SubtitleSettingsStore,archive:SubtitleArchiveStore
         let device=Device(),provider=Provider(),decoder=Decoder(),writer=Writer(),clock=Clock(),vault=Vault()
         let runtime:SubtitleRealtimeRuntime
-        init(_ service:CaptionService) {
+        init(_ service:CaptionService, rolling: Bool = false, translator: Translator? = nil) {
             defaults=UserDefaults(suiteName:name)!
             let provider=provider
             settings=SubtitleSettingsStore(defaults:defaults,credentials:vault,allowsChanges:true,factory:{_ in provider})
             var options=CaptionOptions();options.service=service;options.region="eastus";options.aliyunHost="workspace-a.cn-beijing.maas.aliyuncs.com";options.recordAudio=true
             options.selfHostedEndpoint="wss://asr.example.com/compat/openai/v1/realtime"
             XCTAssertTrue(settings.save(options,key:"synthetic-test-only"))
+            XCTAssertTrue(settings.saveDisplayPreferences(mode: .bilingual, order: .sourceFirst,
+                retention: .untilNextSentence, displayLayout: rolling ? .rolling : .sentence))
+            if translator != nil { settings.saveTranslationEnabled(true) }
             archive=SubtitleArchiveStore(root:FileManager.default.temporaryDirectory.appendingPathComponent(name))
             let decoder=decoder,writer=writer,clock=clock
             runtime=SubtitleRealtimeRuntime(voice:device,settings:settings,archive:archive,defaults:defaults,
-                makeDecoder:{decoder},makeWriter:{_,_,_ in writer},uptime:{clock.now},scheduleTimers:false)
+                makeDecoder:{decoder},makeWriter:{_,_,_ in writer},uptime:{clock.now},scheduleTimers:false,
+                makeTranslator: translator.map { client in { _, _, _ in client } })
         }
         func types() throws -> [UInt32] {try device.sent.map{try XCTUnwrap(BusinessEnvelopeMetadata.inspect($0).messageType)}}
         func sid() throws -> String {try SubtitleTranslateWire.event(XCTUnwrap(device.sent.first)).sid}
+        func lensText() throws -> String {
+            let packet = try XCTUnwrap(device.sent.last { (try? BusinessEnvelopeMetadata.inspect($0))?.messageType == 5 })
+            let json = try XCTUnwrap(BusinessEnvelopeMetadata.messageJSON(packet))
+            let body = try XCTUnwrap(JSONSerialization.jsonObject(with: json) as? [String: Any])
+            return try XCTUnwrap((body["content"] as? [String: String])?["source_transcript"])
+        }
         func feed(_ type:UInt32,sid:String,code:Int?=nil,seq:Int?=nil,bytes:Data=Data()) {
             var j:[String:Any]=["sid":sid];if let code {j["code"]=code};if let seq {j["seq"]=seq}
             runtime.receive(device:"glasses",packet:try! DeviceBusinessWire.encode(type:type,json:j,bytes:bytes),arrival:clock.now)
@@ -408,7 +510,8 @@ final class SubtitleRealtimeTests: XCTestCase {
         var entries:[CaptionEntry]=[],pcmBytes=0,gaps=0,deferFinish=false
         var finished:SubtitleSessionRecord?
         var finishCompletion:((Bool)->Void)?
-        func event(_ entry:CaptionEntry){entries.append(entry)}
+        var onTranslation: (() -> Void)?
+        func event(_ entry:CaptionEntry){entries.append(entry);if entry.kind == .translation {onTranslation?()}}
         func pcm(_ data:Data){pcmBytes+=data.count}
         func gap(){gaps+=1}
         func finish(_ record:SubtitleSessionRecord,completion:@escaping(Bool)->Void){
@@ -416,6 +519,18 @@ final class SubtitleRealtimeTests: XCTestCase {
             if deferFinish { finishCompletion=completion } else { completion(true) }
         }
         func complete(){let completion=finishCompletion;finishCompletion=nil;completion?(true)}
+    }
+    @MainActor private final class Translator: SubtitleTranslationClient {
+        var onRequest: (() -> Void)?
+        private var continuation: CheckedContinuation<String, Error>?
+        func translate(_ text: String) async throws -> String {
+            try await withCheckedThrowingContinuation { continuation in
+                self.continuation = continuation
+                onRequest?()
+            }
+        }
+        func complete(_ text: String) { continuation?.resume(returning: text); continuation = nil }
+        func cancel() { continuation?.resume(throwing: CancellationError()); continuation = nil }
     }
     private final class Vault:SubtitleCredentialStorage {
         var keys:[String:String]=[:]

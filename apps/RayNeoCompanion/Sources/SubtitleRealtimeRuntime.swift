@@ -4,6 +4,15 @@ import UIKit
 import RayNeoProtocol
 import RayNeoCaptions
 
+@MainActor protocol SubtitleTranslationClient: AnyObject {
+    func translate(_ text: String) async throws -> String
+    func cancel()
+}
+
+#if COMPANION_DEVICE
+extension AppleCaptionTranslation: SubtitleTranslationClient {}
+#endif
+
 @MainActor protocol SubtitleRealtimeDevice: AnyObject {
     var supportsDevice: Bool { get }
     var deviceID: String? { get }
@@ -66,6 +75,8 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
     @Published private(set) var displaySourceText = ""
     @Published private(set) var displayTranslationText = ""
     @Published private(set) var displayText = ""
+    @Published private(set) var displaySourceLines: [String] = []
+    @Published private(set) var displayTranslationLines: [String] = []
     @Published private(set) var displayIsPartial = false
     @Published private(set) var displayIsAwaitingTranslation = false
     @Published private(set) var microphoneRoute: String?
@@ -94,6 +105,7 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
     private let uptime: () -> TimeInterval
     private let makeDecoder: () -> SubtitlePCMDecoder?
     private let makeWriter: WriterFactory
+    private let makeTranslator: ((String, String, SubtitleTranslationQuality) async throws -> any SubtitleTranslationClient)?
     private let scheduleTimers: Bool
     private static let pendingKey = "companion.realtimeSubtitles.exitPending.v1"
     private static let shortcutKey = "companion.realtimeSubtitles.shortcutEnabled.v1"
@@ -101,8 +113,8 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
     private var provider: CaptionASRProvider?, decoder: SubtitlePCMDecoder?, writer: SubtitleSessionWriting?
     #if COMPANION_DEVICE
     private var microphone: SubtitleMicrophoneInput?
-    private var translator: AppleCaptionTranslation?
     #endif
+    private var translator: (any SubtitleTranslationClient)?
     private var record: SubtitleSessionRecord?, options = CaptionOptions(), key = ""
     private var target: String?, sid: String?, generation = UUID()
     private var sessionInputSource: SubtitleInputSource = .glasses
@@ -157,6 +169,21 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
     private var displayLayoutSignature = ""
     private var displayRetentionSignature = ""
     private var pendingTranslations = 0, skippedTranslations = 0
+    private var rollingBuffer = CaptionRollingBuffer()
+    private var rollingSourceIsPartial = false
+    private var rollingPendingSource: (text: String, sentence: Int, final: Bool, dueAt: TimeInterval)?
+    private var rollingLastSourcePublishedAt: TimeInterval = -.infinity
+    private struct RollingTranslationDelivery {
+        let sentence: Int
+        let steps: [String]
+        var index = 0
+        var submitted = false
+    }
+    private var rollingTranslationDelivery: RollingTranslationDelivery?
+    private var rollingLastTranslationSentence = 0
+    private var rollingLastTranslationShownAt: TimeInterval = -.infinity
+    private var rollingTranslationAwaitingLens = false
+    private var rollingLastActivityAt: TimeInterval = -.infinity
     private var reportedLanguageMismatch = false
     private var inputRouteType: String?
     private var lastASRDiagnosticSummary = ""
@@ -196,10 +223,12 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
     init(voice: any SubtitleRealtimeDevice, settings: SubtitleSettingsStore, archive: SubtitleArchiveStore,
          defaults: UserDefaults = .standard, makeDecoder: (() -> SubtitlePCMDecoder?)? = nil,
          makeWriter: WriterFactory? = nil, uptime: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
-         scheduleTimers: Bool = true, latency: SubtitleLatencyDiagnostics? = nil) {
+         scheduleTimers: Bool = true, latency: SubtitleLatencyDiagnostics? = nil,
+         makeTranslator: ((String, String, SubtitleTranslationQuality) async throws -> any SubtitleTranslationClient)? = nil) {
         device = voice; self.settings = settings; self.archive = archive; self.defaults = defaults
         self.latency = latency ?? SubtitleLatencyDiagnostics(defaults: defaults)
         self.uptime = uptime; self.scheduleTimers = scheduleTimers
+        self.makeTranslator = makeTranslator
         self.makeDecoder = makeDecoder ?? {
             #if COMPANION_DEVICE
             return NativeSubtitlePCMDecoder()
@@ -311,6 +340,7 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
         provider = config.provider; self.decoder = decoder; phase = .preparing; status = "正在准备本次字幕与音频存储"
         partial = ""; translatedText = ""; translatedRecent = []; microphoneRoute = nil; inputRouteType = nil
         displaySourceText = ""; displayTranslationText = ""; displayText = ""
+        displaySourceLines = []; displayTranslationLines = []
         displayIsPartial = false; displayIsAwaitingTranslation = false
         sentenceNumber = 0; displayedSentenceNumber = 0; lastExpiredSentenceNumber = 0
         newestRecognizedSentenceNumber = 0
@@ -331,6 +361,10 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
         lastASRDiagnosticSummary = ""
         translationQueue?.cancel(); translationQueue = nil
         pendingTranslations = 0; skippedTranslations = 0
+        rollingBuffer.reset(); rollingSourceIsPartial = false; rollingPendingSource = nil
+        rollingLastSourcePublishedAt = -.infinity; rollingTranslationDelivery = nil
+        rollingLastTranslationSentence = 0; rollingLastTranslationShownAt = -.infinity
+        rollingTranslationAwaitingLens = false; rollingLastActivityAt = -.infinity
         reportedLanguageMismatch = false
         recent = []; elapsed = 0; audioBytes = 0; audioLevel = 0; packets = 0; gaps = 0
         lastSequence = nil; gapOpen = false; displayReady = false; cloudReady = false; cloudStarted = false
@@ -355,11 +389,18 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
                     guard generation == token, phase == .preparing else { return }
                     appendControl("asr_asset=ready")
                 }
+                #endif
                 if settings.translationEnabled {
                     guard options.cloudLanguage != nil else {
                         fail("本机翻译需要先选择固定的识别语言。"); return
                     }
                     let destination = Self.translationTarget(for: options.language)
+                    if let makeTranslator {
+                        let created = try await makeTranslator(options.language, destination, sessionTranslationQuality)
+                        guard generation == token, phase == .preparing else { created.cancel(); return }
+                        translator = created
+                    } else {
+                    #if COMPANION_DEVICE
                     let readiness = await AppleCaptionTranslation.readiness(
                         source: options.language, target: destination,
                         quality: sessionTranslationQuality)
@@ -370,9 +411,13 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
                     translator = AppleCaptionTranslation(source: options.language, target: destination,
                                                          quality: sessionTranslationQuality)
                     appendControl("translation_asset=ready source=\(options.language) target=\(destination) quality=\(sessionTranslationQuality.rawValue)")
+                    #else
+                    fail("当前构建不支持本机翻译。"); return
+                    #endif
+                    }
                 }
-                #else
-                if options.service == .appleLocal || settings.translationEnabled {
+                #if !COMPANION_DEVICE
+                if options.service == .appleLocal {
                     fail("当前构建不支持本机识别或翻译。"); return
                 }
                 #endif
@@ -435,10 +480,10 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
         return sourceIsChinese ? .chineseOnly : .englishOnly
     }
     private var currentDisplayPreferencesSignature: String {
-        "\(settings.displayMode.rawValue)|\(settings.bilingualOrder.rawValue)|\(settings.displayRetention.rawValue)|\(settings.customRetentionSeconds)|\(settings.showLiveSourceDuringTranslation)|\(settings.partialUpdateIntervalSeconds)|\(settings.nextSentenceTakeoverDelaySeconds)|\(settings.minimumSourceVisibleSeconds)|\(settings.translationRevealDelaySeconds)|\(settings.lensUpdateIntervalSeconds)"
+        "\(settings.displayMode.rawValue)|\(settings.bilingualOrder.rawValue)|\(settings.displayRetention.rawValue)|\(settings.customRetentionSeconds)|\(settings.showLiveSourceDuringTranslation)|\(settings.partialUpdateIntervalSeconds)|\(settings.nextSentenceTakeoverDelaySeconds)|\(settings.minimumSourceVisibleSeconds)|\(settings.translationRevealDelaySeconds)|\(settings.lensUpdateIntervalSeconds)|\(settings.displayLayout.rawValue)|\(settings.rollingConfiguration)|\(settings.translationMinimumVisibleSeconds)"
     }
     private var currentDisplayLayoutSignature: String {
-        "\(settings.displayMode.rawValue)|\(settings.bilingualOrder.rawValue)|\(settings.showLiveSourceDuringTranslation)"
+        "\(settings.displayMode.rawValue)|\(settings.bilingualOrder.rawValue)|\(settings.showLiveSourceDuringTranslation)|\(settings.displayLayout.rawValue)|\(settings.rollingConfiguration)"
     }
     private var currentDisplayRetentionSignature: String {
         "\(settings.displayRetention.rawValue)|\(settings.effectiveRetentionSeconds.map { String($0) } ?? "next")"
@@ -467,6 +512,103 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
     }
     private var displayNeedsTranslationBeforeCommit: Bool {
         settings.translationEnabled && (effectiveDisplayMode == .bilingual || !sourceCanShowWithoutTranslation)
+    }
+    private var usesRollingDisplay: Bool { settings.displayLayout == .rolling }
+    private var rollingVisibility: (source: Bool, translation: Bool) {
+        switch effectiveDisplayMode {
+        case .bilingual: return (true, true)
+        case .chineseOnly: return (sourceIsChinese, !sourceIsChinese)
+        case .englishOnly: return (!sourceIsChinese, sourceIsChinese)
+        }
+    }
+    private func offerRollingSource(_ text: String, sentence: Int, final: Bool) {
+        rollingSourceIsPartial = !final
+        rollingLastActivityAt = now
+        guard final || rollingVisibility.source else { return }
+        let due = final ? now : rollingLastSourcePublishedAt + settings.partialUpdateIntervalSeconds
+        if due > now {
+            rollingPendingSource = (text, sentence, final, due)
+            scheduleDisplayWake()
+        } else {
+            rollingPendingSource = nil
+            rollingBuffer.updateSource(text, sentence: sentence, final: final)
+            rollingLastSourcePublishedAt = now
+            publishRollingDisplay()
+        }
+    }
+    private func publishRollingDisplay() {
+        let visibility = rollingVisibility
+        let frame = rollingBuffer.snapshot(configuration: settings.rollingConfiguration,
+                                           sourceVisible: visibility.source,
+                                           translationVisible: visibility.translation)
+        let visible = frame.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "" : frame.text
+        displaySourceLines = frame.sourceLines
+        displayTranslationLines = frame.translationLines
+        displaySourceText = frame.sourceText.trimmingCharacters(in: .whitespacesAndNewlines)
+        displayTranslationText = frame.translationText.trimmingCharacters(in: .whitespacesAndNewlines)
+        displayIsPartial = rollingSourceIsPartial && visibility.source
+        displayIsAwaitingTranslation = settings.translationEnabled &&
+            (pendingTranslations > 0 || !pendingTranslationReveals.isEmpty || rollingTranslationDelivery != nil)
+        // A translation step may belong to an older source segment. Both channels
+        // remain in this complete frame, so current speech cannot erase that step.
+        displayExpiresAt = nil; lensDisplayExpiresAt = nil
+        pendingFinalLensSentenceNumber = nil; hasCompletedDisplayPair = false
+        if displayText != visible || rollingTranslationAwaitingLens {
+            displayText = visible
+            pendingText = visible.isEmpty ? " " : frame.text
+            if !isProcessingDisplayTransitions { pumpDisplay() }
+        }
+        scheduleDisplayWake()
+    }
+    private func processRollingDisplayTransitions() {
+        if let pending = rollingPendingSource, now >= pending.dueAt {
+            rollingPendingSource = nil
+            rollingBuffer.updateSource(pending.text, sentence: pending.sentence, final: pending.final)
+            rollingLastSourcePublishedAt = now
+            publishRollingDisplay()
+        }
+        let hold = settings.translationMinimumVisibleSeconds
+        if !rollingTranslationAwaitingLens, now >= rollingLastTranslationShownAt + hold {
+            if let delivery = rollingTranslationDelivery, delivery.submitted {
+                if delivery.index + 1 < delivery.steps.count {
+                    var next = delivery; next.index += 1; next.submitted = false
+                    rollingTranslationDelivery = next
+                } else { rollingTranslationDelivery = nil }
+            }
+            if rollingTranslationDelivery == nil,
+               let ready = pendingTranslationReveals.values
+                .filter({ $0.sentence > rollingLastTranslationSentence &&
+                          now >= $0.readyAt + settings.translationRevealDelaySeconds })
+                .min(by: { $0.sentence < $1.sentence }) {
+                pendingTranslationReveals.removeValue(forKey: ready.sentence)
+                let steps = CaptionRollingBuffer.translationSteps(ready.translation,
+                                                                  configuration: settings.rollingConfiguration)
+                if !steps.isEmpty {
+                    rollingTranslationDelivery = RollingTranslationDelivery(sentence: ready.sentence, steps: steps)
+                }
+            }
+            if var delivery = rollingTranslationDelivery, !delivery.submitted {
+                let final = delivery.index == delivery.steps.count - 1
+                rollingBuffer.updateTranslation(delivery.steps[delivery.index], sentence: delivery.sentence, final: final)
+                if final { rollingLastTranslationSentence = max(rollingLastTranslationSentence, delivery.sentence) }
+                delivery.submitted = true; rollingTranslationDelivery = delivery
+                rollingLastActivityAt = now
+                // Start reading time after submission to an active lens. Without
+                // a lens, phone presentation starts the same clock immediately.
+                rollingTranslationAwaitingLens = target != nil && rollingVisibility.translation
+                if !rollingTranslationAwaitingLens { rollingLastTranslationShownAt = now }
+                publishRollingDisplay()
+                appendControl("display_state=rolling_translation sentence=\(delivery.sentence) step=\(delivery.index + 1)/\(delivery.steps.count)")
+            }
+        }
+        if let retention = settings.effectiveRetentionSeconds, !rollingSourceIsPartial,
+           pendingTranslations == 0, pendingTranslationReveals.isEmpty,
+           rollingTranslationDelivery == nil, rollingPendingSource == nil,
+           !displayText.isEmpty, now >= rollingLastActivityAt + retention {
+            rollingBuffer.reset()
+            publishRollingDisplay()
+            appendControl("display_state=rolling_expired")
+        }
     }
     private func composedDisplayText(source: String, translation: String,
                                      temporarySource: Bool = false) -> String {
@@ -627,6 +769,40 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
                    takeoverDeadline(for: value.sentence))
     }
     private func offerTranslationReveal(source: String, translation: String, sentence: Int) {
+        if usesRollingDisplay {
+            guard sentence > rollingLastTranslationSentence else { return }
+            if !rollingVisibility.translation {
+                if let delivery = rollingTranslationDelivery, delivery.sentence < sentence {
+                    rollingBuffer.appendTranslation(delivery.steps.last ?? "", sentence: delivery.sentence)
+                    rollingTranslationDelivery = nil
+                    rollingTranslationAwaitingLens = false
+                }
+                for ready in pendingTranslationReveals.values
+                    .filter({ $0.sentence < sentence }).sorted(by: { $0.sentence < $1.sentence }) {
+                    rollingBuffer.appendTranslation(ready.translation, sentence: ready.sentence)
+                    pendingTranslationReveals.removeValue(forKey: ready.sentence)
+                }
+                rollingBuffer.appendTranslation(translation, sentence: sentence)
+                rollingLastTranslationSentence = max(rollingLastTranslationSentence, sentence)
+                publishRollingDisplay()
+                return
+            }
+            if translation.isEmpty {
+                publishRollingDisplay()
+                return
+            }
+            pendingTranslationReveals[sentence] = PendingTranslationReveal(
+                source: source, translation: translation, sentence: sentence, readyAt: now)
+            processDisplayTransitions()
+            return
+        }
+        if !translation.isEmpty {
+            rollingBuffer.appendTranslation(translation, sentence: sentence)
+            rollingLastTranslationSentence = max(rollingLastTranslationSentence, sentence)
+            if let delivery = rollingTranslationDelivery, delivery.sentence <= sentence {
+                rollingTranslationDelivery = nil
+            }
+        }
         guard sentence >= newestRecognizedSentenceNumber,
               sentence >= displayedSentenceNumber, sentence > lastExpiredSentenceNumber else {
             appendControl("display_state=late_translation_ignored")
@@ -650,6 +826,10 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
             isProcessingDisplayTransitions = false
             pumpDisplay()
             scheduleDisplayWake()
+        }
+        if usesRollingDisplay {
+            processRollingDisplayTransitions()
+            return
         }
         if let displayExpiresAt, now >= displayExpiresAt { clearVisibleDisplay() }
         if let pending = pendingFinalDisplay,
@@ -741,6 +921,19 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
         displayPreferencesSignature = signature
         displayLayoutSignature = layoutSignature
         displayRetentionSignature = retentionSignature
+        if usesRollingDisplay {
+            pendingPartialDisplay = nil; pendingFinalDisplay = nil
+            displayExpiresAt = nil; lensDisplayExpiresAt = nil
+            pendingFinalLensSentenceNumber = nil
+            if let pending = rollingPendingSource {
+                rollingPendingSource = nil
+                offerRollingSource(pending.text, sentence: pending.sentence, final: pending.final)
+            }
+            publishRollingDisplay()
+            return
+        }
+        rollingPendingSource = nil
+        rollingTranslationAwaitingLens = false
         if retentionChanged { updateDisplayExpiryFromCompletion() }
         let liveSource = settings.showLiveSourceDuringTranslation && settings.translationEnabled
         let strictFirstSource = sourceCanShowWithoutTranslation &&
@@ -968,6 +1161,11 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
         pendingFinalLensSentenceNumber = nil; lensCompletedSentenceNumber = 0
         lensDisplayCompletedAt = nil; lensDisplayExpiresAt = nil
         target = nil
+        if rollingTranslationAwaitingLens {
+            rollingTranslationAwaitingLens = false
+            rollingLastTranslationShownAt = now
+            scheduleDisplayWake()
+        }
         if displayExpiresAt == nil { armDisplayExpiryIfNeeded() }
         if displayClaimed { device.ownDisplayForSubtitles(false); displayClaimed = false }
         appendControl("display_state=disabled reason=\(reason) phone_capture=continues")
@@ -1127,6 +1325,7 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
         guard value.utf8.count <= 32768 else { fail("单句转写超过保存上限。" ); return }
         latency.resultReceived(at: now)
         cloudReady = true; partial = value
+        if !value.isEmpty { rollingSourceIsPartial = !final }
         if final {
             if !value.isEmpty {
                 if options.service == .appleLocal, !reportedLanguageMismatch,
@@ -1146,6 +1345,13 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
                 sentenceNumber += 1
                 let sentence = sentenceNumber
                 pendingPartialDisplay = nil
+                if usesRollingDisplay {
+                    offerRollingSource(value, sentence: sentence, final: true)
+                    queueTranslation(value, sentence: sentence, audioOffset: audioOffset)
+                    firstPartialAudioBytes = nil; partial = ""
+                    return
+                }
+                rollingBuffer.updateSource(value, sentence: sentence, final: true)
                 if !displayNeedsTranslationBeforeCommit {
                     offerFinalSourceDisplay(source: value, sentence: sentence,
                                             completed: true)
@@ -1163,6 +1369,12 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
             partial = ""
         } else if !value.isEmpty {
             let sentence = sentenceNumber + 1
+            if usesRollingDisplay {
+                if firstPartialAudioBytes == nil { firstPartialAudioBytes = max(0, audioBytes - 96_000) }
+                offerRollingSource(value, sentence: sentence, final: false)
+                return
+            }
+            rollingBuffer.updateSource(value, sentence: sentence, final: false)
             let liveSource = settings.showLiveSourceDuringTranslation && settings.translationEnabled
             let firstSourceInStrictMode = sourceCanShowWithoutTranslation &&
                 (!displayNeedsTranslationBeforeCommit ||
@@ -1204,7 +1416,6 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
         }
     }
     private func queueTranslation(_ source: String, sentence: Int, audioOffset: TimeInterval) {
-        #if COMPANION_DEVICE
         guard settings.translationEnabled else { return }
         guard translator != nil else {
             error = effectiveDisplayMode == .bilingual
@@ -1214,21 +1425,33 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
             showTranslationFallback(source: source, sentence: sentence)
             return
         }
-        guard pendingTranslations < 16 else {
+        let readyDeliveries = usesRollingDisplay
+            ? pendingTranslationReveals.count + (rollingTranslationDelivery == nil ? 0 : 1) : 0
+        guard pendingTranslations + readyDeliveries < 16 else {
             skippedTranslations += 1
             appendControl("translation_state=backpressure skipped=\(skippedTranslations)")
             error = effectiveDisplayMode == .bilingual
                 ? "本机翻译处理积压，此句仅显示原文；原文已保存。"
                 : "本机翻译处理积压，此句翻译暂不可用；原文已保存。"
+            if usesRollingDisplay {
+                // Retain the last readable translation. Do not enqueue another
+                // placeholder into the already full ready/display queue.
+                publishRollingDisplay()
+                return
+            }
             showTranslationFallback(source: source, sentence: sentence)
             return
         }
         pendingTranslations += 1
+        if usesRollingDisplay { publishRollingDisplay() }
         let previous = translationQueue, token = generation
         translationQueue = Task { [weak self] in
             guard let self else { return }
             defer {
-                if self.generation == token { self.pendingTranslations = max(0, self.pendingTranslations - 1) }
+                if self.generation == token {
+                    self.pendingTranslations = max(0, self.pendingTranslations - 1)
+                    if self.usesRollingDisplay { self.publishRollingDisplay() }
+                }
             }
             await previous?.value
             guard self.generation == token, self.active, !Task.isCancelled,
@@ -1263,7 +1486,6 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
                 self.showTranslationFallback(source: source, sentence: sentence)
             }
         }
-        #endif
     }
     private func pumpDisplay() {
         let lensInterval = max(0.5, settings.lensUpdateIntervalSeconds)
@@ -1297,6 +1519,10 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
             pendingText = nil
             pendingFinalLensSentenceNumber = nil
             lastDisplayAt = now
+            if usesRollingDisplay, rollingTranslationAwaitingLens {
+                rollingTranslationAwaitingLens = false
+                rollingLastTranslationShownAt = now
+            }
         }
         if submitted, let sentence = submittedFinalSentence, text != " " {
             lensCompletedSentenceNumber = sentence
@@ -1371,8 +1597,10 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
         isProcessingDisplayTransitions = false
         displayTimingTimer?.invalidate(); displayTimingTimer = nil
         pendingTranslations = 0
-        #if COMPANION_DEVICE
+        rollingPendingSource = nil; rollingTranslationDelivery = nil
+        rollingTranslationAwaitingLens = false
         translator?.cancel(); translator = nil
+        #if COMPANION_DEVICE
         microphone?.stop(); microphone = nil
         #endif
         lastASRDiagnosticSummary = provider?.diagnosticSummary ?? lastASRDiagnosticSummary
@@ -1468,6 +1696,24 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
         displayTimingTimer?.invalidate(); displayTimingTimer = nil
         guard scheduleTimers, active else { return }
         var deadlines: [TimeInterval] = []
+        if usesRollingDisplay {
+            if let pending = rollingPendingSource { deadlines.append(pending.dueAt) }
+            if !rollingTranslationAwaitingLens {
+                let nextReadingSlot = rollingLastTranslationShownAt + settings.translationMinimumVisibleSeconds
+                if rollingTranslationDelivery != nil { deadlines.append(nextReadingSlot) }
+                else if let first = pendingTranslationReveals.values
+                    .filter({ $0.sentence > rollingLastTranslationSentence })
+                    .map({ $0.readyAt + settings.translationRevealDelaySeconds }).min() {
+                    deadlines.append(max(first, nextReadingSlot))
+                }
+            }
+            if let retention = settings.effectiveRetentionSeconds, !rollingSourceIsPartial,
+               pendingTranslations == 0, pendingTranslationReveals.isEmpty,
+               rollingTranslationDelivery == nil, rollingPendingSource == nil,
+               !displayText.isEmpty {
+                deadlines.append(rollingLastActivityAt + retention)
+            }
+        } else {
         if let pendingPartialDisplay { deadlines.append(pendingPartialDisplay.dueAt) }
         if let pendingFinalDisplay {
             deadlines.append(takeoverDeadline(for: pendingFinalDisplay.sentence))
@@ -1477,6 +1723,7 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
         })
         if let displayExpiresAt { deadlines.append(displayExpiresAt) }
         if let lensDisplayExpiresAt { deadlines.append(lensDisplayExpiresAt) }
+        }
         if pendingText != nil, sid != nil, let target, device.deviceID == target,
            phase == .listening, displayReady {
             deadlines.append(lastDisplayAt + max(0.5, settings.lensUpdateIntervalSeconds))

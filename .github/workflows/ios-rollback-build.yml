@@ -41,6 +41,11 @@ jobs:
       - name: Install XcodeGen
         run: brew install xcodegen
 
+      - name: Test rolling caption layout and runtime
+        run: |
+          swift test --package-path rayneo-captions
+          node scripts/test-subtitle-rolling.mjs
+
       - name: Generate device project
         run: |
           SDK_PATH=$(xcrun --sdk iphoneos --show-sdk-path)
@@ -78,7 +83,7 @@ jobs:
           IPA_VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Info.plist")
           IPA_BUILD=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Info.plist")
           test "$IPA_VERSION" = "0.4.0"
-          test "$IPA_BUILD" = "21"
+          test "$IPA_BUILD" = "22"
           IPA_NAME="TurboIO-iOS26-v${IPA_VERSION}-build${IPA_BUILD}-unsigned.ipa"
           IPA_PATH="$OUTPUT/$IPA_NAME"
 
