@@ -46,14 +46,18 @@ final class LocalBoundaryTests: XCTestCase {
         let suite = "companion-tests-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
-        let store = CompanionStore(defaults: defaults)
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let recordingRoot = root.appendingPathComponent("ImportedRecordings")
+        let archiveRoot = root.appendingPathComponent("Archive")
+        let store = CompanionStore(defaults: defaults, recordingRoot: recordingRoot, archiveRoot: archiveRoot)
         store.addTodo("  "); XCTAssertTrue(store.todos.isEmpty)
         store.addTodo("  测试待办  ")
         let todo = try XCTUnwrap(store.todos.first)
         XCTAssertEqual(todo.title, "测试待办")
         store.toggleTodo(todo.id)
         store.savePrompter("测试提词稿")
-        let restored = CompanionStore(defaults: defaults)
+        let restored = CompanionStore(defaults: defaults, recordingRoot: recordingRoot, archiveRoot: archiveRoot)
         XCTAssertEqual(restored.todos.count, 1)
         XCTAssertTrue(restored.todos[0].completed)
         XCTAssertEqual(restored.prompterText, "测试提词稿")

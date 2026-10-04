@@ -52,7 +52,7 @@ import CryptoKit
         voice.onSubtitleEnvelope = { [weak self] in self?.store?.realtimeSubtitles.receive(device: $0, packet: $1, arrival: $2) }
         // One automatic weather owner. Legacy Weatherstack stays manual to avoid overwrites.
         voice.onRuntimeRefresh = { [weak self] in self?.store?.qweather.tick() }
-        voice.featureIsBusy = { [weak self] in self?.recordingID != nil || self?.teleprompterID != nil || self?.store?.alwaysOn.occupied == true }
+        voice.featureIsBusy = { [weak self] in self?.recordingID != nil || self?.teleprompterID != nil || self?.store?.alwaysOn.occupied == true || self?.store?.speechPrompter.active == true }
         voice.onConnectionChange = { [weak self] device in
             guard let self else { return }
             self.store?.notifications.connectionChanged()
@@ -65,7 +65,9 @@ import CryptoKit
             if self.recordingID != nil { self.recordingStatus = device == self.captureDevice ? "连接恢复；等待同一录音状态/数据，不自动宣布补传完成" : "连接中断；原始录音保留，等待同一眼镜恢复" }
             if self.teleprompterID != nil, device != self.teleprompterDevice {
                 self.teleprompterPrepared = false
+                self.teleprompterStarted = false
                 self.teleprompterStatus = "提词连接中断；停止自动操作，请恢复连接后退出并重新准备"
+                self.onTeleprompterFailure?(self.teleprompterStatus)
             }
             if device != nil, self.store?.realtimeSubtitles.shortcutEnabled == true {
                 self.subtitleShortcutStatus = "永久双击字幕已开启，正在核对眼镜快捷键"
@@ -103,7 +105,8 @@ import CryptoKit
     }
     func startRecording() {
         perform {
-            guard canControl, recordingID == nil, teleprompterID == nil, let device = voice.deviceID else { throw DeviceFeatureError.busy }
+            guard canControl, recordingID == nil, teleprompterID == nil,
+                  store?.speechPrompter.active != true, let device = voice.deviceID else { throw DeviceFeatureError.busy }
             // Voice standby is explicitly suspended so an unsolicited wake cannot steal the microphone.
             if voice.enabled { voice.stop() }
             acceptsEyeRecording = true
@@ -137,6 +140,24 @@ import CryptoKit
     }
     func receive(device: String, business: UInt8, data: Data) {
         guard voice.deviceID == device else { return }
+        if business == 20, teleprompterID != nil, teleprompterDevice == device {
+            do {
+                let metadata = try BusinessEnvelopeMetadata.inspect(data)
+                if metadata.messageType == 9 {
+                    // The official native plugin bypasses JSON entirely for
+                    // teleprompter audioData and reads AssistantMsg.data.
+                    guard teleprompterStarted, teleprompterScrollMode == 1 else { return }
+                    guard let audio = try BusinessEnvelopeMetadata.teleprompterAudio(data) else {
+                        throw DeviceFeatureError.invalidPacket
+                    }
+                    onTeleprompterAudio?(audio, nil)
+                    return
+                }
+            } catch {
+                teleprompterFailed("提词音频协议无效；已停止自动跟随，保留当前稿件位置。")
+                return
+            }
+        }
         if business == 19 {
             store?.alwaysOn.receive(device: device, business: business, packet: data)
             store?.subtitleDisplay.receive(device: device, packet: data)
@@ -160,6 +181,9 @@ import CryptoKit
         } catch {
             self.error = "收到未识别或不匹配的业务数据，未当成成功。"
             if business == 14 { lostMessages() }
+            if business == 20, teleprompterID != nil, teleprompterDevice == device {
+                teleprompterFailed("收到无效提词控制；保留当前位置，请结束本轮后重试。")
+            }
         }
     }
     private func recording(_ device: String, _ wire: DeviceBusinessWire) throws {
@@ -245,6 +269,9 @@ import CryptoKit
     }
     private func lostMessages() {
         store?.notifications.lostMessages()
+        if teleprompterID != nil {
+            teleprompterFailed("提词接收队列溢出；已停止自动跟随，保留当前稿件位置。")
+        }
         if let id = recordingID, let device = captureDevice, failedRecordings.insert(id).inserted { io.async { [inbox] in inbox.invalidate(device:device,id:id) } }
         error = "业务接收队列溢出或录音格式不匹配；本次录音不可标完整。"
     }
@@ -439,19 +466,31 @@ import CryptoKit
     @Published private(set) var teleprompterStatus = "尚未发送稿件"
     @Published private(set) var teleprompterID: String?
     @Published private(set) var teleprompterOffset: Int64 = 0
+    @Published private(set) var teleprompterStarted = false
+    var onTeleprompterProgress: ((TeleprompterPositionObserved) -> Void)?
+    var onTeleprompterControl: ((UInt32) -> Void)?
+    var onTeleprompterAudio: ((Data, Int?) -> Void)?
+    var onTeleprompterFailure: ((String) -> Void)?
     var teleprompterFile: URL?
     var teleprompterDevice: String?
     var teleprompterPrepared = false
     var teleprompterSentFile = false
     var teleprompterTransferTask: String?
+    private var teleprompterScrollMode = 2
+    private var teleprompterBoundaries = Set<Int>()
 }
 
 extension CompanionDeviceFeatures {
-    func prepareTeleprompter(_ text: String, speed: Int) {
+    func prepareTeleprompter(_ text: String, speed: Int, scrollMode: Int = 2, initialOffset: Int = 0) {
         perform {
             guard canControl, recordingID == nil, teleprompterID == nil, let device = voice.deviceID else { throw DeviceFeatureError.busy }
             guard !text.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty, text.count <= 12_000,
-                  text.utf8.count <= 48_000, (60...240).contains(speed) else { throw DeviceFeatureError.invalidPacket }
+                  text.utf8.count <= 48_000, (60...240).contains(speed), (1...3).contains(scrollMode),
+                  scrollMode != 2 || store?.speechPrompter.active != true else { throw DeviceFeatureError.invalidPacket }
+            var boundaries: Set<Int> = [0]
+            var offset = 0
+            for character in text { offset += String(character).utf8.count; boundaries.insert(offset) }
+            guard boundaries.contains(initialOffset) else { throw DeviceFeatureError.invalidPacket }
             if voice.enabled { voice.stop() }
             let did = UUID().uuidString
             let dir = inbox.root.deletingLastPathComponent().appendingPathComponent("TeleprompterOutboxV1")
@@ -460,13 +499,20 @@ extension CompanionDeviceFeatures {
             let url = dir.appendingPathComponent(did + ".txt")
             try Data(text.utf8).write(to:url,options:[.withoutOverwriting,.completeFileProtectionUntilFirstUserAuthentication])
             teleprompterID = did; teleprompterDevice = device; teleprompterFile = url
-            teleprompterOffset = 0; teleprompterPrepared = false; teleprompterSentFile = false
+            teleprompterOffset = Int64(initialOffset); teleprompterPrepared = false; teleprompterSentFile = false
+            teleprompterStarted = false; teleprompterScrollMode = scrollMode; teleprompterBoundaries = boundaries
             // Optional layout fields intentionally omitted: never guess pixel/gear defaults.
-            try send(20,2,["action":1,"did":did,"total":text.utf8.count,"scroll":2,"speed":speed,"pageOffset":0,"highLightOffset":0])
-            teleprompterStatus = "已请求准备稿件，等待眼镜回应；本次不启用跟读/麦克风"
+            do {
+                try send(20,2,["action":1,"did":did,"total":text.utf8.count,"scroll":scrollMode,"speed":speed,"pageOffset":initialOffset,"highLightOffset":initialOffset])
+            } catch {
+                teleprompterFailed("提词准备发送失败，尚未开始跟随。")
+                throw error
+            }
+            teleprompterStatus = "已请求准备稿件，等待眼镜收稿回应"
             DispatchQueue.main.asyncAfter(deadline:.now()+30) { [weak self] in
                 guard let self, self.teleprompterID == did, !self.teleprompterPrepared else { return }
                 self.teleprompterStatus = "准备超时；未确认收稿，不会自动开始滚动。可点退出取消本轮。"
+                self.onTeleprompterFailure?(self.teleprompterStatus)
             }
         }
     }
@@ -477,17 +523,44 @@ extension CompanionDeviceFeatures {
             guard [3,4,5,6,7].contains(type) else { throw DeviceFeatureError.invalidPacket }
             var body: [String:Any] = ["action":1,"did":did]
             if type == 4 { body["offset"] = teleprompterOffset; body["code"] = 1; body["isCompleted"] = false }
-            if type == 7 { guard (60...240).contains(speed) else { throw DeviceFeatureError.invalidPacket }; body["scroll"] = 2; body["speed"] = speed }
+            if type == 7 { guard (60...240).contains(speed) else { throw DeviceFeatureError.invalidPacket }; body["scroll"] = teleprompterScrollMode; body["speed"] = speed }
             try send(20,type,body)
             if type == 6, let task = teleprompterTransferTask { voice.cancelFile(task); teleprompterTransferTask = nil }
             teleprompterStatus = "控制 type\(type) 已提交，等待眼镜回应"
         }
     }
+    /// The ASR follower sends progress on the same prepared manuscript; it does
+    /// not replace the file or suspend recognition after a glasses gesture.
+    @discardableResult
+    func teleprompterSeek(pageOffset: Int, highlightOffset: Int) -> Bool {
+        do {
+            guard let did = teleprompterID, teleprompterDevice == voice.deviceID,
+                  teleprompterPrepared, teleprompterStarted,
+                  teleprompterBoundaries.contains(pageOffset),
+                  teleprompterBoundaries.contains(highlightOffset) else { throw DeviceFeatureError.noSession }
+            let message = try TeleprompterJSONCodec().encodeAppRequest(.progress(did: did,
+                pageOffset: Int64(pageOffset), highLightOffset: Int64(highlightOffset), autoSync: false))
+            guard let body = try JSONSerialization.jsonObject(with: message.payload) as? [String: Any] else {
+                throw DeviceFeatureError.invalidPacket
+            }
+            try send(20, UInt32(message.type), body)
+            return true
+        } catch {
+            teleprompterFailed("提词位置更新失败；已停止自动跟随，保留当前稿件。")
+            return false
+        }
+    }
+    private func teleprompterFailed(_ message: String) {
+        teleprompterStarted = false
+        teleprompterStatus = message
+        error = message
+        onTeleprompterFailure?(message)
+    }
     private func teleprompterReceive(_ device: String, _ wire: DeviceBusinessWire) throws {
         guard let did = DeviceBusinessWire.identifier(wire.json,"did"), did == teleprompterID, teleprompterDevice == device else { return }
         let action = DeviceBusinessWire.integer(wire.json,"action"), code = DeviceBusinessWire.integer(wire.json,"code")
         if wire.type == 2, action == 2 {
-            guard code == 1 || code == 7 else { teleprompterStatus = "准备被拒绝 code=\(code ?? -1)，未自动处理冲突"; return }
+            guard code == 1 || code == 7 else { teleprompterFailed("准备被拒绝 code=\(code ?? -1)，请结束本轮后重试"); return }
             if !teleprompterSentFile {
                 guard let file = teleprompterFile else { throw DeviceFeatureError.noSession }
                 teleprompterTransferTask = try voice.sendFile(file,id:did)
@@ -496,24 +569,57 @@ extension CompanionDeviceFeatures {
             } else { teleprompterPrepared = true; teleprompterStatus = "文件提交后收到业务成功回应，可测试开始；尚无独立文件校验/镜片证明" }
             return
         }
-        if wire.type == 3, action == 2 { teleprompterStatus = "开始提词回应 code=\(code ?? -1)"; return }
+        if wire.type == 3, action == 2 {
+            guard code == 1, teleprompterPrepared else {
+                teleprompterFailed("开始提词未确认 code=\(code ?? -1)")
+                return
+            }
+            teleprompterStarted = true
+            teleprompterStatus = "眼镜已回应开始提词"
+            onTeleprompterControl?(3)
+            return
+        }
         guard let control = TeleprompterControlType(rawValue: UInt16(clamping:wire.type)) else { return }
         let data = try JSONSerialization.data(withJSONObject:wire.json)
         if action == 1 {
             let event = try TeleprompterJSONCodec().decodeGlassesRequest(type:control.rawValue,payload:data)
-            switch event {
-            case .progress(let p): teleprompterOffset = p.pageOffset; teleprompterStatus = "眼镜进度回传：UTF-8 原始偏移 \(p.pageOffset)"
-            case .pause: teleprompterStatus = "眼镜请求暂停"
-            case .resume: teleprompterStatus = "眼镜请求恢复"
-            case .stop: teleprompterStatus = "眼镜已请求退出"
-            default: return
-            }
             let ack = try TeleprompterJSONCodec().encodeAppResponse(type:control,did:did,code:.accepted)
             try voice.sendBusiness(20,payload:DeviceBusinessWire.encode(type:UInt32(ack.type),json:JSONSerialization.jsonObject(with:ack.payload) as! [String:Any]))
-        } else if action == 2 { teleprompterStatus = "眼镜回应 type\(wire.type) code=\(code ?? -1)" }
+            switch event {
+            case .progress(let p):
+                guard teleprompterStarted,
+                      p.pageOffset >= 0, p.pageOffset <= 48_000,
+                      p.highLightOffset >= 0, p.highLightOffset <= 48_000,
+                      teleprompterBoundaries.contains(Int(p.pageOffset)),
+                      teleprompterBoundaries.contains(Int(p.highLightOffset)) else {
+                    throw DeviceFeatureError.invalidPacket
+                }
+                teleprompterOffset = p.pageOffset
+                teleprompterStatus = "眼镜滑动辅助定位：UTF-8 偏移 \(p.pageOffset)"
+                onTeleprompterProgress?(p)
+            case .pause:
+                teleprompterStatus = "眼镜请求暂停"
+                onTeleprompterControl?(4)
+            case .resume:
+                teleprompterStatus = "眼镜请求恢复"
+                onTeleprompterControl?(5)
+            case .stop:
+                teleprompterStatus = "眼镜已请求退出"
+                onTeleprompterControl?(6)
+            default: return
+            }
+        } else if action == 2 {
+            guard code == 1 else {
+                teleprompterFailed("眼镜提词控制未确认 type\(wire.type) code=\(code ?? -1)")
+                return
+            }
+            teleprompterStatus = "眼镜回应 type\(wire.type) code=1"
+            if control != .progress { onTeleprompterControl?(wire.type) }
+        }
         if control == .stop, action == 1 || code == 1 {
             if let task = teleprompterTransferTask { voice.cancelFile(task); teleprompterTransferTask = nil }
-            teleprompterID = nil; teleprompterPrepared = false; teleprompterFile = nil
+            teleprompterID = nil; teleprompterPrepared = false; teleprompterStarted = false; teleprompterFile = nil
+            teleprompterBoundaries.removeAll()
         }
     }
 }

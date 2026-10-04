@@ -335,6 +335,7 @@ final class CompanionUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = testArguments + ["--ui-tab", "3", "--ui-book-fixture"]
         app.launch()
+        reveal(app.buttons["prompter-tool"], in: app)
         app.buttons["prompter-tool"].tap()
         app.buttons["book-shelf"].tap()
         let fixture = app.buttons["book-import-fixture"]
@@ -369,7 +370,8 @@ final class CompanionUITests: XCTestCase {
         app.launch()
         XCTAssertTrue(app.staticTexts["尚未连接"].waitForExistence(timeout: 10))
         capture("01-device-real")
-        app.buttons["tab-1"].tap()
+        app.buttons["tab-3"].tap()
+        app.buttons["conversation-tool"].tap()
         XCTAssertTrue(app.staticTexts["麦克风未启用 · 没有音频正在传输"].waitForExistence(timeout: 5))
         capture("02-voice-real")
         app.buttons["tab-2"].tap()
@@ -455,14 +457,19 @@ final class CompanionUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = testArguments + ["--ui-tab", "3"]
         app.launch()
+        reveal(app.buttons["prompter-tool"], in: app)
         app.buttons["prompter-tool"].tap()
+        app.buttons["prompter-new"].tap()
+        let title = app.textFields["prompter-editor-title"]
+        XCTAssertTrue(title.waitForExistence(timeout: 5))
+        title.tap(); title.typeText("Local preview")
         let editor = app.textViews["prompter-input"]
         XCTAssertTrue(editor.waitForExistence(timeout: 5))
         editor.tap(); editor.typeText("This is a local preview, not a glasses screenshot.")
-        app.swipeUp()
         app.buttons["prompter-save"].tap()
-        app.swipeDown()
-        app.buttons["手机预览"].tap()
+        app.buttons["prompter-open-session"].tap()
+        XCTAssertTrue(app.buttons["prompter-start-follow"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["prompter-start-follow"].isEnabled)
         capture("09-prompter-phone-preview")
         app.terminate()
         app.launchArguments = testArguments + ["--ui-tab", "0", "--ui-demo"]

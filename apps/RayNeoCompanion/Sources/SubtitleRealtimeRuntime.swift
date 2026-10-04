@@ -241,7 +241,8 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
                 try CaptionDiskSink(root: root, id: record.id, recordAudio: record.savesAudio, record: record, onFailure: failure)
             }.value
         }
-        settings.isBusy = { [weak self] in self?.active == true || self?.saving == true }
+        let previousBusy = settings.isBusy
+        settings.isBusy = { [weak self] in self?.active == true || self?.saving == true || previousBusy?() == true }
         archive.isActive = { [weak self] id in self?.sessionID == id && (self?.active == true || self?.saving == true) }
         shortcutEnabled = defaults.bool(forKey: Self.shortcutKey)
         if defaults.bool(forKey: Self.pendingKey) {

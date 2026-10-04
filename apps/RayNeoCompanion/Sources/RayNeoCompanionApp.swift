@@ -11,6 +11,8 @@ struct RayNeoCompanionApp: App {
                 .environmentObject(store.archive)
                 .environmentObject(store.archive.audioInspection)
                 .environmentObject(store.books)
+                .environmentObject(store.manuscripts)
+                .environmentObject(store.speechPrompter)
                 .environmentObject(store.voice)
                 .environmentObject(store.codex)
                 .environmentObject(store.codexPush)
@@ -52,6 +54,7 @@ struct RootView: View {
             case 4:
                 if ProcessInfo.processInfo.arguments.contains("--ui-subtitle-display-test") { SubtitleDisplayTestView() }
                 else { RealtimeSubtitlesView() }
+            case 5: PrompterWorkspaceView()
             default: DeviceView()
             }
         }
@@ -60,7 +63,7 @@ struct RootView: View {
             HStack(spacing: 0) {
                 tabButton(0, "设备", "eyeglasses")
                 tabButton(4, "字幕", "captions.bubble")
-                tabButton(1, "会话", "bubble.left")
+                tabButton(5, "提词", "text.alignleft")
                 tabButton(2, "归档", "folder")
                 tabButton(3, "工具", "case")
             }

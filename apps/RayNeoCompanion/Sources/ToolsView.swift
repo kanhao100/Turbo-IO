@@ -6,6 +6,9 @@ struct ToolsView: View {
     @State private var showLab = false
     var body: some View {
         Screen(title: "工具箱", eyebrow: "本地工具与实验") {
+            NavigationLink { ConversationView() } label: {
+                Card { FeatureRow(icon: "bubble.left", title: "会话", subtitle: "语音对话与会话记录", status: "打开") }
+            }.buttonStyle(.plain).accessibilityIdentifier("conversation-tool")
             NavigationLink { DisplayObserverView() } label: {
                 Card { FeatureRow(icon: "eyeglasses", title: "显示观察", subtitle: "USB · 页面回报与发送文字 · 非截图", status: "只读") }
             }.buttonStyle(.plain).accessibilityIdentifier("display-observer-entry")
@@ -24,7 +27,7 @@ struct ToolsView: View {
                 }.buttonStyle(.plain).accessibilityIdentifier("todo-tool")
                 Divider().overlay(Palette.line)
                 NavigationLink { PrompterView() } label: {
-                    FeatureRow(icon: "text.alignleft", title: "提词器", subtitle: "台词编辑与手机预览", status: "本地可用", active: true)
+                    FeatureRow(icon: "text.alignleft", title: "提词器", subtitle: "稿件库 · 语音跟随 · 匀速阅读", status: "打开", active: true)
                 }.buttonStyle(.plain).accessibilityIdentifier("prompter-tool")
             }
             Card {
@@ -257,61 +260,7 @@ struct RemovedTodosView: View {
 }
 
 struct PrompterView: View {
-    @EnvironmentObject private var store: CompanionStore
-    @State private var text = ""
-    @State private var fontSize = 22.0
-    @State private var mode = "编辑"
-    @State private var page = 0
-    @State private var saved = false
-    private var pages: [String] { LocalPrompterPager.pages(text) }
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                Picker("提词器模式", selection: $mode) { Text("编辑").tag("编辑"); Text("手机预览").tag("手机预览") }.pickerStyle(.segmented)
-                NavigationLink { BookShelfView() } label: {
-                    Card { FeatureRow(icon: "books.vertical", title: "书籍导入与匀速阅读", subtitle: "TXT / EPUB · 章节 · 播放速度 · 续读", status: "本地可用", active: true) }
-                }.buttonStyle(.plain).accessibilityIdentifier("book-shelf")
-                if mode == "编辑" {
-                    Card {
-                        HStack { Text("我的提词稿").font(.headline).foregroundStyle(Palette.ink); Spacer(); Text("\(text.count) 字").font(.caption).foregroundStyle(Palette.muted) }
-                        ZStack(alignment: .topLeading) {
-                            if text.isEmpty { Text("写下你想说的话……").foregroundStyle(Palette.muted).padding(.top, 8).padding(.leading, 5) }
-                            TextEditor(text: $text).scrollContentBackground(.hidden).frame(minHeight: 260).accessibilityIdentifier("prompter-input")
-                        }.font(.system(size: 16)).padding(10).background(Palette.background, in: RoundedRectangle(cornerRadius: 14))
-                    }
-                } else {
-                    Text("手机排版预览").font(.system(size: 14, weight: .medium)).foregroundStyle(Palette.ink)
-                    VStack {
-                        ScrollView {
-                            Text(pages.isEmpty ? "还没有提词稿，请先在编辑页输入。" : pages[min(page, pages.count - 1)])
-                                .font(.system(size: fontSize, weight: .medium)).foregroundStyle(Palette.mint).lineSpacing(14)
-                                .frame(maxWidth: .infinity, alignment: .leading).padding(24)
-                        }.frame(height: 210)
-                        Text(pages.isEmpty ? "无内容" : "手机页 \(page + 1) / \(pages.count)").font(.system(size: 11)).foregroundStyle(Palette.mint.opacity(0.6)).padding(.bottom, 16)
-                    }.background(Palette.ink, in: RoundedRectangle(cornerRadius: 20))
-                    HStack { Text("字号"); Spacer(); Text("\(Int(fontSize))").monospacedDigit() }.font(.subheadline)
-                    HStack { Text("A").font(.caption); Slider(value: $fontSize, in: 16...40, step: 1); Text("A").font(.title3) }
-                    HStack {
-                        Button { page = max(0, page - 1) } label: { Label("上一页", systemImage: "chevron.left").frame(maxWidth: .infinity) }.disabled(page == 0)
-                        Button { page = min(pages.count - 1, page + 1) } label: { Label("下一页", systemImage: "chevron.right").frame(maxWidth: .infinity) }.disabled(page + 1 >= pages.count)
-                    }.font(.system(size: 13)).padding(13).background(.white, in: RoundedRectangle(cornerRadius: 12))
-                    Text("每页按 140 个字符切分，仅便于手机阅读，不是眼镜分页规则。")
-                        .font(.system(size: 10)).foregroundStyle(Palette.muted)
-                }
-                HStack(spacing: 12) {
-                    Button { store.savePrompter(text); saved = true } label: {
-                        Label(saved ? "已保存" : "保存草稿", systemImage: saved ? "checkmark" : "square.and.arrow.down").frame(maxWidth: .infinity)
-                    }.accessibilityIdentifier("prompter-save")
-                    ShareLink(item: text) { Label("分享稿件", systemImage: "square.and.arrow.up").frame(maxWidth: .infinity) }.disabled(text.isEmpty)
-                }.font(.system(size: 13, weight: .medium)).padding(14).background(.white, in: RoundedRectangle(cornerRadius: 13))
-                    .overlay(RoundedRectangle(cornerRadius: 13).stroke(Palette.green, lineWidth: 0.75))
-                GlassesPrompterControls(text:text)
-                notice("镜片排版与旋钮操作需实机验证")
-            }.padding(24)
-        }.background(Palette.background).navigationTitle("提词器").navigationBarTitleDisplayMode(.inline).toolbar(.visible, for: .navigationBar)
-            .preference(key: CompanionTabBarHiddenPreference.self, value: true)
-            .onAppear { text = store.prompterText }.onChange(of: text) { _ in saved = false; page = 0 }
-    }
+    var body: some View { PrompterWorkspaceView() }
 }
 
 enum LocalPrompterPager {

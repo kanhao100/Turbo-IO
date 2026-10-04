@@ -108,6 +108,22 @@ final class CompanionStore: ObservableObject {
     @Published var message: String?
     let archive: LocalArchiveController
     let books: BookLibrary
+    lazy var manuscripts = ManuscriptLibrary(
+        root: customRecordingRoot?.deletingLastPathComponent().appendingPathComponent("PrompterManuscriptsV1"),
+        defaults: defaults, legacyText: prompterText)
+    lazy var speechPrompter: SpeechPrompterRuntime = {
+        let runtime = SpeechPrompterRuntime(settings: subtitleSettings, features: features,
+            available: { [weak self] in
+                guard let self else { return false }
+                return !self.realtimeSubtitles.active && !self.realtimeSubtitles.saving && !self.subtitleDisplay.occupied &&
+                    !self.alwaysOn.occupied && !self.voice.enabled && !self.features.recoveryBusy &&
+                    self.features.recordingID == nil && !["recording", "processing", "displaying"].contains(self.voice.phase)
+            }, defaults: defaults)
+        runtime.onPosition = { [weak self] id, offset in
+            _ = self?.manuscripts.savePosition(id: id, utf8Offset: offset)
+        }
+        return runtime
+    }()
     let timeline: ConversationTimeline
     let voice: CompanionVoiceRuntime
     let codex: CodexCompanion
@@ -116,6 +132,10 @@ final class CompanionStore: ObservableObject {
     let alwaysOnArchive: AlwaysOnTranscriptArchive
     lazy var realtimeSubtitles: SubtitleRealtimeRuntime = {
         let runtime = SubtitleRealtimeRuntime(voice: voice, settings: subtitleSettings, archive: subtitleArchive, defaults: defaults)
+        subtitleSettings.isBusy = { [weak self] in
+            guard let self else { return false }
+            return self.realtimeSubtitles.active || self.realtimeSubtitles.saving || self.speechPrompter.active || self.voice.enabled
+        }
         runtime.onShortcutStart = { [weak self] in self?.subtitlePlayback.stop(); self?.selectedTab = 4 }
         return runtime
     }()
@@ -124,7 +144,7 @@ final class CompanionStore: ObservableObject {
         device: { [weak self] in self?.voice.deviceID },
         available: { [weak self] in
             guard let self else { return false }
-            return self.features.canControl && self.features.recordingID == nil && self.features.teleprompterID == nil
+            return self.features.canControl && self.features.recordingID == nil && self.features.teleprompterID == nil && !self.speechPrompter.active
         }, supported: { [weak self] in self?.voice.supportsDevice == true },
         claimDisplay: { [weak self] in self?.voice.ownDisplayForSubtitles($0) },
         send: { [weak self] target, packet in
@@ -137,7 +157,7 @@ final class CompanionStore: ObservableObject {
         available: { [weak self] in
             guard let self else { return false }
             return self.voice.ready && !self.voice.subtitleOwnsDisplay && !self.realtimeSubtitles.active &&
-                !self.subtitleDisplay.occupied && self.features.recordingID == nil &&
+                !self.subtitleDisplay.occupied && !self.speechPrompter.active && self.features.recordingID == nil &&
                 self.features.teleprompterID == nil && !["recording", "processing", "displaying"].contains(self.voice.phase)
         }, suspendVoice: { [weak self] in self?.voice.stop() },
         claimDisplay: { [weak self] in self?.voice.ownDisplayForSubtitles($0) },
@@ -162,7 +182,7 @@ final class CompanionStore: ObservableObject {
         device: { [weak self] in guard let self, self.voice.ready else { return nil }; return self.voice.deviceID },
         occupied: { [weak self] in
             guard let self else { return true }
-            return !self.features.canControl || self.features.recordingID != nil || self.features.teleprompterID != nil
+            return !self.features.canControl || self.features.recordingID != nil || self.features.teleprompterID != nil || self.speechPrompter.active
         }, send: { [weak self] data in
             guard let self else { throw DeviceFeatureError.disconnected }
             try self.voice.sendBusiness(15,payload:data)
@@ -171,7 +191,7 @@ final class CompanionStore: ObservableObject {
         device: { [weak self] in guard let self, self.voice.ready else { return nil }; return self.voice.deviceID },
         isBusy: { [weak self] in
             guard let self else { return true }
-            return !self.features.canControl || self.features.recordingID != nil || self.features.teleprompterID != nil
+            return !self.features.canControl || self.features.recordingID != nil || self.features.teleprompterID != nil || self.speechPrompter.active
         }, send: { [weak self] snapshot, icon in
             guard let self else { throw DeviceFeatureError.disconnected }
             try self.features.submitWeatherstack(snapshot, icon: icon)
@@ -180,7 +200,7 @@ final class CompanionStore: ObservableObject {
         device: { [weak self] in guard let self, self.voice.ready else { return nil }; return self.voice.deviceID },
         isBusy: { [weak self] in
             guard let self else { return true }
-            return !self.features.canControl || self.features.recordingID != nil || self.features.teleprompterID != nil
+            return !self.features.canControl || self.features.recordingID != nil || self.features.teleprompterID != nil || self.speechPrompter.active
         }, transport: { [weak self] index, data in
             guard let self else { throw DeviceFeatureError.disconnected }
             try self.voice.sendBusiness(index, payload: data)
@@ -189,7 +209,7 @@ final class CompanionStore: ObservableObject {
         device: { [weak self] in guard let self, self.voice.ready else { return nil }; return self.voice.deviceID },
         available: { [weak self] in
             guard let self else { return false }
-            return self.features.canControl && self.features.recordingID == nil && self.features.teleprompterID == nil
+            return self.features.canControl && self.features.recordingID == nil && self.features.teleprompterID == nil && !self.speechPrompter.active
         }, transport: { [weak self] index, data in
             guard let self else { throw DeviceFeatureError.disconnected }
             try self.voice.sendBusiness(index, payload: data)
@@ -220,6 +240,10 @@ final class CompanionStore: ObservableObject {
         recordings = restore("recordings") ?? []
         configuration = restore("configuration") ?? ModelConfiguration()
         prompterText = defaults.string(forKey: prefix + "prompter") ?? ""
+        subtitleSettings.isBusy = { [weak self] in
+            guard let self else { return false }
+            return self.realtimeSubtitles.active || self.realtimeSubtitles.saving || self.speechPrompter.active || self.voice.enabled
+        }
         archive.isRecordingInUse = { [weak self] id in
             guard let self else { return false }
             return self.recordingASR.busy && self.recordingASR.recordingID == id
@@ -382,9 +406,18 @@ final class CompanionStore: ObservableObject {
         persist(todos, key: "todos")
     }
 
-    func savePrompter(_ text: String) {
+    @discardableResult func savePrompter(_ text: String) -> Bool {
+        guard !speechPrompter.active, features.teleprompterID == nil else {
+            message = "请先结束当前演讲，再创建新的稿件。"
+            return false
+        }
+        // Existing book readers create a separate manuscript instead of replacing an
+        // unrelated selected speech. Initialize migration before changing legacy text.
+        let library = manuscripts
+        guard library.create(title: "书籍提词", text: text) != nil else { return false }
         prompterText = text
         defaults.set(text, forKey: prefix + "prompter")
+        return true
     }
 
     func saveConfiguration(_ value: ModelConfiguration, key: String) throws {

@@ -91,8 +91,9 @@ struct BookReaderView: View {
             HStack { Text("慢"); Slider(value: $speed, in: 8...80, step: 2); Text("快"); Text("\(Int(speed)) pt/s").font(.caption.monospacedDigit()) }
             HStack { Text("字号").font(.caption); Slider(value: $fontSize, in: 18...40, step: 1); Text("\(Int(fontSize))").font(.caption) }
             Text("拖动即暂停 · 切章不自动播放 · 离页/锁屏暂停\n速度仅指手机滚动；到本段结尾自动停止。").font(.system(size: 10)).foregroundStyle(Palette.muted)
-            Button(savedDraft ? "已复制到提词草稿" : "将当前分段用作提词稿") { confirmDraft = true }.font(.subheadline)
-                .accessibilityIdentifier("book-use-draft")
+            Button(savedDraft ? "已创建提词稿件" : "将当前分段用作提词稿") { confirmDraft = true }.font(.subheadline)
+                .disabled(store.speechPrompter.active || store.features.teleprompterID != nil).accessibilityIdentifier("book-use-draft")
+            if let error = store.manuscripts.error { Text(error).font(.caption).foregroundStyle(Palette.amber) }
         }.padding(.horizontal, 22).padding(.bottom, 18).background(Palette.background)
             .navigationTitle(book.title).navigationBarTitleDisplayMode(.inline).toolbar(.visible, for: .navigationBar)
             .preference(key: CompanionTabBarHiddenPreference.self, value: true)
@@ -102,8 +103,8 @@ struct BookReaderView: View {
             .onChange(of: speed) { _ in if !playing { save() } }
             .onChange(of: scenePhase) { value in if value != .active { playing = false; save() } }
             .onDisappear { playing = false; save() }
-            .confirmationDialog("会替换本机当前提词草稿，不会修改原书或发送到眼镜。", isPresented: $confirmDraft) {
-                Button("替换本机草稿") { store.savePrompter(book.chapters[chapter].text); savedDraft = true }
+            .confirmationDialog("将当前分段保存为一份新的本机提词稿件。", isPresented: $confirmDraft) {
+                Button("创建提词稿件") { savedDraft = store.savePrompter(book.chapters[chapter].text) }
             }
     }
     private func seek(_ value: Double) { playing = false; progress = value; initialPosition = value; jump = UUID(); save() }

@@ -44,6 +44,8 @@ jobs:
       - name: Test rolling caption layout and runtime
         run: |
           swift test --package-path rayneo-captions
+          swift test --package-path rayneo-display
+          swift test --package-path rayneo-protocol
           node scripts/test-subtitle-rolling.mjs
 
       - name: Generate device project
@@ -62,6 +64,7 @@ jobs:
           xcodegen generate --spec apps/RayNeoCompanion/project-device.yml
 
       - name: Build unsigned iPhoneOS app
+        # The test artifacts are exported separately for visual review.
         run: >-
           xcodebuild -project apps/RayNeoCompanion/RayNeoCompanion.xcodeproj
           -scheme RayNeoCompanionDevice
@@ -83,7 +86,7 @@ jobs:
           IPA_VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Info.plist")
           IPA_BUILD=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Info.plist")
           test "$IPA_VERSION" = "0.4.0"
-          test "$IPA_BUILD" = "23"
+          test "$IPA_BUILD" = "24"
           IPA_NAME="TurboIO-iOS26-v${IPA_VERSION}-build${IPA_BUILD}-unsigned.ipa"
           IPA_PATH="$OUTPUT/$IPA_NAME"
 
@@ -112,4 +115,13 @@ jobs:
             ${{ steps.package.outputs.ipa_path }}
             apps/RayNeoCompanion/ipa-ios26/SHA256SUMS.txt
           if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload prompter UI screenshots
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: prompter-build24-test-screenshots
+          path: apps/RayNeoCompanion/build-subtitle-rolling/attachments/
+          if-no-files-found: ignore
           retention-days: 7

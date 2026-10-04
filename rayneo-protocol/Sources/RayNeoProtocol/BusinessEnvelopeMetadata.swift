@@ -40,6 +40,19 @@ public struct BusinessEnvelopeMetadata: Equatable {
         return Data(packet).subdata(in: range)
     }
 
+    /// Business 20, type 9 uses AssistantMsg.data (protobuf field 4) as raw
+    /// Opus, with no JSON/action/DID/sequence read on the official ingress path.
+    /// The host must gate an authenticated, started, owned follow-speak session.
+    /// Static evidence: official Android plugin receiver LE3/V.i → LD7/n.j;
+    /// the latter forwards the data to AudioRecorderAdapter.notifyRecordData.
+    public static func teleprompterAudio(_ packet: Data) throws -> Data? {
+        let (metadata, range, _) = try parse(packet)
+        guard metadata.version == 1, metadata.messageType == 9,
+              (metadata.messageBytes ?? 0) <= 4096,
+              let range, !range.isEmpty, range.count <= 4096 else { return nil }
+        return Data(packet).subdata(in: range)
+    }
+
     /// Bounded business JSON extraction; callers still validate the business and schema.
     public static func messageJSON(_ packet: Data) throws -> Data? {
         guard let range = try parse(packet).2, !range.isEmpty else { return nil }
