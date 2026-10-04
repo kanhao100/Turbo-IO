@@ -561,6 +561,11 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
         scheduleDisplayWake()
     }
     private func processRollingDisplayTransitions() {
+        // Sentence layout may already have mirrored these completed translations
+        // into the rolling history before a product-workbench mode switch.
+        for sentence in pendingTranslationReveals.keys.filter({ $0 <= rollingLastTranslationSentence }) {
+            pendingTranslationReveals.removeValue(forKey: sentence)
+        }
         if let pending = rollingPendingSource, now >= pending.dueAt {
             rollingPendingSource = nil
             rollingBuffer.updateSource(pending.text, sentence: pending.sentence, final: pending.final)
@@ -798,6 +803,7 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
         }
         if !translation.isEmpty {
             rollingBuffer.appendTranslation(translation, sentence: sentence)
+            rollingLastActivityAt = now
             rollingLastTranslationSentence = max(rollingLastTranslationSentence, sentence)
             if let delivery = rollingTranslationDelivery, delivery.sentence <= sentence {
                 rollingTranslationDelivery = nil
@@ -1325,7 +1331,10 @@ final class NativeSubtitlePCMDecoder: SubtitlePCMDecoder {
         guard value.utf8.count <= 32768 else { fail("单句转写超过保存上限。" ); return }
         latency.resultReceived(at: now)
         cloudReady = true; partial = value
-        if !value.isEmpty { rollingSourceIsPartial = !final }
+        if !value.isEmpty {
+            rollingSourceIsPartial = !final
+            rollingLastActivityAt = now
+        }
         if final {
             if !value.isEmpty {
                 if options.service == .appleLocal, !reportedLanguageMismatch,

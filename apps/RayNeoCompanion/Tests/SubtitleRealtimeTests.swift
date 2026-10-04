@@ -4,6 +4,35 @@ import RayNeoCaptions
 @testable import RayNeoCompanion
 
 final class SubtitleRealtimeTests: XCTestCase {
+    @MainActor func testTranslationBeforeDisplayACKWaitsForTheLensToOpen() async throws {
+        let translator = Translator()
+        let f = Fixture(.deepgram, rolling: true, translator: translator)
+        addTeardownBlock { await self.cleanup(f) }
+        XCTAssertTrue(f.settings.saveDisplayPreferences(mode: .bilingual, order: .sourceFirst,
+            retention: .untilNextSentence, displayLayout: .rolling,
+            rollingConfiguration: CaptionRollingConfiguration(columns: 16)))
+        await f.runtime.start()?.value
+        let sid = try f.sid()
+        f.feed(2, sid: sid, code: 1)
+        let requested = expectation(description: "translation before display ACK")
+        translator.onRequest = { requested.fulfill() }
+        f.provider.onText?("original", true)
+        await fulfillment(of: [requested], timeout: 3)
+        translator.onRequest = nil
+        let archived = expectation(description: "early translation archived")
+        f.writer.onTranslation = { archived.fulfill() }
+        translator.complete("甲乙丙丁戊己庚辛壬癸子丑寅卯辰巳午未申酉")
+        await fulfillment(of: [archived], timeout: 3)
+        let first = f.runtime.displayTranslationText
+        f.clock.now += 3; f.runtime.tick()
+        XCTAssertEqual(f.runtime.displayTranslationText, first)
+        XCTAssertFalse(try f.types().contains(5))
+        f.feed(8, sid: sid, code: 1)
+        XCTAssertTrue(try f.lensText().contains("甲乙丙丁戊己庚辛"))
+        f.clock.now += 1.4; f.runtime.tick()
+        XCTAssertEqual(f.runtime.displayTranslationText, first)
+    }
+
     @MainActor func testRollingIgnoresLegacySourceGateAndRetainsDraftWhenSwitchingLayout() async throws {
         let f = Fixture(.deepgram, rolling: true, translator: Translator())
         addTeardownBlock { await self.cleanup(f) }
