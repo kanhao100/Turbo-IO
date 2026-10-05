@@ -42,6 +42,15 @@ struct PrompterSettingsView: View {
                 }
                 Section("匀速提词") {
                     integer("眼镜固定速度", keyPath: \.fixedSpeed, range: 60...240, step: 10, suffix: "", id: "prompter-tuning-fixed-speed")
+                    Toggle("旋钮辅助后自动继续", isOn: Binding(get: { tuning.tuning.uniformAssistEnabled }, set: { tuning.update(\.uniformAssistEnabled, $0) }))
+                        .accessibilityIdentifier("prompter-tuning-uniform-assist")
+                    number("旋钮辅助停留时间", keyPath: \.uniformAssistHoldSeconds, range: 0...5, step: 0.1, suffix: " 秒", decimals: 1, id: "prompter-tuning-uniform-hold")
+                    number("暂停与旋钮事件关联窗口", keyPath: \.uniformPauseAssociationSeconds, range: 0...2, step: 0.1, suffix: " 秒", decimals: 1, id: "prompter-tuning-uniform-pause-window")
+                    Text("部分固件先报暂停、再报回滚。只有在此窗口内收到回滚才作为旋钮辅助继续；单独暂停不会自动恢复。设为 0 可关闭关联判断。")
+                        .font(.caption).foregroundStyle(Palette.muted)
+                        .disabled(!tuning.tuning.uniformAssistEnabled)
+                    Text("匀速前进时，旋钮可回看或调整位置；停留后从新位置继续前进。主动按“暂停滚动”会保持暂停。")
+                        .font(.caption).foregroundStyle(Palette.muted)
                     number("手机固定速度", keyPath: \.phoneSpeed, range: 8...80, step: 2, suffix: " 点/秒", id: "prompter-tuning-phone-speed")
                 }
                 Section("眼镜排版") {
@@ -66,6 +75,7 @@ struct PrompterSettingsView: View {
                     LabeledContent("最近眼镜操作", value: features.teleprompterLastEyeCommand)
                     LabeledContent("眼镜界面", value: features.teleprompterInReader ? "稿件阅读页" : "文稿列表或待进入")
                     LabeledContent("眼镜自动推进", value: features.teleprompterPositionBlocked ? "已保持，等待重新辅助定位" : "可继续")
+                    LabeledContent("匀速旋钮辅助", value: features.teleprompterUniformAssistStatus)
                 }
                 Section {
                     Button("识别服务与语言设置") { recognitionSettings = true }
@@ -77,7 +87,12 @@ struct PrompterSettingsView: View {
             .navigationTitle("提词调试工作台").navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() }.accessibilityIdentifier("prompter-tuning-done") } }
             .sheet(isPresented: $recognitionSettings) { SubtitleSettingsView() }
-            .onChange(of: tuning.tuning) { _ in runtime.reloadTuning() }
+            .onChange(of: tuning.tuning) { value in
+                runtime.reloadTuning()
+                if !value.uniformAssistEnabled, features.teleprompterUniformAssistHolding {
+                    features.teleprompterHoldUniformScrolling()
+                }
+            }
         }
     }
     private func number(_ title: String, keyPath: WritableKeyPath<PrompterTuning, Double>,

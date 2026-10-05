@@ -139,3 +139,55 @@ struct TeleprompterNativeProgressQueue {
         mayConfirmInFlight = false
     }
 }
+
+/// A rewind is a temporary reading aid in native linear-scroll mode. This
+/// policy never treats forward playback receipts as fresh wheel activity.
+/// Explicit app holds and unpaired native pauses stay paused.
+struct TeleprompterUniformAssistPolicy {
+    enum Phase: Equatable { case idle, awaitingPause, holding, awaitingResume }
+    enum Action: Equatable { case none, pause, resume }
+    private(set) var phase: Phase = .idle
+    private(set) var resumeAt: TimeInterval?
+    private(set) var nativePauseAt: TimeInterval?
+    var holding: Bool { phase == .awaitingPause || phase == .holding || (phase == .awaitingResume && resumeAt != nil) }
+
+    mutating func rewind(now: TimeInterval, holdSeconds: Double, canPause: Bool,
+                         pauseAssociationSeconds: Double = 0) -> Action {
+        guard now.isFinite, holdSeconds.isFinite, (0...5).contains(holdSeconds),
+              pauseAssociationSeconds.isFinite, (0...2).contains(pauseAssociationSeconds) else { return .none }
+        if phase == .awaitingResume || holding { resumeAt = now + holdSeconds; return .none }
+        guard phase == .idle else { return .none }
+        // Firmware has no verified "wheel pause" flag. Only the nearby pair
+        // native pause → backwards position can be associated with one dial
+        // gesture. A bare pause has no deadline and never resumes by itself.
+        if !canPause, let nativePauseAt, pauseAssociationSeconds > 0,
+           now >= nativePauseAt, now - nativePauseAt <= pauseAssociationSeconds {
+            phase = .holding; resumeAt = now + holdSeconds; self.nativePauseAt = nil
+            return .none
+        }
+        guard canPause else { return .none }
+        nativePauseAt = nil
+        phase = .awaitingPause; resumeAt = now + holdSeconds
+        return .pause
+    }
+    mutating func nativePause(now: TimeInterval, wasRunning: Bool) {
+        cancel()
+        if wasRunning, now.isFinite { nativePauseAt = now }
+    }
+    mutating func pauseAcknowledged(now: TimeInterval) -> Action {
+        guard phase == .awaitingPause else { return .none }
+        phase = .holding
+        return tick(now: now)
+    }
+    mutating func tick(now: TimeInterval, readyToResume: Bool = true) -> Action {
+        guard phase == .holding, let resumeAt, now >= resumeAt, readyToResume else { return .none }
+        phase = .awaitingResume; self.resumeAt = nil
+        return .resume
+    }
+    mutating func resumeAcknowledged(canPause: Bool) -> Action {
+        guard phase == .awaitingResume else { return .none }
+        if resumeAt != nil, canPause { phase = .awaitingPause; return .pause }
+        cancel(); return .none
+    }
+    mutating func cancel() { phase = .idle; resumeAt = nil; nativePauseAt = nil }
+}

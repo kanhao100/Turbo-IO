@@ -18,6 +18,10 @@ final class PrompterUITests: XCTestCase {
         app.buttons["prompter-tuning-entry"].tap()
         reveal(similarity, in: app)
         XCTAssertEqual(similarity.value as? String, value)
+        let uniformAssistance = app.switches["prompter-tuning-uniform-assist"]
+        reveal(uniformAssistance, in: app)
+        XCTAssertTrue(uniformAssistance.exists)
+        XCTAssertTrue(app.sliders["prompter-tuning-uniform-hold"].exists)
         let nativeWidth = app.steppers["prompter-tuning-native-width"]
         reveal(nativeWidth, in: app)
         XCTAssertTrue(nativeWidth.exists)
@@ -124,6 +128,21 @@ final class PrompterUITests: XCTestCase {
         app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@ AND label == %@", "prompter-manuscript-", title)).firstMatch
     }
     private func reveal(_ element: XCUIElement, in app: XCUIApplication) {
+        if element.identifier.hasPrefix("prompter-manuscript-") {
+            // A row can be reported hittable while its centre is under our custom
+            // tab bar. Bring the whole card above the tab before tapping it.
+            let tab = app.buttons["tab-5"]
+            let bottom = tab.exists ? min(app.frame.maxY, tab.frame.minY) : app.frame.maxY
+            let viewport = CGRect(x: app.frame.minX, y: app.frame.minY + 60,
+                                  width: app.frame.width, height: max(0, bottom - app.frame.minY - 68))
+            for _ in 0..<12 {
+                if element.exists, element.isHittable, viewport.contains(element.frame) { return }
+                if element.exists, element.frame.minY < viewport.minY { app.swipeDown() }
+                else { app.swipeUp() }
+            }
+            XCTFail("Manuscript card could not be brought fully into the visible reader area")
+            return
+        }
         for _ in 0..<6 { if element.isHittable { return }; app.swipeUp() }
         for _ in 0..<8 { if element.isHittable { return }; app.swipeDown() }
     }

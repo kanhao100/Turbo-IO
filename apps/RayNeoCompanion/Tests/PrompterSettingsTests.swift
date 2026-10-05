@@ -16,6 +16,9 @@ final class PrompterSettingsTests: XCTestCase {
             XCTAssertEqual(tuning.scrollConfiguration.evidenceTimeoutSeconds, 3)
             XCTAssertEqual(tuning.silenceHoldSeconds, 2)
             XCTAssertEqual(tuning.audioActivityThreshold, 0.025)
+            XCTAssertTrue(tuning.uniformAssistEnabled)
+            XCTAssertEqual(tuning.uniformAssistHoldSeconds, 1.2)
+            XCTAssertEqual(tuning.uniformPauseAssociationSeconds, 0.6)
             XCTAssertEqual(tuning.nativeLayout, .default)
         }
     }
@@ -29,6 +32,8 @@ final class PrompterSettingsTests: XCTestCase {
             tuned.manualAssistHoldSeconds = 2; tuned.silenceHoldSeconds = 3
             tuned.recognitionEvidenceSeconds = 5; tuned.audioActivityThreshold = 0.05
             tuned.fixedSpeed = 180; tuned.phoneSpeed = 36
+            tuned.uniformAssistEnabled = false; tuned.uniformAssistHoldSeconds = 2.4
+            tuned.uniformPauseAssociationSeconds = 0.8
             tuned.nativeFontSize = 20; tuned.nativeWidth = 444; tuned.nativeLeading = 6
             tuned.nativeCountdown = 1; tuned.nativeHeightGear = 2; tuned.nativeDepth = 2
             XCTAssertTrue(store.save(tuned))
@@ -47,6 +52,8 @@ final class PrompterSettingsTests: XCTestCase {
             invalid.manualAssistHoldSeconds = -1; invalid.silenceHoldSeconds = 99
             invalid.recognitionEvidenceSeconds = -3; invalid.audioActivityThreshold = -1
             invalid.fixedSpeed = 999; invalid.phoneSpeed = -20
+            invalid.uniformAssistHoldSeconds = 99
+            invalid.uniformPauseAssociationSeconds = 99
             invalid.nativeFontSize = 99; invalid.nativeWidth = 999
             invalid.nativeLeading = -2; invalid.nativeCountdown = 99
             invalid.nativeHeightGear = -1; invalid.nativeDepth = 9
@@ -62,6 +69,8 @@ final class PrompterSettingsTests: XCTestCase {
             XCTAssertEqual(tuning.recognitionEvidenceSeconds, 0.5)
             XCTAssertEqual(tuning.audioActivityThreshold, 0)
             XCTAssertEqual(tuning.fixedSpeed, 240)
+            XCTAssertEqual(tuning.uniformAssistHoldSeconds, 5)
+            XCTAssertEqual(tuning.uniformPauseAssociationSeconds, 2)
             XCTAssertEqual(tuning.phoneSpeed, 8)
             XCTAssertEqual(tuning.nativeFontSize, 18)
             XCTAssertEqual(tuning.nativeWidth, 492)
@@ -79,10 +88,31 @@ final class PrompterSettingsTests: XCTestCase {
             store.update(\.scrollUnitsPerSecond, .nan)
             store.update(\.silenceHoldSeconds, .infinity)
             store.update(\.audioActivityThreshold, -.infinity)
+            store.update(\.uniformAssistHoldSeconds, .nan)
+            store.update(\.uniformPauseAssociationSeconds, .nan)
             XCTAssertEqual(store.tuning.scrollUnitsPerSecond, 12)
             XCTAssertEqual(store.tuning.silenceHoldSeconds, 2)
             XCTAssertEqual(store.tuning.audioActivityThreshold, 0.025)
+            XCTAssertEqual(store.tuning.uniformAssistHoldSeconds, 1.2)
+            XCTAssertEqual(store.tuning.uniformPauseAssociationSeconds, 0.6)
             XCTAssertEqual(PrompterSettingsStore.load(defaults: defaults), store.tuning)
+        }
+    }
+    @MainActor func testOlderTuningKeepsChoicesAndInheritsWheelAssistanceDefaults() throws {
+        try withDefaults { defaults in
+            var prior = PrompterTuning()
+            prior.minimumSimilarity = 0.52; prior.fixedSpeed = 180; prior.nativeFontSize = 24
+            var fields = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(prior)) as? [String: Any])
+            fields.removeValue(forKey: "uniformAssistEnabled")
+            fields.removeValue(forKey: "uniformAssistHoldSeconds")
+            fields.removeValue(forKey: "uniformPauseAssociationSeconds")
+            defaults.set(try JSONSerialization.data(withJSONObject: fields), forKey: PrompterSettingsStore.preferencesKey)
+            let tuning = PrompterSettingsStore.load(defaults: defaults)
+            XCTAssertEqual(tuning.minimumSimilarity, 0.52)
+            XCTAssertEqual(tuning.fixedSpeed, 180)
+            XCTAssertEqual(tuning.nativeFontSize, 24)
+            XCTAssertTrue(tuning.uniformAssistEnabled)
+            XCTAssertEqual(tuning.uniformAssistHoldSeconds, 1.2)
         }
     }
     @MainActor private func withDefaults(_ operation: (UserDefaults) throws -> Void) rethrows {

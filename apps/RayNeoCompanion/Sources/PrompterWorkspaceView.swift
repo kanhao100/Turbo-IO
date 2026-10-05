@@ -135,7 +135,7 @@ struct PrompterWorkspaceView: View {
                     }
                     Spacer(minLength: 0)
                 }
-            }
+            }.contentShape(Rectangle())
         }.buttonStyle(.plain).disabled(occupied && document.id != library.selectedID)
             .accessibilityIdentifier("prompter-manuscript-\(document.id.uuidString)")
             .accessibilityLabel(document.title).accessibilityValue(library.selectedID == document.id ? "已选择" : "未选择")

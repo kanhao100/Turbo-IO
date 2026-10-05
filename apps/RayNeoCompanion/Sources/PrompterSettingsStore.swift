@@ -17,6 +17,9 @@ struct PrompterTuning: Codable, Equatable {
     var recognitionEvidenceSeconds = 3.0
     var audioActivityThreshold = 0.025
     var fixedSpeed = 120
+    var uniformAssistEnabled = true
+    var uniformAssistHoldSeconds = 1.2
+    var uniformPauseAssociationSeconds = 0.6
     var phoneSpeed = 24.0
     var nativeFontSize = 18
     var nativeWidth = 492
@@ -55,6 +58,8 @@ struct PrompterTuning: Codable, Equatable {
         result.recognitionEvidenceSeconds = finite(recognitionEvidenceSeconds, range: 0.5...8, fallback: 3)
         result.audioActivityThreshold = finite(audioActivityThreshold, range: 0...0.15, fallback: 0.025)
         result.fixedSpeed = min(240, max(60, fixedSpeed))
+        result.uniformAssistHoldSeconds = finite(uniformAssistHoldSeconds, range: 0...5, fallback: 1.2)
+        result.uniformPauseAssociationSeconds = finite(uniformPauseAssociationSeconds, range: 0...2, fallback: 0.6)
         result.phoneSpeed = finite(phoneSpeed, range: 8...80, fallback: 24)
         result.nativeFontSize = [18, 20, 24].contains(nativeFontSize) ? nativeFontSize : 18
         result.nativeWidth = min(492, max(240, nativeWidth))
@@ -79,8 +84,14 @@ struct PrompterTuning: Codable, Equatable {
         tuning = Self.load(defaults: defaults)
     }
     static func load(defaults: UserDefaults = .standard) -> PrompterTuning {
+        // New controls inherit recommended defaults without discarding saved tuning.
         guard let data = defaults.data(forKey: preferencesKey),
-              let tuning = try? JSONDecoder().decode(PrompterTuning.self, from: data) else { return PrompterTuning() }
+              let saved = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let recommended = try? JSONEncoder().encode(PrompterTuning()),
+              var fields = try? JSONSerialization.jsonObject(with: recommended) as? [String: Any] else { return PrompterTuning() }
+        for (key, value) in saved { fields[key] = value }
+        guard let merged = try? JSONSerialization.data(withJSONObject: fields),
+              let tuning = try? JSONDecoder().decode(PrompterTuning.self, from: merged) else { return PrompterTuning() }
         return tuning.normalized
     }
     @discardableResult func save(_ next: PrompterTuning) -> Bool {

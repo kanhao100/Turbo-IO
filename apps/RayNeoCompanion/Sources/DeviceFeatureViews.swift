@@ -77,6 +77,10 @@ struct GlassesPrompterControls: View {
         VStack(alignment:.leading,spacing:12) {
             Text("眼镜提词 · 匀速模式").font(.headline)
             Text(features.teleprompterStatus).font(.caption).foregroundStyle(Palette.muted)
+            if features.teleprompterUniformAssistHolding {
+                Text(features.teleprompterUniformAssistStatus).font(.caption).foregroundStyle(Palette.green)
+                    .accessibilityIdentifier("prompter-glasses-uniform-assist-status")
+            }
             HStack { Text("眼镜固定速度"); Spacer(); Text("\(tuning.tuning.fixedSpeed)").monospacedDigit() }.font(.caption)
             Slider(value: Binding(get: { Double(tuning.tuning.fixedSpeed) }, set: { tuning.update(\.fixedSpeed, Int($0)) }), in:60...240,step:10)
                 .accessibilityIdentifier("prompter-glasses-fixed-speed")
@@ -93,6 +97,10 @@ struct GlassesPrompterControls: View {
                     if !features.teleprompterStarted {
                         Button(startWhenReady ? "收到稿件后自动开始" : "开始滚动") { features.teleprompterControl(3) }
                             .disabled(!features.teleprompterCanStart)
+                    } else if features.teleprompterUniformAssistHolding {
+                        Button("保持暂停") { features.teleprompterHoldUniformScrolling() }.disabled(!voice.ready)
+                            .accessibilityIdentifier("prompter-glasses-uniform-hold")
+                        Button("立即继续") { features.teleprompterControl(5) }.disabled(!features.teleprompterCanResume)
                     } else if features.teleprompterPaused {
                         Button("继续滚动") { features.teleprompterControl(5) }.disabled(!features.teleprompterCanResume)
                     } else {
@@ -104,7 +112,10 @@ struct GlassesPrompterControls: View {
                     Text("等待眼镜确认操作…").font(.caption).foregroundStyle(Palette.muted)
                 }
             }
-            Text("传输完成后自动开始。滑动速度可实时调整；眼镜匀速模式由眼镜执行，不开启语音识别。传稿会暂停 AI 待命。").font(.caption2).foregroundStyle(Palette.muted)
+            Text(tuning.tuning.uniformAssistEnabled
+                ? "传输完成后自动开始。转动旋钮调整位置，短暂停留后从新位置继续前进；主动暂停会停住。固定速度可实时调整。此模式不使用语音识别，传稿会暂停 AI 待命。"
+                : "传输完成后自动开始。旋钮辅助后的自动继续已关闭。固定速度可实时调整。此模式不使用语音识别，传稿会暂停 AI 待命。")
+                .font(.caption2).foregroundStyle(Palette.muted)
             if let error = features.teleprompterTransferError { Text(error).font(.caption).foregroundStyle(Palette.amber) }
         }.padding(16).background(.white,in:RoundedRectangle(cornerRadius:16))
         .onAppear { features.prepare() }

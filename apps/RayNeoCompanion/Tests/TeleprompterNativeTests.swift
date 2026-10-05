@@ -111,6 +111,93 @@ final class TeleprompterNativeTests: XCTestCase {
         XCTAssertNil(queue.confirmedPosition)
     }
 
+    func testUniformWheelHoldWaitsForPauseAndUsesFinalRewindDeadline() {
+        var policy = TeleprompterUniformAssistPolicy()
+        XCTAssertEqual(policy.rewind(now: 10, holdSeconds: 1.2, canPause: true), .pause)
+        XCTAssertEqual(policy.tick(now: 12), .none)
+        XCTAssertEqual(policy.rewind(now: 12, holdSeconds: 1.2, canPause: false), .none)
+        XCTAssertEqual(policy.pauseAcknowledged(now: 12.1), .none)
+        XCTAssertEqual(policy.tick(now: 13), .none)
+        XCTAssertEqual(policy.tick(now: 13.3), .resume)
+        XCTAssertEqual(policy.resumeAcknowledged(canPause: true), .none)
+        XCTAssertEqual(policy.phase, .idle)
+    }
+
+    func testUniformForwardReceiptsDoNotExtendWheelHold() {
+        var policy = TeleprompterUniformAssistPolicy()
+        XCTAssertEqual(policy.rewind(now: 20, holdSeconds: 1.2, canPause: true), .pause)
+        XCTAssertEqual(policy.pauseAcknowledged(now: 20.1), .none)
+        // A forward progress receipt only updates the native offset; it does
+        // not invoke rewind or establish a new hold deadline.
+        XCTAssertEqual(policy.tick(now: 20.7), .none)
+        XCTAssertEqual(policy.resumeAt, 21.2)
+        XCTAssertEqual(policy.tick(now: 21.3), .resume)
+    }
+
+    func testUniformExpiredHoldWaitsForPendingSpeedAcknowledgement() {
+        var policy = TeleprompterUniformAssistPolicy()
+        XCTAssertEqual(policy.rewind(now: 24, holdSeconds: 1.2, canPause: true), .pause)
+        XCTAssertEqual(policy.pauseAcknowledged(now: 24.1), .none)
+        XCTAssertEqual(policy.tick(now: 25.3, readyToResume: false), .none)
+        XCTAssertEqual(policy.phase, .holding)
+        XCTAssertEqual(policy.resumeAt, 25.2)
+        XCTAssertEqual(policy.tick(now: 26, readyToResume: true), .resume)
+        XCTAssertEqual(policy.phase, .awaitingResume)
+    }
+
+    func testUniformNewRewindDuringResumeIsSerializedAfterResumeAcknowledgement() {
+        var policy = TeleprompterUniformAssistPolicy()
+        XCTAssertEqual(policy.rewind(now: 30, holdSeconds: 1, canPause: true), .pause)
+        XCTAssertEqual(policy.pauseAcknowledged(now: 30.1), .none)
+        XCTAssertEqual(policy.tick(now: 31.1), .resume)
+        XCTAssertEqual(policy.rewind(now: 31.2, holdSeconds: 1.2, canPause: false), .none)
+        XCTAssertEqual(policy.resumeAcknowledged(canPause: true), .pause)
+        XCTAssertEqual(policy.pauseAcknowledged(now: 31.4), .none)
+        XCTAssertEqual(policy.tick(now: 32.3), .none)
+        XCTAssertEqual(policy.tick(now: 32.5), .resume)
+    }
+
+    func testUniformExplicitPauseCancelsPendingContinuation() {
+        var policy = TeleprompterUniformAssistPolicy()
+        _ = policy.rewind(now: 40, holdSeconds: 1.2, canPause: true)
+        _ = policy.pauseAcknowledged(now: 40.1)
+        policy.cancel()
+        XCTAssertEqual(policy.tick(now: 50), .none)
+        XCTAssertEqual(policy.resumeAcknowledged(canPause: true), .none)
+        XCTAssertNil(policy.resumeAt)
+        XCTAssertEqual(policy.rewind(now: 50, holdSeconds: 1.2, canPause: false), .none)
+    }
+
+    func testUniformNativePauseThenNearbyBackwardsReceiptIsTemporaryWheelHold() {
+        var policy = TeleprompterUniformAssistPolicy()
+        policy.nativePause(now: 60, wasRunning: true)
+        XCTAssertEqual(policy.tick(now: 60.2), .none)
+        XCTAssertEqual(policy.rewind(now: 60.3, holdSeconds: 1.2, canPause: false, pauseAssociationSeconds: 0.6), .none)
+        XCTAssertTrue(policy.holding)
+        XCTAssertEqual(policy.tick(now: 61.6), .resume)
+    }
+
+    func testUniformBareOrLateNativePauseDoesNotAutomaticallyResume() {
+        var policy = TeleprompterUniformAssistPolicy()
+        policy.nativePause(now: 70, wasRunning: true)
+        XCTAssertNil(policy.resumeAt)
+        XCTAssertEqual(policy.tick(now: 75), .none)
+        XCTAssertEqual(policy.rewind(now: 75, holdSeconds: 1.2, canPause: false, pauseAssociationSeconds: 0.6), .none)
+        XCTAssertFalse(policy.holding)
+        policy.nativePause(now: 80, wasRunning: true)
+        XCTAssertEqual(policy.rewind(now: 80.2, holdSeconds: 1.2, canPause: false, pauseAssociationSeconds: 0), .none)
+        XCTAssertFalse(policy.holding)
+    }
+
+    func testUniformExplicitHoldClearsPauseAssociationCandidate() {
+        var policy = TeleprompterUniformAssistPolicy()
+        policy.nativePause(now: 90, wasRunning: true)
+        policy.cancel()
+        XCTAssertEqual(policy.rewind(now: 90.2, holdSeconds: 1.2, canPause: false, pauseAssociationSeconds: 0.6), .none)
+        XCTAssertFalse(policy.holding)
+        XCTAssertEqual(policy.tick(now: 100), .none)
+    }
+
     func testChecksumKnownFNV1aVectorAndOriginalWhitespace() throws {
         let hello = try TeleprompterNativeDocument(text: "hello", speed: 120, scrollMode: 1, initialOffset: 0)
         XCTAssertEqual(hello.checksum, "4f9f2cab")
