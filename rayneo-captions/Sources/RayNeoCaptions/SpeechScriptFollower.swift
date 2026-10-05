@@ -28,7 +28,7 @@ public struct SpeechFollowConfiguration: Codable, Equatable, Sendable {
                     lookAheadUnits: min(400, max(forward, lookAheadUnits)),
                     minMatchedUnits: min(20, max(4, minMatchedUnits)),
                     minimumSimilarity: minimumSimilarity.isFinite
-                        ? min(0.98, max(0.65, minimumSimilarity)) : 0.8,
+                        ? min(0.98, max(0.45, minimumSimilarity)) : 0.8,
                     requiredStableUpdates: min(4, max(1, requiredStableUpdates)))
     }
 }

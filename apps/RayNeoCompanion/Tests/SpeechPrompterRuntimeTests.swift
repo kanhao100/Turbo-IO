@@ -4,6 +4,78 @@ import RayNeoCaptions
 @testable import RayNeoCompanion
 
 final class SpeechPrompterRuntimeTests: XCTestCase {
+    @MainActor func testRecognitionCreatesGradualScrollInsteadOfJumpingToSentenceEnd() async throws {
+        let f = fixture()
+        defer { f.runtime.stop() }
+        try await XCTUnwrap(f.runtime.start(document: f.document, output: .glasses, input: .iPhone)).value
+        f.provider.onText?(f.firstSentence, true)
+        let target = f.runtime.confirmedUTF8Offset
+        XCTAssertGreaterThan(target, 0)
+        XCTAssertEqual(f.runtime.displayedUTF8Offset, 0)
+        XCTAssertTrue(f.transport.seeks.isEmpty)
+        for _ in 0..<6 {
+            let previous = f.runtime.displayedUTF8Offset
+            f.clock.now += 0.15; f.runtime.tick()
+            XCTAssertGreaterThanOrEqual(f.runtime.displayedUTF8Offset, previous)
+            XCTAssertLessThanOrEqual(f.runtime.displayedUTF8Offset - previous, 6)
+        }
+        XCTAssertGreaterThan(f.runtime.displayedUTF8Offset, 0)
+        XCTAssertLessThan(f.runtime.displayedUTF8Offset, target)
+        XCTAssertTrue(f.transport.seeks.allSatisfy { $0.page == $0.highlight && $0.page % 3 == 0 })
+    }
+
+    @MainActor func testRecommendedSettingsAcceptImperfectEnglishWithoutImmediatePageJump() async throws {
+        let f = fixture()
+        defer { f.runtime.stop() }
+        let tuning = PrompterSettingsStore(defaults: f.defaults)
+        tuning.reset()
+        let document = PrompterManuscript(title: "English rehearsal",
+            text: "Today we discuss our project and explain the next steps.")
+        try await XCTUnwrap(f.runtime.start(document: document, output: .phone, input: .iPhone)).value
+        f.provider.onText?("Today we discus aur proget and esplain the nest steps", true)
+        XCTAssertGreaterThan(f.runtime.confirmedUTF8Offset, 0)
+        XCTAssertEqual(f.runtime.displayedUTF8Offset, 0)
+        f.clock.now += 0.2; f.runtime.tick()
+        XCTAssertGreaterThan(f.runtime.displayedUTF8Offset, 0)
+        XCTAssertLessThan(f.runtime.displayedUTF8Offset, f.runtime.confirmedUTF8Offset)
+    }
+
+    @MainActor func testTuningChangesApplyWithoutRestartingMicrophoneOrRecognition() async throws {
+        let f = fixture()
+        defer { f.runtime.stop() }
+        try await XCTUnwrap(f.runtime.start(document: f.document, output: .phone, input: .iPhone)).value
+        f.provider.onText?(f.firstSentence, true)
+        f.clock.now += 0.2; f.runtime.tick()
+        let shown = f.runtime.displayedUTF8Offset
+        let tuning = PrompterSettingsStore(defaults: f.defaults)
+        tuning.update(\.scrollUnitsPerSecond, 8)
+        f.runtime.reloadTuning()
+        XCTAssertEqual(f.runtime.displayedUTF8Offset, shown)
+        XCTAssertEqual(f.runtime.confirmedUTF8Offset, shown)
+        XCTAssertEqual(f.provider.starts, 1)
+        XCTAssertEqual(f.microphone.starts, 1)
+        XCTAssertEqual(f.provider.stops, 0)
+        XCTAssertEqual(f.microphone.stops, 0)
+        XCTAssertEqual(f.runtime.phase, .listening)
+    }
+
+    @MainActor func testSilentPCMStopsPendingScrollAndManualAssistStillSends() async throws {
+        let f = fixture()
+        defer { f.runtime.stop() }
+        try await XCTUnwrap(f.runtime.start(document: f.document, output: .glasses, input: .iPhone)).value
+        f.provider.onText?(f.firstSentence, true)
+        f.clock.now += 0.2; f.runtime.tick()
+        let shown = f.runtime.displayedUTF8Offset
+        f.clock.now += 2.1
+        f.microphone.onPCM?(Data(repeating: 0, count: 640))
+        f.runtime.tick()
+        XCTAssertEqual(f.runtime.displayedUTF8Offset, shown)
+        f.runtime.assist(toUTF8Offset: f.secondStart)
+        XCTAssertEqual(f.transport.seeks.last?.page, f.secondStart)
+        XCTAssertEqual(f.transport.seeks.last?.highlight, f.secondStart)
+        XCTAssertEqual(f.provider.stops, 0)
+        XCTAssertEqual(f.microphone.stops, 0)
+    }
     @MainActor func testLongAudioGapHoldsWithoutClosingRecognitionAndFreshAudioCanResume() async throws {
         let f = fixture()
         defer { f.runtime.stop() }
@@ -134,7 +206,10 @@ final class SpeechPrompterRuntimeTests: XCTestCase {
         f.clock.now += 0.6
         f.runtime.tick() // Pending seek synchronously invokes onProgress.
         XCTAssertEqual(f.runtime.confirmedUTF8Offset, confirmed)
-        XCTAssertEqual(f.transport.seeks.last?.highlight, confirmed)
+        XCTAssertGreaterThan(f.runtime.displayedUTF8Offset, 0)
+        XCTAssertLessThan(f.runtime.displayedUTF8Offset, confirmed)
+        XCTAssertEqual(f.transport.seeks.last?.page, f.runtime.displayedUTF8Offset)
+        XCTAssertEqual(f.transport.seeks.last?.highlight, f.runtime.displayedUTF8Offset)
         f.provider.onText?("今天我们介绍产品的", false)
         XCTAssertGreaterThan(f.runtime.confirmedUTF8Offset, confirmed)
         XCTAssertEqual(f.microphone.starts, 1)
@@ -202,7 +277,7 @@ final class SpeechPrompterRuntimeTests: XCTestCase {
         f.clock.now += 1.1; f.runtime.tick()
         XCTAssertEqual(saved.count, 1)
         XCTAssertEqual(saved.first?.0, f.document.id)
-        XCTAssertEqual(saved.first?.1, f.runtime.confirmedUTF8Offset)
+        XCTAssertEqual(saved.first?.1, f.runtime.displayedUTF8Offset)
         f.runtime.assist(toUTF8Offset: f.secondStart)
         XCTAssertEqual(saved.count, 2)
         XCTAssertEqual(saved.last?.1, f.secondStart)
@@ -220,6 +295,18 @@ final class SpeechPrompterRuntimeTests: XCTestCase {
         XCTAssertEqual(f.transport.starts, 0)
         XCTAssertEqual(f.provider.starts, 0)
         XCTAssertEqual(f.microphone.starts, 0)
+    }
+
+    @MainActor func testEndingBeforeStartupTaskRunsCannotOpenOrphanGlassesSession() async throws {
+        let f = fixture()
+        let task = try XCTUnwrap(f.runtime.start(document: f.document, output: .glasses, input: .iPhone))
+        f.runtime.stop()
+        await task.value
+        XCTAssertEqual(f.runtime.phase, .idle)
+        XCTAssertEqual(f.transport.prepares, 0)
+        XCTAssertEqual(f.provider.starts, 0)
+        XCTAssertEqual(f.microphone.starts, 0)
+        XCTAssertNil(f.transport.sessionID)
     }
 
     @MainActor func testStartupAuthenticationFailureStopsBeforeMicrophoneStarts() async throws {
@@ -392,6 +479,13 @@ final class SpeechPrompterRuntimeTests: XCTestCase {
                                              factory: { _ in provider })
             var options = CaptionOptions(); options.service = .deepgram
             XCTAssertTrue(settings.save(options, key: "synthetic-test-only"))
+            // Existing lifecycle tests retain their original strict matching
+            // assumptions. Recommended product tuning has separate coverage.
+            var tuning = PrompterTuning()
+            tuning.minimumSimilarity = 0.8; tuning.minMatchedUnits = 6
+            tuning.requiredStableUpdates = 2; tuning.maxForwardUnits = 64
+            tuning.lookAheadUnits = 160
+            XCTAssertTrue(PrompterSettingsStore(defaults: defaults).save(tuning))
             document = PrompterManuscript(title: "合成演讲稿", text: firstSentence + "。\n" + secondSentence + "。")
             let microphone = microphone, decoder = decoder, clock = clock, availability = availability
             runtime = SpeechPrompterRuntime(settings: settings, features: store.features,
@@ -445,7 +539,7 @@ final class SpeechPrompterRuntimeTests: XCTestCase {
         var seeks: [(page: Int, highlight: Int)] = []
         var autoPrepared = true, autoStarted = true, echoSeekSynchronously = false
         var onStart: (() -> Void)?, onPrepare: (() -> Void)?
-        func prepare(text: String, scrollMode: Int, initialOffset: Int) -> Bool {
+        func prepare(text: String, title: String, scrollMode: Int, initialOffset: Int) -> Bool {
             prepares += 1; sessionID = UUID().uuidString; prepared = autoPrepared
             scrollModes.append(scrollMode); onPrepare?(); return true
         }

@@ -108,6 +108,7 @@ final class CompanionStore: ObservableObject {
     @Published var message: String?
     let archive: LocalArchiveController
     let books: BookLibrary
+    lazy var prompterSettings = PrompterSettingsStore(defaults: defaults)
     lazy var manuscripts = ManuscriptLibrary(
         root: customRecordingRoot?.deletingLastPathComponent().appendingPathComponent("PrompterManuscriptsV1"),
         defaults: defaults, legacyText: prompterText)

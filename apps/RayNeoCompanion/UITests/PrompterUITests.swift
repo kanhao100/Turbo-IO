@@ -3,6 +3,32 @@ import XCTest
 final class PrompterUITests: XCTestCase {
     override func setUpWithError() throws { continueAfterFailure = false }
 
+    func testDeveloperWorkbenchIsAvailableWithoutManuscriptAndPersistsTuning() {
+        let app = launch()
+        app.buttons["prompter-tuning-entry"].tap()
+        let similarity = app.sliders["prompter-tuning-similarity"]
+        reveal(similarity, in: app)
+        XCTAssertTrue(similarity.exists)
+        similarity.adjust(toNormalizedSliderPosition: 0.1)
+        let value = similarity.value as? String
+        capture(app, "prompter-workbench-matching")
+        app.buttons["prompter-tuning-done"].tap()
+        app.terminate(); app.launch()
+        XCTAssertTrue(app.buttons["prompter-tuning-entry"].waitForExistence(timeout: 5))
+        app.buttons["prompter-tuning-entry"].tap()
+        reveal(similarity, in: app)
+        XCTAssertEqual(similarity.value as? String, value)
+        let nativeWidth = app.steppers["prompter-tuning-native-width"]
+        reveal(nativeWidth, in: app)
+        XCTAssertTrue(nativeWidth.exists)
+        capture(app, "prompter-workbench-native-layout")
+        let reset = app.buttons["prompter-tuning-reset"]
+        reveal(reset, in: app); reset.tap()
+        reveal(similarity, in: app)
+        XCTAssertNotEqual(similarity.value as? String, value)
+        app.buttons["prompter-tuning-done"].tap()
+    }
+
     func testMultipleManuscriptsSelectionAndPositionSurviveRelaunch() {
         let app = launch()
         create("Opening remarks", text: "Welcome everyone to our meeting.\nToday we will introduce the project.\nOur first point is improving delivery.\nThank you for listening.", in: app)

@@ -68,32 +68,60 @@ struct GlassesTodoSyncCard: View {
 struct GlassesPrompterControls: View {
     @EnvironmentObject private var features: CompanionDeviceFeatures
     @EnvironmentObject private var voice: CompanionVoiceRuntime
+    @EnvironmentObject private var tuning: PrompterSettingsStore
     let text: String
-    @State private var speed = 120.0
-    @State private var confirm = false
+    var title: String? = nil
+    var initialOffset: Int = 0
+    @State private var startWhenReady = false
     var body: some View {
         VStack(alignment:.leading,spacing:12) {
             Text("眼镜提词 · 匀速模式").font(.headline)
             Text(features.teleprompterStatus).font(.caption).foregroundStyle(Palette.muted)
-            HStack { Text("滚动速度"); Spacer(); Text("\(Int(speed)) 字/分钟候选").monospacedDigit() }.font(.caption)
-            Slider(value:$speed,in:60...240,step:10)
+            HStack { Text("眼镜固定速度"); Spacer(); Text("\(tuning.tuning.fixedSpeed)").monospacedDigit() }.font(.caption)
+            Slider(value: Binding(get: { Double(tuning.tuning.fixedSpeed) }, set: { tuning.update(\.fixedSpeed, Int($0)) }), in:60...240,step:10)
+                .accessibilityIdentifier("prompter-glasses-fixed-speed")
             if features.teleprompterID == nil {
-                Button("准备并传送当前稿件") { confirm = true }.disabled(!voice.ready || text.isEmpty)
+                Button("准备并开始眼镜匀速滚动") {
+                    startWhenReady = true
+                    features.prepareTeleprompter(text, speed: tuning.tuning.fixedSpeed, scrollMode: 2,
+                        initialOffset: initialOffset, title: title, layout: tuning.tuning.nativeLayout)
+                    if features.teleprompterID == nil { startWhenReady = false }
+                }.disabled(!voice.ready || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .accessibilityIdentifier("prompter-glasses-uniform-start")
             } else {
                 HStack {
-                    Button("开始") { features.teleprompterControl(3) }
-                    Button("暂停") { features.teleprompterControl(4) }
-                    Button("继续") { features.teleprompterControl(5) }
-                    Button("退出") { features.teleprompterControl(6) }
-                }.disabled(!voice.ready)
-                Button("应用滚动速度") { features.teleprompterControl(7,speed:Int(speed)) }.disabled(!voice.ready)
+                    if !features.teleprompterStarted {
+                        Button(startWhenReady ? "收到稿件后自动开始" : "开始滚动") { features.teleprompterControl(3) }
+                            .disabled(!features.teleprompterCanStart)
+                    } else if features.teleprompterPaused {
+                        Button("继续滚动") { features.teleprompterControl(5) }.disabled(!features.teleprompterCanResume)
+                    } else {
+                        Button("暂停滚动") { features.teleprompterControl(4) }.disabled(!features.teleprompterCanPause)
+                    }
+                    Button("退出眼镜提词") { startWhenReady = false; features.teleprompterControl(6) }.disabled(!voice.ready)
+                }
+                if let _ = features.teleprompterControlPending {
+                    Text("等待眼镜确认操作…").font(.caption).foregroundStyle(Palette.muted)
+                }
             }
-            Text("只发当前分段（最多 12,000 字），不发整本书。收到收稿回应后才允许开始；眼镜上报原始进度，不假装等于手机分页。未启用智能跟读。").font(.caption2).foregroundStyle(Palette.muted)
-            if let error = features.error { Text(error).font(.caption).foregroundStyle(Palette.amber) }
+            Text("传输完成后自动开始。滑动速度可实时调整；眼镜匀速模式由眼镜执行，不开启语音识别。传稿会暂停 AI 待命。").font(.caption2).foregroundStyle(Palette.muted)
+            if let error = features.teleprompterTransferError { Text(error).font(.caption).foregroundStyle(Palette.amber) }
         }.padding(16).background(.white,in:RoundedRectangle(cornerRadius:16))
-        .confirmationDialog("发送当前文字到眼镜？会暂停 AI 待命；文字只经本地连接传输。",isPresented:$confirm) {
-            Button("准备当前稿件") { features.prepareTeleprompter(text,speed:Int(speed)) }
-        }.onAppear { features.prepare() }
+        .onAppear { features.prepare() }
+        .onChange(of: features.teleprompterPrepared) { prepared in
+            if prepared { applySpeedAndStart() }
+        }
+        .onChange(of: features.teleprompterControlPending) { pending in if pending == nil { applySpeedAndStart() } }
+        .onChange(of: features.teleprompterID) { id in if id == nil { startWhenReady = false } }
+        .onChange(of: features.teleprompterTransferError) { error in if error != nil { startWhenReady = false } }
+        .onChange(of: tuning.tuning.fixedSpeed) { _ in applySpeedAndStart() }
+    }
+    private func applySpeedAndStart() {
+        if features.teleprompterCanAdjustSpeed && features.teleprompterSpeed != tuning.tuning.fixedSpeed {
+            features.teleprompterControl(7, speed: tuning.tuning.fixedSpeed)
+        } else if startWhenReady, features.teleprompterCanStart {
+            startWhenReady = false; features.teleprompterControl(3)
+        }
     }
 }
 

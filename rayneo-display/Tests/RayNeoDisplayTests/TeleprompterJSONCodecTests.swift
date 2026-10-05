@@ -38,6 +38,19 @@ final class TeleprompterJSONCodecTests: XCTestCase {
         XCTAssertEqual(null.autoSync, .null)
     }
 
+    func testNativeDialPositionMayIncludeIntegerCodeWithoutBecomingAResponse() throws {
+        guard case .progress(let event) = try decode(8,
+            #"{"action":1,"did":"synthetic-dial","pageOffset":3,"highLightOffset":3,"autoSync":false,"code":1}"#)
+        else { return XCTFail() }
+        XCTAssertEqual(event.pageOffset, 3)
+        XCTAssertEqual(event.highLightOffset, 3)
+        for code in ["true", "1.5", "\"1\""] {
+            XCTAssertThrowsError(try decode(8, "{\"action\":1,\"did\":\"d\",\"pageOffset\":0,\"highLightOffset\":0,\"code\":\(code)}"))
+        }
+        XCTAssertThrowsError(try decode(8,
+            #"{"action":2,"did":"d","pageOffset":3,"highLightOffset":3,"code":1}"#))
+    }
+
     func testPauseDefaultsDoNotErasePresenceOrTiming() throws {
         guard case .pause(let absent) = try decode(4, #"{"action":1,"did":"d"}"#),
               case .pause(let nulls) = try decode(4,

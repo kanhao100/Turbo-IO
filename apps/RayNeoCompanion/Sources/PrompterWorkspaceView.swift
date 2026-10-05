@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import UniformTypeIdentifiers
 import RayNeoCaptions
 
@@ -13,6 +14,7 @@ struct PrompterWorkspaceView: View {
     @State private var importing = false
     @State private var deleting: PrompterManuscript?
     @State private var showDelete = false
+    @State private var tuningPresented = false
     private var occupied: Bool { runtime.active || features.teleprompterID != nil }
     private var visible: [PrompterManuscript] {
         let query = search.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -20,6 +22,9 @@ struct PrompterWorkspaceView: View {
     }
     var body: some View {
         Screen(title: "提词器", eyebrow: "以稿为主 · 语音跟随 · 滑动辅助") {
+            Button { tuningPresented = true } label: {
+                Card { FeatureRow(icon: "slider.horizontal.3", title: "提词调试工作台", subtitle: "匹配宽容度 · 滚动速度 · 停顿 · 眼镜排版", status: "调节") }
+            }.buttonStyle(.plain).accessibilityIdentifier("prompter-tuning-entry")
             if let document = library.selected {
                 selectedCard(document)
             } else {
@@ -69,6 +74,7 @@ struct PrompterWorkspaceView: View {
             }.buttonStyle(.plain).disabled(occupied).accessibilityIdentifier("book-shelf")
         }
         .sheet(item: $editor) { ManuscriptEditorView(request: $0) }
+        .sheet(isPresented: $tuningPresented) { PrompterSettingsView() }
         .fullScreenCover(item: $session) { PrompterSessionView(document: $0) }
         .fileImporter(isPresented: $importing, allowedContentTypes: [.plainText, UTType(filenameExtension: "md") ?? .text]) { result in
             switch result {
@@ -211,6 +217,7 @@ private struct PrompterSessionView: View {
     @EnvironmentObject private var features: CompanionDeviceFeatures
     @EnvironmentObject private var voice: CompanionVoiceRuntime
     @EnvironmentObject private var recognitionSettings: SubtitleSettingsStore
+    @EnvironmentObject private var tuning: PrompterSettingsStore
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage("companion.prompter.output.v1") private var storedOutput = "glasses"
@@ -222,7 +229,6 @@ private struct PrompterSessionView: View {
     @State private var uniformProgress: Double
     @State private var jumpProgress: Double
     @State private var jumpID = UUID()
-    @State private var speed = 24.0
     @State private var settings = false
     init(document: PrompterManuscript) {
         self.document = document
@@ -235,7 +241,7 @@ private struct PrompterSessionView: View {
     private var input: SpeechPrompterRuntime.Input { SpeechPrompterRuntime.Input(rawValue: storedInput) ?? .glasses }
     private var script: String { runtime.active && runtime.documentID == document.id ? runtime.text : document.text }
     private var followingPaused: Bool { runtime.followState == .paused }
-    private var position: Int { runtime.active && runtime.documentID == document.id ? runtime.confirmedUTF8Offset : offset }
+    private var position: Int { runtime.active && runtime.documentID == document.id ? runtime.displayedUTF8Offset : offset }
     var body: some View {
         NavigationStack {
             VStack(spacing: 12) {
@@ -245,14 +251,14 @@ private struct PrompterSessionView: View {
                     .accessibilityIdentifier("prompter-mode")
                 if mode == "speech" {
                     speechHeader
-                    SpeechPrompterReadingText(text: script, confirmedOffset: position, fontSize: fontSize, assist: seek)
+                    SpeechPrompterReadingText(text: script, displayedOffset: position, fontSize: fontSize, assist: seek)
                         .frame(maxHeight: .infinity).accessibilityIdentifier("prompter-reader")
                     speechControls
                 } else {
                     uniformReader
                 }
                 HStack {
-                    Text("字号").font(.caption)
+                    Text("手机字号").font(.caption)
                     Slider(value: $fontSize, in: 18...38, step: 1)
                     Text("\(Int(fontSize))").font(.caption.monospacedDigit())
                 }
@@ -270,11 +276,11 @@ private struct PrompterSessionView: View {
                     }
                     ToolbarItem(placement: .primaryAction) {
                         Button { settings = true } label: { Image(systemName: "gearshape") }
-                            .accessibilityLabel("语音识别设置").disabled(runtime.active)
+                            .accessibilityLabel("提词调试工作台").accessibilityIdentifier("prompter-session-settings")
                     }
                 }
                 .interactiveDismissDisabled(runtime.active || features.teleprompterID != nil)
-                .sheet(isPresented: $settings) { SubtitleSettingsView() }
+                .sheet(isPresented: $settings) { PrompterSettingsView() }
                 .onChange(of: mode) { _ in playing = false; saveUniform() }
                 .onChange(of: playing) { value in if !value { saveUniform() } }
                 .onChange(of: scenePhase) { value in if value != .active { playing = false; saveUniform() } }
@@ -356,16 +362,28 @@ private struct PrompterSessionView: View {
     }
     private var uniformReader: some View {
         VStack(spacing: 12) {
-            UniformReadingText(text: script, fontSize: fontSize, speed: speed, playing: $playing,
+            Picker("匀速显示", selection: $storedOutput) {
+                ForEach(SpeechPrompterRuntime.Output.allCases, id: \.rawValue) { Text($0.name).tag($0.rawValue) }
+            }.pickerStyle(.segmented).disabled(features.teleprompterID != nil)
+                .accessibilityIdentifier("prompter-uniform-output")
+            UniformReadingText(text: script, fontSize: fontSize, speed: tuning.tuning.phoneSpeed, playing: $playing,
                 progress: $uniformProgress, jumpID: jumpID, jumpProgress: jumpProgress)
                 .clipShape(RoundedRectangle(cornerRadius: 18)).frame(maxHeight: .infinity)
-            PrimaryButton(title: playing ? "暂停滚动" : "手机匀速滚动", icon: playing ? "pause.fill" : "play.fill") {
-                if uniformProgress >= 0.999 { uniformProgress = 0; jumpProgress = 0; jumpID = UUID() }
-                playing.toggle()
+            if output == .glasses {
+                GlassesPrompterControls(text: script, title: document.title, initialOffset: position).font(.subheadline)
+            } else {
+                PrimaryButton(title: playing ? "暂停滚动" : "开始手机匀速滚动", icon: playing ? "pause.fill" : "play.fill") {
+                    if uniformProgress >= 0.999 { uniformProgress = 0; jumpProgress = 0; jumpID = UUID() }
+                    playing.toggle()
+                }.accessibilityIdentifier("prompter-phone-uniform-start")
+                HStack {
+                    Text("手机速度")
+                    Slider(value: Binding(get: { tuning.tuning.phoneSpeed }, set: { tuning.update(\.phoneSpeed, $0) }), in: 8...80, step: 2)
+                    Text("\(Int(tuning.tuning.phoneSpeed)) 点/秒").monospacedDigit()
+                }.font(.caption)
             }
-            HStack { Text("慢"); Slider(value: $speed, in: 8...80, step: 2); Text("快") }.font(.caption)
-            DisclosureGroup("眼镜匀速提词") { GlassesPrompterControls(text: script) }.font(.subheadline)
         }
+        .onChange(of: storedOutput) { _ in playing = false }
     }
     private func seek(_ target: Int) {
         offset = validOffset(target, in: script)
@@ -415,83 +433,110 @@ private struct PrompterReadingRow: Identifiable {
     }
 }
 
-private struct PrompterRowFrames: PreferenceKey {
-    static var defaultValue: [Int: CGFloat] = [:]
-    static func reduce(value: inout [Int: CGFloat], nextValue: () -> [Int: CGFloat]) {
-        value.merge(nextValue(), uniquingKeysWith: { _, next in next })
-    }
-}
-
-private struct SpeechPrompterReadingText: View {
-    let text: String
-    let confirmedOffset: Int
-    let fontSize: Double
+/// TextKit supplies real wrapped-line geometry. The display follows a bounded
+/// reading cursor with pixel interpolation instead of replacing whole chunks.
+private struct SpeechPrompterReadingText: UIViewRepresentable {
+    let text: String, displayedOffset: Int, fontSize: Double
     let assist: (Int) -> Void
-    @State private var frames: [Int: CGFloat] = [:]
-    @State private var dragging = false
-    @State private var gestureEnded = false
-    @State private var pendingAssist: Task<Void, Never>?
-    private var rows: [PrompterReadingRow] { PrompterReadingRow.rows(text) }
-    private var currentID: Int { rows.last(where: { $0.start <= confirmedOffset })?.id ?? 0 }
-    var body: some View {
-        GeometryReader { viewport in
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 8) {
-                        ForEach(rows) { row in
-                            highlighted(row).font(.system(size: fontSize, weight: .medium)).lineSpacing(10)
-                                .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 16).padding(.vertical, 9)
-                                .background(row.id == currentID ? Palette.mint.opacity(0.09) : .clear, in: RoundedRectangle(cornerRadius: 12))
-                                .id(row.id).contentShape(Rectangle()).onTapGesture { assist(row.start) }
-                                .background(GeometryReader { geometry in
-                                    Color.clear.preference(key: PrompterRowFrames.self, value: [row.id: geometry.frame(in: .named("prompter-reader-scroll")).minY])
-                                })
-                        }
-                        Color.clear.frame(height: viewport.size.height * 0.6)
-                    }.padding(.vertical, 24)
-                }.coordinateSpace(name: "prompter-reader-scroll")
-                    .background(Palette.ink).clipShape(RoundedRectangle(cornerRadius: 18))
-                    .onPreferenceChange(PrompterRowFrames.self) {
-                        frames = $0
-                        // Inertial scrolling can continue after the finger lifts.
-                        // Settle on the final viewport, not a position mid-swipe.
-                        if dragging && gestureEnded { scheduleAssistance(height: viewport.size.height) }
-                    }
-                    .simultaneousGesture(DragGesture(minimumDistance: 12).onChanged { _ in
-                        pendingAssist?.cancel(); dragging = true; gestureEnded = false
-                    }.onEnded { _ in
-                        // Only a physical gesture reanchors. Programmatic scrolls never
-                        // enter this path, and audio recognition is left running.
-                        gestureEnded = true
-                        scheduleAssistance(height: viewport.size.height)
-                    })
-                    .onChange(of: currentID) { id in
-                        guard !dragging else { return }
-                        withAnimation(.easeOut(duration: 0.25)) { proxy.scrollTo(id, anchor: .top) }
-                    }
-                    .onAppear { proxy.scrollTo(currentID, anchor: .top) }
-                    .onDisappear { pendingAssist?.cancel() }
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+    func makeUIView(context: Context) -> UITextView {
+        let view = UITextView(usingTextLayoutManager: false)
+        view.isEditable = false; view.isSelectable = false
+        view.backgroundColor = UIColor(Palette.ink)
+        view.textContainerInset = UIEdgeInsets(top: 35, left: 16, bottom: 220, right: 16)
+        view.layer.cornerRadius = 18
+        view.delegate = context.coordinator; context.coordinator.view = view
+        view.addGestureRecognizer(UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.tap(_:))))
+        return view
+    }
+    func updateUIView(_ view: UITextView, context: Context) {
+        let c = context.coordinator; c.owner = self
+        let changed = view.text != text || c.fontSize != fontSize
+        if changed {
+            c.fontSize = fontSize; c.rebuildIndex()
+            let style = NSMutableParagraphStyle(); style.lineSpacing = 10
+            view.attributedText = NSAttributedString(string: text, attributes: [
+                .font: UIFont.systemFont(ofSize: fontSize, weight: .medium),
+                .foregroundColor: UIColor(Palette.mint), .paragraphStyle: style])
+        }
+        guard !view.isDragging && !view.isDecelerating else { return }
+        DispatchQueue.main.async { [weak c, weak view] in
+            guard let c, let view, !view.isDragging, !view.isDecelerating else { return }
+            view.layoutIfNeeded(); c.updateTarget(immediate: changed || !c.initialized)
+        }
+    }
+    static func dismantleUIView(_ view: UITextView, coordinator: Coordinator) {
+        coordinator.stopAnimation(); view.delegate = nil
+    }
+    final class Coordinator: NSObject, UITextViewDelegate {
+        var owner: SpeechPrompterReadingText
+        weak var view: UITextView?
+        var fontSize: Double?
+        var boundaries: [(byte: Int, utf16: Int)] = []
+        var targetY: CGFloat = 0
+        var initialized = false
+        var link: CADisplayLink?
+        var last: CFTimeInterval?
+        init(_ owner: SpeechPrompterReadingText) { self.owner = owner }
+        func rebuildIndex() {
+            var byte = 0, utf16 = 0; boundaries = [(0, 0)]
+            for character in owner.text {
+                let fragment = String(character)
+                byte += fragment.utf8.count; utf16 += fragment.utf16.count
+                boundaries.append((byte, utf16))
             }
         }
-    }
-    private func scheduleAssistance(height: CGFloat) {
-        pendingAssist?.cancel()
-        pendingAssist = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 200_000_000)
-            guard !Task.isCancelled else { return }
-            let readingY = height * 0.16
-            let visible = frames.filter { $0.value > -100 && $0.value < height }
-            let nearest = visible.min { abs($0.value - readingY) < abs($1.value - readingY) }
-            if let nearest { assist(nearest.key) }
-            dragging = false; gestureEnded = false
+        func utf16(forByte byte: Int) -> Int { boundaries.last(where: { $0.byte <= byte })?.utf16 ?? 0 }
+        func byte(forUTF16 utf16: Int) -> Int { boundaries.last(where: { $0.utf16 <= utf16 })?.byte ?? 0 }
+        func updateTarget(immediate: Bool) {
+            guard let view, !owner.text.isEmpty, view.layoutManager.numberOfGlyphs > 0 else { return }
+            let index = min(max(0, utf16(forByte: owner.displayedOffset)), view.textStorage.length - 1)
+            let manager = view.layoutManager
+            manager.ensureLayout(for: view.textContainer)
+            let glyph = manager.glyphIndexForCharacter(at: index)
+            var glyphs = NSRange()
+            let line = manager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: &glyphs)
+            let characters = manager.characterRange(forGlyphRange: glyphs, actualGlyphRange: nil)
+            let fraction = min(1, max(0, Double(index - characters.location) / Double(max(1, characters.length))))
+            let y = line.minY + CGFloat(fraction) * line.height + view.textContainerInset.top - view.bounds.height * 0.16
+            targetY = min(max(0, view.contentSize.height - view.bounds.height), max(0, y))
+            initialized = true
+            if immediate { stopAnimation(); view.setContentOffset(CGPoint(x: 0, y: targetY), animated: false) }
+            else if abs(view.contentOffset.y - targetY) > 0.1, link == nil {
+                last = nil
+                let link = CADisplayLink(target: self, selector: #selector(tick(_:))); link.preferredFramesPerSecond = 30
+                self.link = link; link.add(to: .main, forMode: .common)
+            }
         }
-    }
-    private func highlighted(_ row: PrompterReadingRow) -> Text {
-        var consumed = "", upcoming = "", byte = row.start
-        for character in row.text {
-            if byte < confirmedOffset { consumed.append(character) } else { upcoming.append(character) }
-            byte += String(character).utf8.count
+        @objc func tick(_ link: CADisplayLink) {
+            guard let view, !view.isDragging, !view.isDecelerating else { stopAnimation(); return }
+            let elapsed = min(0.1, last.map { link.timestamp - $0 } ?? 1.0 / 30); last = link.timestamp
+            let difference = targetY - view.contentOffset.y
+            let y = view.contentOffset.y + difference * CGFloat(1 - exp(-elapsed * 10))
+            view.setContentOffset(CGPoint(x: 0, y: y), animated: false)
+            if abs(difference) < 0.1 { stopAnimation() }
         }
-        return Text(consumed).foregroundColor(Palette.mint.opacity(0.45)) + Text(upcoming).foregroundColor(Palette.mint)
+        func stopAnimation() { link?.invalidate(); link = nil; last = nil }
+        func scrollViewWillBeginDragging(_ scrollView: UIScrollView) { stopAnimation() }
+        func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
+            if !decelerate { assistVisiblePosition() }
+        }
+        func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) { assistVisiblePosition() }
+        private func assistVisiblePosition() {
+            guard let view else { return }
+            assist(at: CGPoint(x: 0, y: view.contentOffset.y + view.bounds.height * 0.16 - view.textContainerInset.top))
+        }
+        private func assist(at point: CGPoint) {
+            guard let view, view.layoutManager.numberOfGlyphs > 0 else { return }
+            let glyph = view.layoutManager.glyphIndex(for: point, in: view.textContainer)
+            let utf16 = view.layoutManager.characterIndexForGlyph(at: glyph)
+            owner.assist(byte(forUTF16: utf16))
+        }
+        @objc func tap(_ recognizer: UITapGestureRecognizer) {
+            guard let view, recognizer.state == .ended else { return }
+            let location = recognizer.location(in: view)
+            assist(at: CGPoint(x: location.x - view.textContainerInset.left,
+                               y: location.y - view.textContainerInset.top))
+        }
     }
 }

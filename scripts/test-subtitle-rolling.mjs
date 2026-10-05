@@ -23,6 +23,7 @@ run('xcodebuild', [
   '-only-testing:RayNeoCompanionTests/SubtitleRealtimeTests',
   '-only-testing:RayNeoCompanionTests/SubtitleSettingsTests',
   '-only-testing:RayNeoCompanionTests/ManuscriptLibraryTests',
+  '-only-testing:RayNeoCompanionTests/PrompterSettingsTests',
   '-only-testing:RayNeoCompanionTests/SpeechPrompterRuntimeTests',
   '-only-testing:RayNeoCompanionTests/LocalBoundaryTests',
   '-only-testing:RayNeoCompanionTests/TeleprompterNativeTests',

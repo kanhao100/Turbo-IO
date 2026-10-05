@@ -12,6 +12,7 @@ struct RayNeoCompanionApp: App {
                 .environmentObject(store.archive.audioInspection)
                 .environmentObject(store.books)
                 .environmentObject(store.manuscripts)
+                .environmentObject(store.prompterSettings)
                 .environmentObject(store.speechPrompter)
                 .environmentObject(store.voice)
                 .environmentObject(store.codex)

@@ -142,7 +142,11 @@ public struct TeleprompterJSONCodec: Sendable {
             try json.requireOnly(["action", "did"])
             return .stop(did: did)
         case .progress:
-            try json.requireOnly(["action", "did", "pageOffset", "highLightOffset", "autoSync"])
+            // ProgressUpdateRequest's native serializer (0x25d4b7c) can
+            // append an optional integer code. A dial update carrying code
+            // must remain a position request, not tear down the session.
+            try json.requireOnly(["action", "did", "pageOffset", "highLightOffset", "autoSync", "code"])
+            _ = try json.optionalInt("code")
             return .progress(TeleprompterPositionObserved(
                 did: did, pageOffset: try json.int("pageOffset"),
                 highLightOffset: try json.int("highLightOffset"),

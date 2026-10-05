@@ -22,7 +22,8 @@ final class TeleprompterNativeTests: XCTestCase {
                                                         scrollMode: mode, initialOffset: offset)
             let prepare = try document.command(type: 2, did: "synthetic-manuscript")
             let start = try document.command(type: 3, did: "synthetic-manuscript")
-            for field in ["total", "scroll", "speed", "pageOffset", "highLightOffset"] {
+            for field in ["total", "scroll", "speed", "pageOffset", "highLightOffset",
+                          "countdown", "gear", "depth", "size", "width", "leading"] {
                 XCTAssertEqual(DeviceBusinessWire.integer(prepare, field), DeviceBusinessWire.integer(start, field))
             }
             XCTAssertEqual(DeviceBusinessWire.integer(start, "scroll"), Int64(mode))
@@ -34,6 +35,62 @@ final class TeleprompterNativeTests: XCTestCase {
             XCTAssertEqual(try DeviceBusinessWire(encoded).json["checksum"] as? String, document.checksum)
             XCTAssertEqual(document.data, Data(text.utf8))
         }
+    }
+
+    func testCompleteNativeLayoutAndSpeedAdjustmentSurviveStart() throws {
+        let layout = TeleprompterNativeLayout(size: 20, width: 400, leading: 6, countdown: 0, gear: 2, depth: 3)
+        let document = try TeleprompterNativeDocument(text: "中文 and English", speed: 120,
+                                                     scrollMode: 2, initialOffset: 0, layout: layout)
+        let start = try document.command(type: 3, did: "synthetic", speedOverride: 180)
+        let settings = try document.settingsCommand(did: "synthetic", speed: 180)
+        for (field, expected) in ["scroll": 2, "speed": 180, "size": 20, "width": 400,
+                                  "leading": 6, "countdown": 0, "gear": 2, "depth": 3] {
+            XCTAssertEqual(DeviceBusinessWire.integer(start, field), Int64(expected))
+            XCTAssertEqual(DeviceBusinessWire.integer(settings, field), Int64(expected))
+        }
+        XCTAssertEqual(Set(settings.keys), ["action", "did", "scroll", "speed", "countdown", "gear", "depth", "size", "width", "leading"])
+        XCTAssertThrowsError(try document.command(type: 3, did: "synthetic", speedOverride: 0))
+    }
+
+    func testCapturedDefaultLayoutAndGlassesStartResponseDirection() throws {
+        let document = try TeleprompterNativeDocument(text: "中文稿件", speed: 120, scrollMode: 3, initialOffset: 0)
+        let prepare = try document.command(type: 2, did: "synthetic")
+        for (field, value) in ["size": 18, "width": 492, "leading": 4, "countdown": 3, "gear": 3, "depth": 1] {
+            XCTAssertEqual(DeviceBusinessWire.integer(prepare, field), Int64(value))
+        }
+        let response = try document.startResponse(did: "synthetic", offset: 3, speed: 120)
+        XCTAssertEqual(DeviceBusinessWire.integer(response, "action"), 2)
+        XCTAssertEqual(DeviceBusinessWire.integer(response, "code"), 1)
+        XCTAssertEqual(DeviceBusinessWire.integer(response, "pageOffset"), 3)
+        XCTAssertEqual(DeviceBusinessWire.integer(response, "highLightOffset"), 3)
+        XCTAssertNil(response["total"])
+        XCTAssertNil(response["checksum"])
+        XCTAssertThrowsError(try document.startResponse(did: "synthetic", offset: 1, speed: 120))
+    }
+
+    func testNativeProgressSerializesAndCoalescesTicksUntilAcknowledged() {
+        var queue = TeleprompterNativeProgressQueue()
+        let first = TeleprompterNativeProgressQueue.Position(page: 3, highlight: 3)
+        let latest = TeleprompterNativeProgressQueue.Position(page: 12, highlight: 12)
+        XCTAssertEqual(queue.enqueue(first), first)
+        XCTAssertNil(queue.enqueue(.init(page: 6, highlight: 6)))
+        XCTAssertNil(queue.enqueue(latest))
+        XCTAssertEqual(queue.acknowledge(), latest)
+        XCTAssertTrue(queue.awaitingAcknowledgement)
+        XCTAssertNil(queue.acknowledge())
+        XCTAssertFalse(queue.awaitingAcknowledgement)
+    }
+
+    func testWheelDiscardsAutomaticQueueWithoutMisattributingLateAcknowledgement() {
+        var queue = TeleprompterNativeProgressQueue()
+        XCTAssertNotNil(queue.enqueue(.init(page: 3, highlight: 3)))
+        XCTAssertNil(queue.enqueue(.init(page: 6, highlight: 6)))
+        queue.manualAssist()
+        XCTAssertTrue(queue.awaitingAcknowledgement)
+        XCTAssertNil(queue.queued)
+        XCTAssertNil(queue.acknowledge())
+        XCTAssertFalse(queue.awaitingAcknowledgement)
+        XCTAssertNotNil(queue.enqueue(.init(page: 30, highlight: 30)))
     }
 
     func testChecksumKnownFNV1aVectorAndOriginalWhitespace() throws {

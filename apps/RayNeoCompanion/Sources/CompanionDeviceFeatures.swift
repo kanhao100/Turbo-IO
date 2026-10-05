@@ -191,7 +191,14 @@ import CryptoKit
             self.error = "收到未识别或不匹配的业务数据，未当成成功。"
             if business == 14 { lostMessages() }
             if business == 20, teleprompterID != nil, teleprompterDevice == device {
-                teleprompterFailed("收到无效提词控制；保留当前位置，请结束本轮后重试。")
+                // A native dial packet with a newer/unsupported control shape
+                // cannot be treated as a failed file transfer or an exit.
+                // Hold automatic position commands and retain the recognizer.
+                teleprompterProgressQueue.manualAssist()
+                teleprompterPositionBlocked = true
+                teleprompterLastEyeCommand = "无法解析的眼镜提词控制"
+                teleprompterStatus = "眼镜控制暂无法解析；自动滚动停住，语音识别继续。"
+                onTeleprompterPositionUnavailable?()
             }
         }
     }
@@ -476,6 +483,13 @@ import CryptoKit
     @Published private(set) var teleprompterID: String?
     @Published private(set) var teleprompterOffset: Int64 = 0
     @Published private(set) var teleprompterStarted = false
+    @Published private(set) var teleprompterPaused = false
+    @Published private(set) var teleprompterControlPending: UInt32?
+    @Published private(set) var teleprompterSpeed = 120
+    @Published private(set) var teleprompterTitle = ""
+    @Published private(set) var teleprompterLastEyeCommand = "尚无眼镜操作"
+    @Published private(set) var teleprompterInReader = false
+    @Published private(set) var teleprompterPositionBlocked = false
     @Published private(set) var teleprompterTransferProgress: Int?
     @Published private(set) var teleprompterTransferError: String?
     var onTeleprompterProgress: ((TeleprompterPositionObserved) -> Void)?
@@ -493,15 +507,23 @@ import CryptoKit
     private var teleprompterDocument: TeleprompterNativeDocument?
     private var teleprompterTransfer = TeleprompterTransferPolicy()
     private var teleprompterTransferGeneration = UUID()
+    private var teleprompterControlGeneration = UUID()
+    private var teleprompterProgressGeneration = UUID()
+    private var teleprompterProgressQueue = TeleprompterNativeProgressQueue()
+    var teleprompterCanStart: Bool { voice.ready && teleprompterPrepared && !teleprompterStarted && teleprompterControlPending == nil }
+    var teleprompterCanPause: Bool { voice.ready && teleprompterStarted && !teleprompterPaused && teleprompterControlPending == nil }
+    var teleprompterCanResume: Bool { voice.ready && teleprompterStarted && teleprompterPaused && teleprompterControlPending == nil }
+    var teleprompterCanAdjustSpeed: Bool { voice.ready && teleprompterPrepared && teleprompterControlPending == nil && teleprompterScrollMode == 2 }
 }
 
 extension CompanionDeviceFeatures {
-    func prepareTeleprompter(_ text: String, speed: Int, scrollMode: Int = 2, initialOffset: Int = 0) {
+    func prepareTeleprompter(_ text: String, speed: Int, scrollMode: Int = 2, initialOffset: Int = 0,
+                            title: String? = nil, layout: TeleprompterNativeLayout = .default) {
         perform {
             guard canControl, recordingID == nil, teleprompterID == nil, let device = voice.deviceID else { throw DeviceFeatureError.busy }
             guard scrollMode != 2 || store?.speechPrompter.active != true else { throw DeviceFeatureError.invalidPacket }
             let document = try TeleprompterNativeDocument(text: text, speed: speed,
-                                                        scrollMode: scrollMode, initialOffset: initialOffset)
+                                                        scrollMode: scrollMode, initialOffset: initialOffset, layout: layout)
             if voice.enabled { voice.stop() }
             let did = UUID().uuidString.lowercased()
             let dir = inbox.root.deletingLastPathComponent().appendingPathComponent("TeleprompterOutboxV1")
@@ -512,11 +534,17 @@ extension CompanionDeviceFeatures {
             teleprompterID = did; teleprompterDevice = device; teleprompterFile = url
             teleprompterOffset = Int64(initialOffset); teleprompterPrepared = false; teleprompterSentFile = false
             teleprompterStarted = false; teleprompterScrollMode = scrollMode
+            teleprompterPaused = false; teleprompterControlPending = nil; teleprompterSpeed = speed
+            teleprompterControlGeneration = UUID(); teleprompterProgressQueue = .init()
+            teleprompterProgressGeneration = UUID(); teleprompterInReader = false; teleprompterPositionBlocked = false
+            teleprompterTitle = String((title ?? text.components(separatedBy: .newlines).first ?? "提词稿").prefix(80))
+            teleprompterLastEyeCommand = "尚无眼镜操作"
             teleprompterTransfer = TeleprompterTransferPolicy(); teleprompterTransferProgress = nil
             teleprompterTransferError = nil
             teleprompterTransferGeneration = UUID(); let transferGeneration = teleprompterTransferGeneration
             teleprompterBoundaries = document.boundaries; teleprompterDocument = document
-            // Optional layout fields intentionally omitted: never guess pixel/gear defaults.
+            // Use the complete captured layout in both prepare and start. Missing
+            // fields can otherwise leave native mode/layout at unknown defaults.
             do {
                 try send(20,2,document.command(type: 2, did: did))
             } catch {
@@ -538,19 +566,41 @@ extension CompanionDeviceFeatures {
             guard let did = teleprompterID, teleprompterDevice == voice.deviceID,
                   type == 6 || teleprompterPrepared else { throw DeviceFeatureError.noSession }
             guard [3,4,5,6,7].contains(type) else { throw DeviceFeatureError.invalidPacket }
+            guard type == 6 || teleprompterControlPending == nil else { throw DeviceFeatureError.busy }
+            switch type {
+            case 3: guard teleprompterCanStart else { throw DeviceFeatureError.noSession }
+            case 4: guard teleprompterCanPause else { throw DeviceFeatureError.noSession }
+            case 5: guard teleprompterCanResume else { throw DeviceFeatureError.noSession }
+            case 7: guard teleprompterCanAdjustSpeed else { throw DeviceFeatureError.noSession }
+            default: break
+            }
             var body: [String:Any] = ["action":1,"did":did]
             if type == 3 {
                 guard let document = teleprompterDocument else { throw DeviceFeatureError.noSession }
-                body = try document.command(type: 3, did: did)
+                body = try document.command(type: 3, did: did, speedOverride: teleprompterSpeed)
             }
             if type == 4 { body["offset"] = teleprompterOffset; body["code"] = 1; body["isCompleted"] = false }
-            if type == 7 { guard (60...240).contains(speed) else { throw DeviceFeatureError.invalidPacket }; body["scroll"] = teleprompterScrollMode; body["speed"] = speed }
+            if type == 7 {
+                guard let document = teleprompterDocument else { throw DeviceFeatureError.noSession }
+                body = try document.settingsCommand(did: did, speed: speed)
+            }
             try send(20,type,body)
+            if type == 7 { teleprompterSpeed = speed }
+            teleprompterControlPending = type
+            teleprompterControlGeneration = UUID(); let controlGeneration = teleprompterControlGeneration
             if type == 6 {
+                teleprompterProgressQueue = .init()
+                teleprompterProgressGeneration = UUID()
                 teleprompterTransfer.cancel(); teleprompterTransferGeneration = UUID()
                 if let task = teleprompterTransferTask { voice.cancelFile(task); teleprompterTransferTask = nil }
             }
             teleprompterStatus = "控制 type\(type) 已提交，等待眼镜回应"
+            DispatchQueue.main.asyncAfter(deadline: .now() + 20) { [weak self] in
+                guard let self, self.teleprompterID == did,
+                      self.teleprompterControlGeneration == controlGeneration,
+                      self.teleprompterControlPending == type else { return }
+                self.teleprompterFailed("眼镜未确认提词控制 type\(type)，请退出本轮后重试。")
+            }
         }
     }
     /// The ASR follower sends progress on the same prepared manuscript; it does
@@ -560,19 +610,38 @@ extension CompanionDeviceFeatures {
         do {
             guard let did = teleprompterID, teleprompterDevice == voice.deviceID,
                   teleprompterPrepared, teleprompterStarted,
+                  teleprompterControlPending != 6,
                   teleprompterBoundaries.contains(pageOffset),
                   teleprompterBoundaries.contains(highlightOffset) else { throw DeviceFeatureError.noSession }
-            let message = try TeleprompterJSONCodec().encodeAppRequest(.progress(did: did,
-                pageOffset: Int64(pageOffset), highLightOffset: Int64(highlightOffset), autoSync: false))
-            guard let body = try JSONSerialization.jsonObject(with: message.payload) as? [String: Any] else {
-                throw DeviceFeatureError.invalidPacket
-            }
-            try send(20, UInt32(message.type), body)
+            // Never route a progress command into the document-list screen.
+            // A missing acknowledgement holds motion while native wheel input
+            // and ASR remain available; it does not rebuild the session.
+            guard teleprompterInReader, !teleprompterPositionBlocked else { return true }
+            guard let position = teleprompterProgressQueue.enqueue(.init(page: pageOffset, highlight: highlightOffset)) else { return true }
+            try sendTeleprompterPosition(position, did: did)
             return true
         } catch {
             teleprompterFailed("提词位置更新失败；已停止自动跟随，保留当前稿件。")
             return false
         }
+    }
+    private func sendTeleprompterPosition(_ position: TeleprompterNativeProgressQueue.Position, did: String) throws {
+            let message = try TeleprompterJSONCodec().encodeAppRequest(.progress(did: did,
+                pageOffset: Int64(position.page), highLightOffset: Int64(position.highlight), autoSync: false))
+            guard let body = try JSONSerialization.jsonObject(with: message.payload) as? [String: Any] else {
+                throw DeviceFeatureError.invalidPacket
+            }
+            try send(20, UInt32(message.type), body)
+            teleprompterProgressGeneration = UUID(); let generation = teleprompterProgressGeneration
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
+                guard let self, self.teleprompterID == did,
+                      self.teleprompterProgressGeneration == generation,
+                      self.teleprompterProgressQueue.awaitingAcknowledgement else { return }
+                self.teleprompterProgressQueue.manualAssist()
+                self.teleprompterPositionBlocked = true
+                self.teleprompterStatus = "眼镜滚动尚未确认；自动滚动停住，识别和眼镜旋钮继续可用。"
+                self.onTeleprompterPositionUnavailable?()
+            }
     }
     private func teleprompterFailed(_ message: String) {
         teleprompterTransfer.cancel(); teleprompterTransferGeneration = UUID()
@@ -580,6 +649,9 @@ extension CompanionDeviceFeatures {
         teleprompterTransferTask = nil
         teleprompterPrepared = false
         teleprompterStarted = false
+        teleprompterPaused = false; teleprompterControlPending = nil
+        teleprompterControlGeneration = UUID(); teleprompterProgressQueue = .init()
+        teleprompterProgressGeneration = UUID(); teleprompterInReader = false; teleprompterPositionBlocked = false
         teleprompterStatus = message
         teleprompterTransferError = message
         error = message
@@ -660,8 +732,22 @@ extension CompanionDeviceFeatures {
         teleprompterFailed("眼镜提词命令发送失败 code=\(code)；已停止自动跟随，请结束本轮后重试。")
     }
     private func teleprompterReceive(_ device: String, _ wire: DeviceBusinessWire) throws {
+        // ListUpdate has no top-level DID. A wheel may navigate out to the
+        // native document list; this is a route change, never a scroll/seek.
+        // FullSync replaces the native list, so don't invent one from this
+        // session and overwrite other manuscripts on the glasses.
+        if wire.type == 1, teleprompterDevice == device,
+           DeviceBusinessWire.integer(wire.json, "action") == 1 {
+            teleprompterProgressQueue.manualAssist()
+            teleprompterInReader = false
+            teleprompterLastEyeCommand = "文稿列表请求 type1"
+            teleprompterStatus = "眼镜进入文稿列表；自动滚动停住，识别继续。请在眼镜返回当前稿件。"
+            onTeleprompterPositionUnavailable?()
+            return
+        }
         guard let did = DeviceBusinessWire.identifier(wire.json,"did"), did == teleprompterID, teleprompterDevice == device else { return }
         let action = DeviceBusinessWire.integer(wire.json,"action"), code = DeviceBusinessWire.integer(wire.json,"code")
+        if action == 1 { teleprompterLastEyeCommand = "眼镜操作 type\(wire.type)" }
         if wire.type == 2, action == 2 {
             guard !teleprompterTransfer.isTerminal else { return }
             let decision = teleprompterTransfer.prepareReply(code: Int(code ?? -1))
@@ -689,13 +775,46 @@ extension CompanionDeviceFeatures {
             return
         }
         if wire.type == 3, action == 2 {
+            guard teleprompterControlPending == 3 else { return }
             guard code == 1, teleprompterPrepared else {
                 teleprompterFailed("开始提词未确认 code=\(code ?? -1)")
                 return
             }
             teleprompterStarted = true
+            teleprompterInReader = true
+            teleprompterPaused = false; teleprompterControlPending = nil
+            teleprompterControlGeneration = UUID()
             teleprompterStatus = "眼镜已回应开始提词"
             onTeleprompterControl?(3)
+            return
+        }
+        if wire.type == 3, action == 1 {
+            guard teleprompterPrepared, teleprompterControlPending != 6,
+                  let document = teleprompterDocument else { return }
+            try send(20, 3, document.startResponse(did: did, offset: Int(teleprompterOffset), speed: teleprompterSpeed))
+            teleprompterStarted = true; teleprompterPaused = false
+            teleprompterInReader = true
+            teleprompterControlPending = nil; teleprompterControlGeneration = UUID()
+            teleprompterStatus = "眼镜请求开始当前稿件，已按原稿模式回应"
+            onTeleprompterControl?(3)
+            return
+        }
+        // SettingsUpdate type 7 is a native dial/settings event as well as an
+        // app command. It is outside the progress codec's four control types.
+        if wire.type == 7 {
+            if action == 1 {
+                guard teleprompterPrepared else { return }
+                try send(20, 7, ["action": 2, "did": did, "code": 1])
+                if let speed = DeviceBusinessWire.integer(wire.json, "speed"), (60...240).contains(speed) {
+                    teleprompterSpeed = Int(speed)
+                }
+                teleprompterProgressQueue.manualAssist()
+                teleprompterStatus = "眼镜调节提词设置；保留当前稿件和识别"
+            } else if action == 2, teleprompterControlPending == 7 {
+                guard code == 1 else { teleprompterFailed("眼镜未接受提词速度，请退出本轮后重试。"); return }
+                teleprompterControlPending = nil; teleprompterControlGeneration = UUID()
+                teleprompterStatus = "眼镜已确认匀速提词速度 \(teleprompterSpeed)"
+            }
             return
         }
         guard let control = TeleprompterControlType(rawValue: UInt16(clamping:wire.type)) else { return }
@@ -707,6 +826,9 @@ extension CompanionDeviceFeatures {
             switch event {
             case .progress(let p):
                 guard teleprompterStarted else { return }
+                teleprompterProgressQueue.manualAssist()
+                teleprompterInReader = true
+                if !teleprompterProgressQueue.awaitingAcknowledgement { teleprompterPositionBlocked = false }
                 guard
                       p.pageOffset >= 0, p.pageOffset <= 48_000,
                       p.highLightOffset >= 0, p.highLightOffset <= 48_000,
@@ -723,9 +845,14 @@ extension CompanionDeviceFeatures {
                 teleprompterStatus = "眼镜滑动辅助定位：UTF-8 偏移 \(p.pageOffset)"
                 onTeleprompterProgress?(p)
             case .pause:
+                teleprompterPaused = true
+                teleprompterProgressQueue.manualAssist()
+                if teleprompterControlPending == 4 { teleprompterControlPending = nil; teleprompterControlGeneration = UUID() }
                 teleprompterStatus = "眼镜请求暂停"
                 onTeleprompterControl?(4)
             case .resume:
+                teleprompterPaused = false
+                if teleprompterControlPending == 5 { teleprompterControlPending = nil; teleprompterControlGeneration = UUID() }
                 teleprompterStatus = "眼镜请求恢复"
                 onTeleprompterControl?(5)
             case .stop:
@@ -735,16 +862,37 @@ extension CompanionDeviceFeatures {
             }
         } else if action == 2 {
             guard code == 1 else {
+                if control == .progress {
+                    teleprompterProgressQueue = .init(); teleprompterProgressGeneration = UUID()
+                    teleprompterPositionBlocked = true
+                    teleprompterStatus = "眼镜未接受滚动位置 code=\(code ?? -1)；识别继续，请用旋钮辅助定位。"
+                    onTeleprompterPositionUnavailable?()
+                    return
+                }
                 teleprompterFailed("眼镜提词控制未确认 type\(wire.type) code=\(code ?? -1)")
                 return
             }
             teleprompterStatus = "眼镜回应 type\(wire.type) code=1"
+            if control == .progress {
+                teleprompterProgressGeneration = UUID(); teleprompterPositionBlocked = false
+                if let position = teleprompterProgressQueue.acknowledge() {
+                    if teleprompterInReader { try sendTeleprompterPosition(position, did: did) }
+                }
+            } else {
+                guard teleprompterControlPending == wire.type else { return }
+                teleprompterControlPending = nil; teleprompterControlGeneration = UUID()
+                if control == .pause { teleprompterPaused = true; teleprompterProgressQueue.manualAssist() }
+                if control == .resume { teleprompterPaused = false }
+            }
             if control != .progress { onTeleprompterControl?(wire.type) }
         }
         if control == .stop, action == 1 || code == 1 {
             if let task = teleprompterTransferTask { voice.cancelFile(task); teleprompterTransferTask = nil }
             discardTeleprompterFile()
             teleprompterID = nil; teleprompterPrepared = false; teleprompterStarted = false; teleprompterFile = nil
+            teleprompterPaused = false; teleprompterControlPending = nil; teleprompterControlGeneration = UUID()
+            teleprompterProgressQueue = .init(); teleprompterTitle = ""
+            teleprompterProgressGeneration = UUID(); teleprompterInReader = false; teleprompterPositionBlocked = false
             teleprompterBoundaries.removeAll()
             teleprompterDocument = nil
             teleprompterTransfer.cancel(); teleprompterTransferGeneration = UUID()

@@ -16,7 +16,7 @@ import RayNeoDisplay
     var onAudio: ((Data, Int?) -> Void)? { get set }
     var onFailure: ((String) -> Void)? { get set }
     var onPositionUnavailable: (() -> Void)? { get set }
-    func prepare(text: String, scrollMode: Int, initialOffset: Int) -> Bool
+    func prepare(text: String, title: String, scrollMode: Int, initialOffset: Int) -> Bool
     func start() -> Bool
     func seek(page: Int, highlight: Int) -> Bool
     func stop()
@@ -35,6 +35,7 @@ extension SpeechPrompterTransport {
 
 @MainActor private final class FeatureSpeechPrompterTransport: SpeechPrompterTransport {
     let features: CompanionDeviceFeatures
+    let defaults: UserDefaults
     var deviceID: String? { features.voice.deviceID }
     var ready: Bool { features.voice.ready }
     var sessionID: String? { features.teleprompterID }
@@ -47,8 +48,8 @@ extension SpeechPrompterTransport {
     var onAudio: ((Data, Int?) -> Void)?
     var onFailure: ((String) -> Void)?
     var onPositionUnavailable: (() -> Void)?
-    init(_ features: CompanionDeviceFeatures) {
-        self.features = features
+    init(_ features: CompanionDeviceFeatures, defaults: UserDefaults) {
+        self.features = features; self.defaults = defaults
         features.onTeleprompterProgress = { [weak self] value in
             self?.onProgress?(Int(value.pageOffset), Int(value.highLightOffset))
         }
@@ -57,8 +58,10 @@ extension SpeechPrompterTransport {
         features.onTeleprompterFailure = { [weak self] in self?.onFailure?($0) }
         features.onTeleprompterPositionUnavailable = { [weak self] in self?.onPositionUnavailable?() }
     }
-    func prepare(text: String, scrollMode: Int, initialOffset: Int) -> Bool {
-        features.prepareTeleprompter(text, speed: 120, scrollMode: scrollMode, initialOffset: initialOffset)
+    func prepare(text: String, title: String, scrollMode: Int, initialOffset: Int) -> Bool {
+        let tuning = PrompterSettingsStore.load(defaults: defaults)
+        features.prepareTeleprompter(text, speed: tuning.fixedSpeed, scrollMode: scrollMode,
+                                    initialOffset: initialOffset, title: title, layout: tuning.nativeLayout)
         return features.teleprompterID != nil && features.error == nil
     }
     func start() -> Bool {
@@ -74,6 +77,7 @@ extension SpeechPrompterTransport {
 #if COMPANION_DEVICE
 @MainActor private final class DevicePrompterMicrophone: SpeechPrompterMicrophone {
     private let capture = SubtitleMicrophoneInput()
+    private var generation = UUID()
     var onPCM: ((Data) -> Void)?
     var onFailure: ((String) -> Void)?
     init() {
@@ -81,16 +85,19 @@ extension SpeechPrompterTransport {
         capture.onFailure = { [weak self] in self?.onFailure?($0) }
     }
     func start(input: SpeechPrompterRuntime.Input) async throws -> String {
+        generation = UUID(); let token = generation
         let uid: String?
         if input == .iPhone {
             let ports = try await SubtitleMicrophoneInput.availablePorts()
+            guard token == generation, !Task.isCancelled else { throw CancellationError() }
             guard let builtIn = ports.first(where: { $0.isBuiltIn }) else { throw DeviceFeatureError.incomplete }
             uid = builtIn.uid
         } else { uid = nil }
+        guard token == generation, !Task.isCancelled else { throw CancellationError() }
         let actual = try await capture.start(preferredUID: uid)
         return actual.name
     }
-    func stop() { capture.stop() }
+    func stop() { generation = UUID(); capture.stop() }
 }
 #endif
 
@@ -117,6 +124,7 @@ extension SpeechPrompterTransport {
     @Published private(set) var status = "选择稿件，准备开始演讲"
     @Published private(set) var error: String?
     @Published private(set) var confirmedUTF8Offset = 0
+    @Published private(set) var displayedUTF8Offset = 0
     @Published private(set) var candidateUTF8Offset: Int?
     @Published private(set) var followState: SpeechFollowState = .waiting
     @Published private(set) var microphoneRoute: String?
@@ -128,6 +136,9 @@ extension SpeechPrompterTransport {
     var active: Bool { phase != .idle }
     var canStart: Bool { !active && available() && transport.sessionID == nil }
     private let settings: SubtitleSettingsStore
+    private let defaults: UserDefaults
+    private var tuning = PrompterTuning()
+    private var scrollController: SpeechScrollController?
     private let transport: any SpeechPrompterTransport
     private let available: () -> Bool
     private let makeMicrophone: () -> (any SpeechPrompterMicrophone)?
@@ -150,6 +161,7 @@ extension SpeechPrompterTransport {
     private var recognitionDeadline: TimeInterval = 0
     private var bufferedPCM = Data()
     private var lastAudioAt: TimeInterval = 0
+    private var lastVoiceAt: TimeInterval = 0
     private var audioGapOpen = false
     private var lastAudioSequence: Int?
     private var lastSentAt: TimeInterval = -.infinity
@@ -180,7 +192,8 @@ extension SpeechPrompterTransport {
          makeDecoder: (() -> SubtitlePCMDecoder?)? = nil,
          uptime: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
          scheduleTimers: Bool = true) {
-        self.settings = settings; self.transport = transport ?? FeatureSpeechPrompterTransport(features)
+        self.settings = settings; self.defaults = defaults
+        self.transport = transport ?? FeatureSpeechPrompterTransport(features, defaults: defaults)
         self.available = available; self.uptime = uptime; self.scheduleTimers = scheduleTimers
         self.makeMicrophone = makeMicrophone ?? {
             #if COMPANION_DEVICE
@@ -196,7 +209,7 @@ extension SpeechPrompterTransport {
             return nil
             #endif
         }
-        _ = defaults
+        tuning = PrompterSettingsStore.load(defaults: defaults)
     }
     deinit { timer?.invalidate() }
 
@@ -220,23 +233,30 @@ extension SpeechPrompterTransport {
         phase = .preparing; error = nil; status = "正在准备稿件和识别服务"
         documentID = document.id; text = document.text; recognitionText = ""
         lastPersistedAt = now; lastPersistedOffset = document.readingUTF8Offset
-        follower = SpeechScriptFollower(text: text)
+        tuning = PrompterSettingsStore.load(defaults: defaults)
+        follower = SpeechScriptFollower(text: text, configuration: matchingConfiguration)
+        scrollController = SpeechScrollController(text: text, configuration: scrollingConfiguration)
+        scrollController?.reset(toUTF8Offset: document.readingUTF8Offset, now: now)
+        displayedUTF8Offset = scrollController?.displayedUTF8Offset ?? 0
         apply(follower!.assist(toUTF8Offset: document.readingUTF8Offset), sendPosition: false)
         candidateUTF8Offset = nil; microphoneRoute = nil; audioLevel = 0
         deviceAtStart = output == .glasses ? transport.deviceID : nil
         ownedSession = nil; pendingPosition = nil; recentSentPositions = []
-        lastSentAt = -.infinity; lastAudioAt = now; lastAudioSequence = nil; audioGapOpen = false
-        lastPersistedAt = now; lastPersistedOffset = confirmedUTF8Offset
+        lastSentAt = -.infinity; lastAudioAt = now; lastVoiceAt = now
+        lastAudioSequence = nil; audioGapOpen = false
+        lastPersistedAt = now; lastPersistedOffset = displayedUTF8Offset
         retry = CaptionRetryBudget(); retryAt = nil; bufferedPCM = Data()
         sessionOptions = configuration.options; sessionKey = configuration.key
         provider = configuration.provider
         installTransportCallbacks(token: token)
         return Task { [weak self] in
             guard let self else { return }
+            guard self.generation == token, self.active else { return }
             guard !Task.isCancelled else { if self.generation == token { self.stop() }; return }
             do {
                 if output == .glasses {
-                    guard self.transport.prepare(text: self.text, scrollMode: input == .glasses ? 1 : 3,
+                    guard self.transport.prepare(text: self.text, title: document.title,
+                                                 scrollMode: input == .glasses ? 1 : 3,
                                                  initialOffset: self.confirmedUTF8Offset) else {
                         throw PrompterError.message(self.transport.errorMessage ?? "稿件发送失败。")
                     }
@@ -247,6 +267,7 @@ extension SpeechPrompterTransport {
                 if self.sessionOptions.service == .appleLocal {
                     try await AppleLocalCaptionASR.prepare(localeIdentifier: self.sessionOptions.language)
                     guard self.generation == token, self.active else { return }
+                    guard !Task.isCancelled else { self.stop(); return }
                 }
                 #endif
                 self.startRecognizer(token: token)
@@ -281,7 +302,7 @@ extension SpeechPrompterTransport {
                 }
                 self.phase = .listening; self.lastAudioAt = self.now
                 self.status = "正在聆听 · 滑动可辅助定位"
-                self.queuePosition(); self.installTimer()
+                self.installTimer()
             } catch {
                 guard self.generation == token else { return }
                 self.fail(error.localizedDescription)
@@ -336,6 +357,7 @@ extension SpeechPrompterTransport {
         transport.onPositionUnavailable = { [weak self] in
             guard let self, self.generation == token, self.active else { return }
             self.pendingPosition = nil
+            self.scrollController?.hold(now: self.now)
             if let update = self.follower?.resetRecognitionEvidence() { self.apply(update, sendPosition: false) }
             self.status = "滑动位置暂未确认，识别继续；可在手机辅助定位"
         }
@@ -372,7 +394,19 @@ extension SpeechPrompterTransport {
             status = followState == .paused ? "跟随已暂停 · 识别继续" : "收音已恢复 · 等待附近稿件重新匹配"
         }
         let samples = pcm.withUnsafeBytes { Array($0.bindMemory(to: Int16.self)) }
-        audioLevel = min(1, sqrt(samples.reduce(0) { $0 + pow(Double($1) / 32768, 2) } / Double(samples.count)) * 5)
+        let rms = sqrt(samples.reduce(0) { $0 + pow(Double($1) / 32768, 2) } / Double(samples.count))
+        audioLevel = min(1, rms * 5)
+        if rms >= tuning.audioActivityThreshold {
+            if now - lastVoiceAt >= tuning.silenceHoldSeconds {
+                _ = follower?.assist(toUTF8Offset: displayedUTF8Offset)
+                scrollController?.reset(toUTF8Offset: displayedUTF8Offset, now: now)
+            }
+            lastVoiceAt = now
+        }
+        else if now - lastVoiceAt >= tuning.silenceHoldSeconds {
+            scrollController?.hold(now: now)
+            if !pendingPositionIsManual { pendingPosition = nil }
+        }
         if asrReady { provider?.append(pcm) }
         else {
             bufferedPCM.append(pcm)
@@ -387,28 +421,34 @@ extension SpeechPrompterTransport {
         asrReady = false; recognitionGeneration = UUID(); provider?.onFailure = nil; provider?.stop()
         if let update = follower?.resetRecognitionEvidence() { apply(update, sendPosition: false) }
         pendingPosition = nil; retryAt = now + delay
+        scrollController?.hold(now: now)
         status = "识别连接中断，位置保持；正在恢复识别"
     }
 
     func assist(toUTF8Offset offset: Int) {
         guard active, let update = follower?.assist(toUTF8Offset: offset) else { return }
         pendingPosition = nil; apply(update, sendPosition: false)
+        scrollController?.reset(toUTF8Offset: update.confirmedUTF8Offset, now: now, manual: true)
+        displayedUTF8Offset = scrollController?.displayedUTF8Offset ?? update.confirmedUTF8Offset
         queuePosition(manual: true); persistPosition(force: true)
         status = followState == .paused ? "跟随已暂停 · 识别继续" : "已辅助定位 · 继续聆听附近稿件"
     }
     func pauseFollowing() {
         guard active, let update = follower?.pause() else { return }
         pendingPosition = nil; apply(update, sendPosition: false)
+        scrollController?.hold(now: now)
         status = "跟随已暂停 · 识别继续"
         persistPosition(force: true)
     }
     func resumeFollowing() {
-        guard active, let update = follower?.resume() else { return }
+        guard active else { return }
+        _ = follower?.assist(toUTF8Offset: displayedUTF8Offset)
+        scrollController?.reset(toUTF8Offset: displayedUTF8Offset, now: now)
+        guard let update = follower?.resume() else { return }
         apply(update, sendPosition: false)
         status = "继续聆听 · 等待附近稿件重新匹配"
     }
     private func apply(_ update: SpeechFollowUpdate, sendPosition: Bool = true) {
-        let changed = confirmedUTF8Offset != update.confirmedUTF8Offset
         confirmedUTF8Offset = update.confirmedUTF8Offset
         candidateUTF8Offset = update.candidateUTF8Offset
         followState = update.state
@@ -421,26 +461,34 @@ extension SpeechPrompterTransport {
             case .finished: status = "已到稿件末尾 · 识别继续，可滑动回读"
             }
         }
-        if sendPosition, changed {
-            if update.shouldMove { queuePosition() }
-            else { pendingPosition = nil }
+        if sendPosition, update.shouldMove {
+            scrollController?.observe(targetUTF8Offset: update.confirmedUTF8Offset, now: now)
         }
-        if update.state == .uncertain || update.state == .paused { pendingPosition = nil }
+        if update.state == .uncertain || update.state == .paused {
+            if !pendingPositionIsManual { pendingPosition = nil }
+            scrollController?.hold(now: now)
+            if update.state == .uncertain, update.similarity == 0,
+               update.confirmedUTF8Offset > displayedUTF8Offset {
+                // After a real interruption, restart nearby matching from the
+                // visible manuscript rather than its previously heard endpoint.
+                _ = follower?.assist(toUTF8Offset: displayedUTF8Offset)
+                scrollController?.reset(toUTF8Offset: displayedUTF8Offset, now: now)
+            }
+        }
         persistPosition(force: false)
     }
     private func queuePosition(manual: Bool = false) {
         guard output == .glasses, active else { return }
-        let offsets = PrompterViewportMap.lineStarts(text)
-        let line = offsets.lastIndex(where: { $0 <= confirmedUTF8Offset }) ?? 0
-        let page = offsets[max(0, line - 1)]
-        pendingPosition = (page, confirmedUTF8Offset)
+        // Send the same original UTF-8 boundary for both native offsets. The
+        // firmware owns wrapping; phone-estimated line starts must not drive it.
+        pendingPosition = (displayedUTF8Offset, displayedUTF8Offset)
         pendingPositionIsManual = manual
         pumpPosition()
     }
     private func pumpPosition() {
         guard phase == .listening, output == .glasses,
               (followState != .paused || pendingPositionIsManual), let pending = pendingPosition,
-              now - lastSentAt >= 0.5 else { return }
+              now - lastSentAt >= tuning.scrollUpdateIntervalSeconds else { return }
         guard transport.deviceID == deviceAtStart, transport.sessionID == ownedSession,
               transport.prepared, transport.started else { fail("眼镜提词会话已变化；位置保持，请重新开始。"); return }
         sendingPosition = pending
@@ -456,20 +504,22 @@ extension SpeechPrompterTransport {
     private func eyePosition(page: Int, highlight: Int) {
         guard page >= 0, page <= text.utf8.count, highlight >= 0, highlight <= text.utf8.count else { return }
         if sendingPosition.map({ $0.page == page && $0.highlight == highlight }) == true ||
-            recentSentPositions.contains(where: { $0.page == page && $0.highlight == highlight && now - $0.at <= 5 }) {
+            recentSentPositions.contains(where: { $0.page == page && $0.highlight == highlight && now - $0.at <= max(0.3, tuning.scrollUpdateIntervalSeconds * 2) }) {
             return // A programmatic seek echo must not reset recognition evidence.
         }
         pendingPosition = nil
         guard let update = follower?.assist(toUTF8Offset: page) else { return }
+        scrollController?.reset(toUTF8Offset: update.confirmedUTF8Offset, now: now, manual: true)
+        displayedUTF8Offset = scrollController?.displayedUTF8Offset ?? update.confirmedUTF8Offset
         apply(update, sendPosition: false); persistPosition(force: true)
         // The hardware already moved. No seek is sent back for a user swipe.
         status = followState == .paused ? "跟随已暂停 · 识别继续" : "眼镜滑动已辅助定位 · 识别继续"
     }
     private func persistPosition(force: Bool) {
-        guard let documentID, lastPersistedOffset != confirmedUTF8Offset,
+        guard let documentID, lastPersistedOffset != displayedUTF8Offset,
               force || now - lastPersistedAt >= 2 else { return }
-        onPosition?(documentID, confirmedUTF8Offset)
-        lastPersistedOffset = confirmedUTF8Offset; lastPersistedAt = now
+        onPosition?(documentID, displayedUTF8Offset)
+        lastPersistedOffset = displayedUTF8Offset; lastPersistedAt = now
     }
     func stop() { stop(notifyGlasses: true) }
     private func stop(notifyGlasses: Bool) {
@@ -483,21 +533,56 @@ extension SpeechPrompterTransport {
         transport.onPositionUnavailable = nil
         if notifyGlasses, output == .glasses, let ownedSession, transport.sessionID == ownedSession { transport.stop() }
         ownedSession = nil; retryAt = nil; bufferedPCM = Data(); pendingPosition = nil
+        scrollController?.hold(now: now)
         sessionKey = ""; asrReady = false; audioLevel = 0
         status = error == nil ? "演讲已结束，阅读位置已保存" : "跟随已停止，稿件和阅读位置已保留"
     }
     private func fail(_ message: String) { error = message; stop() }
     func tick() {
         guard phase == .listening else { return }
+        reloadTuning()
         if output == .glasses, transport.deviceID != deviceAtStart { fail("眼镜连接中断；已保持阅读位置。"); return }
         if now - lastAudioAt >= 15, !audioGapOpen {
             audioGapOpen = true; pendingPosition = nil; audioLevel = 0
+            scrollController?.hold(now: now)
             if let update = follower?.resetRecognitionEvidence() { apply(update, sendPosition: false) }
             status = "暂未收到音频，位置保持；监听继续，请检查所选麦克风"
         }
         if let retryAt, now >= retryAt { self.retryAt = nil; startRecognizer(token: generation) }
         if !asrReady, retryAt == nil, now >= recognitionDeadline { recognitionFailed(.connection) }
+        if now - lastVoiceAt >= tuning.silenceHoldSeconds {
+            scrollController?.hold(now: now)
+            if !pendingPositionIsManual { pendingPosition = nil }
+        }
+        if followState != .paused, !audioGapOpen {
+            let offset = scrollController?.advance(now: now) ?? displayedUTF8Offset
+            if offset != displayedUTF8Offset {
+                displayedUTF8Offset = offset
+                queuePosition()
+            }
+        }
         pumpPosition(); persistPosition(force: false)
+    }
+    private var matchingConfiguration: SpeechFollowConfiguration {
+        tuning.followConfiguration
+    }
+    private var scrollingConfiguration: SpeechScrollConfiguration {
+        tuning.scrollConfiguration
+    }
+    func reloadTuning() {
+        let latest = PrompterSettingsStore.load(defaults: defaults)
+        guard latest != tuning else { return }
+        tuning = latest
+        guard active else { return }
+        let paused = followState == .paused
+        follower = SpeechScriptFollower(text: text, configuration: matchingConfiguration)
+        _ = follower?.assist(toUTF8Offset: displayedUTF8Offset)
+        if paused { _ = follower?.pause() }
+        scrollController = SpeechScrollController(text: text, configuration: scrollingConfiguration)
+        scrollController?.reset(toUTF8Offset: displayedUTF8Offset, now: now)
+        pendingPosition = nil
+        if let update = follower?.resetRecognitionEvidence() { apply(update, sendPosition: false) }
+        status = paused ? "参数已应用 · 跟随暂停，识别继续" : "参数已应用 · 继续聆听附近稿件"
     }
     private func installTimer() {
         guard scheduleTimers else { return }
@@ -510,29 +595,5 @@ extension SpeechPrompterTransport {
     private enum PrompterError: LocalizedError {
         case message(String)
         var errorDescription: String? { if case .message(let text) = self { return text }; return nil }
-    }
-}
-
-/// Approximate viewport anchors in original UTF-8 bytes. Native typography can
-/// normalize these further; every requested offset remains a grapheme boundary.
-enum PrompterViewportMap {
-    static func lineStarts(_ text: String) -> [Int] {
-        var starts = [0], byteOffset = 0, width = 0
-        for character in text {
-            if character.isNewline {
-                byteOffset += String(character).utf8.count; starts.append(byteOffset); width = 0
-                continue
-            }
-            let wide = character.unicodeScalars.contains {
-                $0.properties.isEmojiPresentation || (0x2E80...0xA4CF).contains($0.value) ||
-                (0xAC00...0xD7A3).contains($0.value) || (0xFF00...0xFF60).contains($0.value)
-            }
-            let nextWidth = wide ? 280 : 100
-            if width + nextWidth > 5600 {
-                starts.append(byteOffset); width = 0
-            }
-            width += nextWidth; byteOffset += String(character).utf8.count
-        }
-        return starts
     }
 }

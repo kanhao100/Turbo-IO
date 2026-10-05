@@ -86,7 +86,7 @@ jobs:
           IPA_VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Info.plist")
           IPA_BUILD=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Info.plist")
           test "$IPA_VERSION" = "0.4.0"
-          test "$IPA_BUILD" = "25"
+          test "$IPA_BUILD" = "26"
           IPA_NAME="TurboIO-iOS26-v${IPA_VERSION}-build${IPA_BUILD}-unsigned.ipa"
           IPA_PATH="$OUTPUT/$IPA_NAME"
 
@@ -121,7 +121,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: prompter-build25-test-screenshots
+          name: prompter-build26-test-screenshots
           path: apps/RayNeoCompanion/build-subtitle-rolling/attachments/
           if-no-files-found: ignore
           retention-days: 7
