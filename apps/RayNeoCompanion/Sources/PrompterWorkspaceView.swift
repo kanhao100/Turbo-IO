@@ -300,7 +300,12 @@ private struct PrompterSessionView: View {
                             dismiss()
                         }.accessibilityIdentifier("prompter-end-session")
                     }
-                    ToolbarItem(placement: .primaryAction) {
+                    ToolbarItemGroup(placement: .primaryAction) {
+                        Button(tuning.tuning.debugMode ? "调试开" : "调试") { tuning.update(\.debugMode, !tuning.tuning.debugMode) }
+                            .font(.caption.weight(.semibold))
+                            .accessibilityLabel(tuning.tuning.debugMode ? "关闭调试" : "打开调试")
+                            .accessibilityValue(tuning.tuning.debugMode ? "1" : "0")
+                            .accessibilityIdentifier("prompter-debug-toggle")
                         Button { settings = true } label: { Image(systemName: "gearshape") }
                             .accessibilityLabel("提词设置").accessibilityIdentifier("prompter-session-settings")
                     }
@@ -407,8 +412,8 @@ private struct PrompterSessionView: View {
                 Button { debugExpanded.toggle() } label: { Image(systemName: debugExpanded ? "chevron.up" : "chevron.down") }
                     .accessibilityLabel(debugExpanded ? "收起调试信息" : "展开调试信息")
             }
-            Text("识别原文\(runtime.lastRecognitionIsFinal ? "（最终）" : "（实时）")：\(runtime.recognitionText.isEmpty ? "等待语音识别" : runtime.recognitionText)")
-                .font(.caption).lineLimit(debugExpanded ? 5 : 2).accessibilityIdentifier("prompter-debug-recognition")
+            Text("识别原文\(runtime.lastRecognitionIsFinal ? "（最终）" : "（实时）")：\(recognitionPreview)")
+                .font(.caption).lineLimit(debugExpanded ? 5 : 2).truncationMode(.head).accessibilityIdentifier("prompter-debug-recognition")
             HStack(alignment: .top) {
                 diagnosticLabel("最近匹配", position: matchedDiagnostic, fallback: "等待匹配")
                     .accessibilityIdentifier("prompter-debug-matched")
@@ -439,6 +444,11 @@ private struct PrompterSessionView: View {
     private func diagnosticLabel(_ title: String, position: SpeechDiagnosticPosition?, fallback: String) -> Text {
         guard let position else { return Text("\(title)：\(fallback)") }
         return Text("\(title)：第 \(position.characterIndex + 1) 字 · \(position.word)")
+    }
+    private var recognitionPreview: String {
+        guard !runtime.recognitionText.isEmpty else { return "等待语音识别" }
+        let limit = debugExpanded ? 400 : 120
+        return runtime.recognitionText.count > limit ? "…" + String(runtime.recognitionText.suffix(limit)) : runtime.recognitionText
     }
     private var rotaryDebugDetails: some View {
         VStack(alignment: .leading, spacing: 3) {

@@ -39,7 +39,7 @@ final class PrompterUITests: XCTestCase {
 
     func testUniformPhoneStartIsVisibleWithoutSpeechRecognitionSetup() {
         let app = launch()
-        let script = (1...18).map { "Line \($0). This speech continues at a fixed pace." }.joined(separator: "\n")
+        let script = "Welcome everyone.\nThank you for listening."
         create("Fixed pace speech", text: script, in: app)
         let uniform = app.buttons["prompter-open-uniform"]
         reveal(uniform, in: app); uniform.tap()
@@ -67,12 +67,25 @@ final class PrompterUITests: XCTestCase {
         let entry = app.buttons["prompter-tuning-entry"]
         reveal(entry, in: app); entry.tap()
         let debug = app.switches["prompter-tuning-debug-mode"]
-        reveal(debug, in: app); debug.tap()
+        reveal(debug, in: app)
+        debug.coordinate(withNormalizedOffset: CGVector(dx: 0.92, dy: 0.5)).tap()
+        let enabled = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "1"), object: debug)
+        XCTAssertEqual(XCTWaiter.wait(for: [enabled], timeout: 3), .completed)
+        app.buttons["prompter-tuning-done"].tap()
+        reveal(entry, in: app); entry.tap()
+        reveal(debug, in: app)
+        XCTAssertEqual(debug.value as? String, "1", "Debug mode remains enabled after reopening its settings")
         app.buttons["prompter-tuning-done"].tap()
         let open = app.buttons["prompter-open-session"]
         reveal(open, in: app); open.tap()
         XCTAssertTrue(app.otherElements["prompter-debug-panel"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["prompter-debug-recognition"].label.contains("等待语音识别"))
+        let debugShortcut = app.buttons["prompter-debug-toggle"]
+        XCTAssertEqual(debugShortcut.label, "关闭调试")
+        debugShortcut.tap()
+        XCTAssertTrue(app.otherElements["prompter-debug-panel"].waitForNonExistence(timeout: 3))
+        debugShortcut.tap()
+        XCTAssertTrue(app.otherElements["prompter-debug-panel"].waitForExistence(timeout: 3))
         XCTAssertFalse(app.buttons["prompter-start-follow"].isEnabled)
         let displayed = app.staticTexts["prompter-debug-displayed"]
         let before = displayed.label
@@ -191,16 +204,20 @@ final class PrompterUITests: XCTestCase {
         for attempt in 0..<16 {
             if element.exists {
                 manuscript = element.identifier.hasPrefix("prompter-manuscript-")
-                if !manuscript && element.isHittable { return }
-                if manuscript {
-                    // Keep the complete card above both keyboard and custom tabs.
+                let isSwitch = element.elementType == .switch
+                if !manuscript && !isSwitch && element.isHittable { return }
+                if manuscript || isSwitch {
+                    // Complete rows must clear native chrome, the keyboard, and
+                    // custom tabs; a partially clipped switch can report hittable.
                     let tab = app.buttons["tab-5"]
                     let keyboard = app.keyboards.firstMatch
-                    var bottom = app.frame.maxY
-                    if tab.exists { bottom = min(bottom, tab.frame.minY) }
+                    let navigation = app.navigationBars.firstMatch
+                    var bottom = isSwitch ? min(app.frame.maxY - 44, container.frame.maxY) : app.frame.maxY
+                    if tab.exists && tab.isHittable { bottom = min(bottom, tab.frame.minY) }
                     if keyboard.exists { bottom = min(bottom, keyboard.frame.minY) }
-                    let viewport = CGRect(x: app.frame.minX, y: app.frame.minY + 60,
-                                          width: app.frame.width, height: max(0, bottom - app.frame.minY - 68))
+                    let top = isSwitch && navigation.exists ? navigation.frame.maxY + 8 : app.frame.minY + 60
+                    let viewport = CGRect(x: app.frame.minX, y: top,
+                                          width: app.frame.width, height: max(0, bottom - top - 8))
                     if element.isHittable && viewport.contains(element.frame) { return }
                     if element.frame.minY < viewport.minY { container.swipeDown() }
                     else { container.swipeUp() }
