@@ -9,6 +9,7 @@ struct PrompterWorkspaceView: View {
     @EnvironmentObject private var runtime: SpeechPrompterRuntime
     @EnvironmentObject private var features: CompanionDeviceFeatures
     @State private var search = ""
+    @FocusState private var searchFocused: Bool
     @State private var editor: ManuscriptEditorRequest?
     @State private var session: PrompterManuscript?
     @State private var importing = false
@@ -43,6 +44,7 @@ struct PrompterWorkspaceView: View {
                 .background(.white, in: RoundedRectangle(cornerRadius: 14)).disabled(occupied)
             SectionLabel(title: "我的稿件", trailing: "\(library.manuscripts.count) 份")
             TextField("搜索标题或内容", text: $search).textFieldStyle(.roundedBorder)
+                .focused($searchFocused).submitLabel(.search).onSubmit { searchFocused = false }
                 .accessibilityIdentifier("prompter-search")
             if visible.isEmpty && !library.manuscripts.isEmpty {
                 Text("没有找到匹配的稿件").font(.subheadline).foregroundStyle(Palette.muted)

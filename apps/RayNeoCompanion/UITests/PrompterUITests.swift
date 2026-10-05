@@ -84,17 +84,20 @@ final class PrompterUITests: XCTestCase {
         create("First speech", text: "This is the first speech.", in: app)
         create("Second speech", text: "This is the second speech.", in: app)
         let search = app.textFields["prompter-search"]
-        reveal(search, in: app); search.tap(); search.typeText("First")
+        reveal(search, in: app); search.tap(); search.typeText("First\n")
+        XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 3))
         let row = manuscript("First speech", in: app)
         reveal(row, in: app); row.press(forDuration: 1)
         app.buttons["复制稿件"].tap()
         reveal(app.staticTexts["prompter-selected-title"], in: app)
         XCTAssertTrue(app.staticTexts["prompter-selected-title"].label.contains("First speech"))
         // Clear search through its keyboard shortcut to show the newly created copy.
-        search.tap(); search.press(forDuration: 1)
+        reveal(search, in: app); search.tap(); search.press(forDuration: 1)
         let selectAll = app.menuItems["Select All"]
         if selectAll.waitForExistence(timeout: 2) { selectAll.tap(); search.typeText(XCUIKeyboardKey.delete.rawValue) }
         else { search.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: 5)) }
+        search.typeText("\n")
+        XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 3))
         let copyTitle = app.staticTexts["prompter-selected-title"].label
         let copy = manuscript(copyTitle, in: app)
         reveal(copy, in: app); copy.press(forDuration: 1); app.buttons["删除"].tap()
@@ -128,23 +131,35 @@ final class PrompterUITests: XCTestCase {
         app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@ AND label == %@", "prompter-manuscript-", title)).firstMatch
     }
     private func reveal(_ element: XCUIElement, in app: XCUIApplication) {
-        if element.identifier.hasPrefix("prompter-manuscript-") {
-            // A row can be reported hittable while its centre is under our custom
-            // tab bar. Bring the whole card above the tab before tapping it.
-            let tab = app.buttons["tab-5"]
-            let bottom = tab.exists ? min(app.frame.maxY, tab.frame.minY) : app.frame.maxY
-            let viewport = CGRect(x: app.frame.minX, y: app.frame.minY + 60,
-                                  width: app.frame.width, height: max(0, bottom - app.frame.minY - 68))
-            for _ in 0..<12 {
-                if element.exists, element.isHittable, viewport.contains(element.frame) { return }
-                if element.exists, element.frame.minY < viewport.minY { app.swipeDown() }
-                else { app.swipeUp() }
+        // Lazy Form controls do not have an accessibility snapshot until they
+        // enter the viewport. Check existence before reading any attributes.
+        let scroll = app.scrollViews.firstMatch
+        let collection = app.collectionViews.firstMatch
+        let container = scroll.exists ? scroll : (collection.exists ? collection : app)
+        var manuscript = false
+        for attempt in 0..<16 {
+            if element.exists {
+                manuscript = element.identifier.hasPrefix("prompter-manuscript-")
+                if !manuscript && element.isHittable { return }
+                if manuscript {
+                    // Keep the complete card above both keyboard and custom tabs.
+                    let tab = app.buttons["tab-5"]
+                    let keyboard = app.keyboards.firstMatch
+                    var bottom = app.frame.maxY
+                    if tab.exists { bottom = min(bottom, tab.frame.minY) }
+                    if keyboard.exists { bottom = min(bottom, keyboard.frame.minY) }
+                    let viewport = CGRect(x: app.frame.minX, y: app.frame.minY + 60,
+                                          width: app.frame.width, height: max(0, bottom - app.frame.minY - 68))
+                    if element.isHittable && viewport.contains(element.frame) { return }
+                    if element.frame.minY < viewport.minY { container.swipeDown() }
+                    else { container.swipeUp() }
+                    continue
+                }
             }
-            XCTFail("Manuscript card could not be brought fully into the visible reader area")
-            return
+            if attempt < 7 { container.swipeUp() }
+            else { container.swipeDown() }
         }
-        for _ in 0..<6 { if element.isHittable { return }; app.swipeUp() }
-        for _ in 0..<8 { if element.isHittable { return }; app.swipeDown() }
+        XCTFail(manuscript ? "Manuscript card could not be brought fully into the visible reader area" : "Requested control could not be brought into view")
     }
     private func capture(_ app: XCUIApplication, _ name: String) {
         let attachment = XCTAttachment(screenshot: app.screenshot())
