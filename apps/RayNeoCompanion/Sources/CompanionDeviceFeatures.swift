@@ -73,6 +73,7 @@ import CryptoKit
             if self.recordingID != nil { self.recordingStatus = device == self.captureDevice ? "连接恢复；等待同一录音状态/数据，不自动宣布补传完成" : "连接中断；原始录音保留，等待同一眼镜恢复" }
             if self.teleprompterID != nil, device != self.teleprompterDevice {
                 self.cancelUniformAssist()
+                self.cancelUniformStartup(); self.resetRotaryState()
                 self.teleprompterControlPending = nil; self.teleprompterControlGeneration = UUID()
                 self.teleprompterTransfer.cancel(); self.teleprompterTransferGeneration = UUID()
                 self.teleprompterTransferTask = nil
@@ -101,7 +102,9 @@ import CryptoKit
             })
         }
         prompterTuningObserver = store.prompterSettings.$tuning.sink { [weak self] tuning in
-            guard let self, !tuning.uniformAssistEnabled,
+            guard let self else { return }
+            self.teleprompterApplyUniformSpeed(tuning.fixedSpeed)
+            guard !tuning.uniformAssistEnabled,
                   self.teleprompterUniformAssist.phase != .idle || self.teleprompterUniformAssist.nativePauseAt != nil ||
                     self.teleprompterUniformExplicitHoldRequested else { return }
             self.teleprompterHoldUniformScrolling()
@@ -493,6 +496,11 @@ import CryptoKit
     @Published private(set) var teleprompterID: String?
     @Published private(set) var teleprompterOffset: Int64 = 0
     @Published private(set) var teleprompterStarted = false
+    @Published private(set) var teleprompterAutoStartPending = false
+    @Published private(set) var teleprompterRotaryRawOffset: Int64?
+    @Published private(set) var teleprompterRotaryAppliedOffset: Int64?
+    @Published private(set) var teleprompterLastPositionKind = "尚无位置回报"
+    private(set) var teleprompterProgressIsManual = false
     @Published private(set) var teleprompterPaused = false
     @Published private(set) var teleprompterControlPending: UInt32?
     @Published private(set) var teleprompterSpeed = 120
@@ -511,7 +519,7 @@ import CryptoKit
     var onTeleprompterFailure: ((String) -> Void)?
     var teleprompterFile: URL?
     var teleprompterDevice: String?
-    var teleprompterPrepared = false
+    @Published private(set) var teleprompterPrepared = false
     var teleprompterSentFile = false
     var teleprompterTransferTask: String?
     private var teleprompterScrollMode = 2
@@ -525,15 +533,21 @@ import CryptoKit
     private var teleprompterUniformAssist = TeleprompterUniformAssistPolicy()
     private var teleprompterUniformExplicitHoldRequested = false
     private var teleprompterProgressQueue = TeleprompterNativeProgressQueue()
+    private var teleprompterUniformStartIntent = TeleprompterUniformStartIntent()
+    private var teleprompterPendingUniformSpeed: Int?
+    private var teleprompterPendingRotaryOffset: Int?
+    private var teleprompterPositionEchoFilter = TeleprompterPositionEchoFilter()
+    var teleprompterIsUniformSession: Bool { teleprompterID != nil && teleprompterScrollMode == 2 }
     var teleprompterCanStart: Bool { voice.ready && teleprompterPrepared && !teleprompterStarted && teleprompterControlPending == nil }
     var teleprompterCanPause: Bool { voice.ready && teleprompterStarted && !teleprompterPaused && teleprompterControlPending == nil }
-    var teleprompterCanResume: Bool { voice.ready && teleprompterStarted && teleprompterPaused && teleprompterControlPending == nil }
+    var teleprompterCanResume: Bool { voice.ready && teleprompterStarted && teleprompterPaused && teleprompterControlPending == nil && teleprompterPendingRotaryOffset == nil }
     var teleprompterCanAdjustSpeed: Bool { voice.ready && teleprompterPrepared && teleprompterControlPending == nil && teleprompterScrollMode == 2 }
 }
 
 extension CompanionDeviceFeatures {
     func prepareTeleprompter(_ text: String, speed: Int, scrollMode: Int = 2, initialOffset: Int = 0,
-                            title: String? = nil, layout: TeleprompterNativeLayout = .default) {
+                            title: String? = nil, layout: TeleprompterNativeLayout = .default,
+                            startWhenReady: Bool = false) {
         perform {
             guard canControl, recordingID == nil, teleprompterID == nil, let device = voice.deviceID else { throw DeviceFeatureError.busy }
             guard scrollMode != 2 || store?.speechPrompter.active != true else { throw DeviceFeatureError.invalidPacket }
@@ -549,6 +563,11 @@ extension CompanionDeviceFeatures {
             teleprompterID = did; teleprompterDevice = device; teleprompterFile = url
             teleprompterOffset = Int64(initialOffset); teleprompterPrepared = false; teleprompterSentFile = false
             teleprompterStarted = false; teleprompterScrollMode = scrollMode
+            teleprompterUniformStartIntent = .init()
+            if startWhenReady, scrollMode == 2 { teleprompterUniformStartIntent.request() }
+            teleprompterAutoStartPending = teleprompterUniformStartIntent.requested
+            teleprompterPendingUniformSpeed = nil
+            resetRotaryState()
             teleprompterPaused = false; teleprompterControlPending = nil; teleprompterSpeed = speed
             teleprompterControlGeneration = UUID(); teleprompterProgressQueue = .init()
             teleprompterProgressGeneration = UUID(); teleprompterInReader = false; teleprompterPositionBlocked = false
@@ -577,7 +596,37 @@ extension CompanionDeviceFeatures {
             }
         }
     }
+    func prepareAndStartUniformTeleprompter(_ text: String, speed: Int, initialOffset: Int = 0,
+                                          title: String? = nil, layout: TeleprompterNativeLayout = .default) {
+        prepareTeleprompter(text, speed: speed, scrollMode: 2, initialOffset: initialOffset,
+                           title: title, layout: layout, startWhenReady: true)
+    }
+    func teleprompterApplyUniformSpeed(_ speed: Int) {
+        guard (60...240).contains(speed), teleprompterIsUniformSession else { return }
+        teleprompterPendingUniformSpeed = speed
+        driveUniformControls()
+    }
+    private func cancelUniformStartup() {
+        teleprompterUniformStartIntent.cancel(); teleprompterAutoStartPending = false
+        teleprompterPendingUniformSpeed = nil
+    }
+    private func driveUniformControls() {
+        guard teleprompterIsUniformSession, teleprompterPrepared, voice.ready,
+              teleprompterControlPending == nil else { return }
+        if let speed = teleprompterPendingUniformSpeed {
+            teleprompterPendingUniformSpeed = nil
+            if !teleprompterStarted { teleprompterSpeed = speed }
+            else if speed != teleprompterSpeed { teleprompterControl(7, speed: speed); return }
+        }
+        if teleprompterUniformStartIntent.consumeIfReady(documentReady: teleprompterPrepared,
+                                                       connected: voice.ready, controlIdle: teleprompterControlPending == nil) {
+            teleprompterAutoStartPending = false
+            teleprompterControl(3)
+        }
+    }
     func teleprompterControl(_ type: UInt32, speed: Int = 120, uniformAssist: Bool = false) {
+        if type == 3 { teleprompterUniformStartIntent.cancel(); teleprompterAutoStartPending = false }
+        if type == 6 { cancelUniformStartup(); resetRotaryState() }
         if !uniformAssist, [4, 5, 6].contains(type) { cancelUniformAssist() }
         perform {
             guard let did = teleprompterID, teleprompterDevice == voice.deviceID,
@@ -601,7 +650,11 @@ extension CompanionDeviceFeatures {
                 guard let document = teleprompterDocument else { throw DeviceFeatureError.noSession }
                 body = try document.settingsCommand(did: did, speed: speed)
             }
-            try send(20,type,body)
+            do { try send(20,type,body) }
+            catch {
+                teleprompterFailed("眼镜提词控制 type\(type) 发送失败，未确认开始；请退出本轮后重试。")
+                throw error
+            }
             if type == 7 { teleprompterSpeed = speed }
             teleprompterControlPending = type
             teleprompterControlGeneration = UUID(); let controlGeneration = teleprompterControlGeneration
@@ -643,7 +696,7 @@ extension CompanionDeviceFeatures {
         teleprompterUniformAssistStatus = "匀速模式会在旋钮回滚后继续向前"
     }
     private func uniformRewind(from previous: Int64, to offset: Int64) {
-        guard teleprompterScrollMode == 2, offset < previous,
+        guard teleprompterScrollMode == 2, offset < previous || teleprompterUniformAssist.holding,
               teleprompterInReader, teleprompterStarted,
               let tuning = store?.prompterSettings.tuning, tuning.uniformAssistEnabled else { return }
         let action = teleprompterUniformAssist.rewind(now: ProcessInfo.processInfo.systemUptime, holdSeconds: tuning.uniformAssistHoldSeconds,
@@ -696,7 +749,7 @@ extension CompanionDeviceFeatures {
             // Never route a progress command into the document-list screen.
             // A missing acknowledgement holds motion while native wheel input
             // and ASR remain available; it does not rebuild the session.
-            guard teleprompterInReader, !teleprompterPositionBlocked else { return true }
+            guard teleprompterInReader, !teleprompterPositionBlocked, teleprompterPendingRotaryOffset == nil else { return true }
             guard let position = teleprompterProgressQueue.enqueue(.init(page: pageOffset, highlight: highlightOffset)) else { return true }
             try sendTeleprompterPosition(position, did: did)
             return true
@@ -712,6 +765,7 @@ extension CompanionDeviceFeatures {
                 throw DeviceFeatureError.invalidPacket
             }
             try send(20, UInt32(message.type), body)
+            teleprompterPositionEchoFilter.record(position, now: ProcessInfo.processInfo.systemUptime)
             teleprompterProgressGeneration = UUID(); let generation = teleprompterProgressGeneration
             DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
                 guard let self, self.teleprompterID == did,
@@ -723,8 +777,37 @@ extension CompanionDeviceFeatures {
                 self.onTeleprompterPositionUnavailable?()
             }
     }
+    private func resetRotaryState() {
+        teleprompterPendingRotaryOffset = nil; teleprompterPositionEchoFilter = .init()
+        teleprompterRotaryRawOffset = nil; teleprompterRotaryAppliedOffset = nil
+        teleprompterLastPositionKind = "尚无位置回报"
+        teleprompterProgressIsManual = false
+    }
+    private func isOwnedPositionEcho(_ position: TeleprompterPositionObserved) -> Bool {
+        teleprompterPositionEchoFilter.matches(page: Int(position.pageOffset), highlight: Int(position.highLightOffset),
+                                              expected: teleprompterProgressQueue.expectedPosition,
+                                              now: ProcessInfo.processInfo.systemUptime,
+                                              echoWindowSeconds: store?.prompterSettings.tuning.rotaryEchoWindowSeconds ?? 0.3)
+    }
+    private func pumpRotaryCorrection() throws {
+        guard let target = teleprompterPendingRotaryOffset, let did = teleprompterID,
+              teleprompterInReader, teleprompterControlPending == nil,
+              !teleprompterProgressQueue.awaitingAcknowledgement else { return }
+        if let position = teleprompterProgressQueue.enqueue(.init(page: target, highlight: target)) {
+            try sendTeleprompterPosition(position, did: did)
+        }
+    }
+    private func notifyTeleprompterAnchor(did: String, offset: Int64, manual: Bool = false) throws {
+        let message = try TeleprompterJSONCodec().encodeAppRequest(.progress(did: did,
+            pageOffset: offset, highLightOffset: offset, autoSync: false))
+        if case .progress(let position) = try TeleprompterJSONCodec().decodeGlassesRequest(type: 8, payload: message.payload) {
+            teleprompterProgressIsManual = manual
+            onTeleprompterProgress?(position)
+        }
+    }
     private func teleprompterFailed(_ message: String) {
         cancelUniformAssist()
+        cancelUniformStartup(); resetRotaryState()
         teleprompterTransfer.cancel(); teleprompterTransferGeneration = UUID()
         if let task = teleprompterTransferTask, teleprompterDevice == voice.deviceID { voice.cancelFile(task) }
         teleprompterTransferTask = nil
@@ -744,6 +827,7 @@ extension CompanionDeviceFeatures {
             guard !teleprompterPrepared else { return }
             teleprompterPrepared = true; teleprompterTransferProgress = 100
             teleprompterStatus = "文件传输和眼镜收稿均已确认，可以开始提词"
+            driveUniformControls()
         case .wait:
             guard !teleprompterPrepared, !teleprompterStarted else { return }
             if teleprompterTransfer.fileCompleteBool {
@@ -820,6 +904,7 @@ extension CompanionDeviceFeatures {
         if wire.type == 1, teleprompterDevice == device,
            DeviceBusinessWire.integer(wire.json, "action") == 1 {
             teleprompterProgressQueue.manualAssist()
+            resetRotaryState()
             cancelUniformAssist()
             teleprompterInReader = false
             teleprompterLastEyeCommand = "文稿列表请求 type1"
@@ -863,11 +948,13 @@ extension CompanionDeviceFeatures {
                 return
             }
             teleprompterStarted = true
+            teleprompterUniformStartIntent.cancel(); teleprompterAutoStartPending = false
             teleprompterInReader = true
             teleprompterPaused = false; teleprompterControlPending = nil
             teleprompterControlGeneration = UUID()
             teleprompterStatus = "眼镜已回应开始提词"
             onTeleprompterControl?(3)
+            driveUniformControls()
             return
         }
         if wire.type == 3, action == 1 {
@@ -875,6 +962,7 @@ extension CompanionDeviceFeatures {
                   let document = teleprompterDocument else { return }
             teleprompterProgressQueue.manualAssist()
             cancelUniformAssist()
+            teleprompterUniformStartIntent.cancel(); teleprompterAutoStartPending = false
             try send(20, 3, document.startResponse(did: did, offset: Int(teleprompterOffset), speed: teleprompterSpeed))
             teleprompterStarted = true; teleprompterPaused = false
             teleprompterInReader = true
@@ -882,11 +970,7 @@ extension CompanionDeviceFeatures {
             teleprompterControlPending = nil; teleprompterControlGeneration = UUID()
             teleprompterStatus = "眼镜请求开始当前稿件，已按原稿模式回应"
             onTeleprompterControl?(3)
-            let anchor = try TeleprompterJSONCodec().encodeAppRequest(.progress(did: did,
-                pageOffset: teleprompterOffset, highLightOffset: teleprompterOffset, autoSync: false))
-            if case .progress(let position) = try TeleprompterJSONCodec().decodeGlassesRequest(type: 8, payload: anchor.payload) {
-                onTeleprompterProgress?(position)
-            }
+            try notifyTeleprompterAnchor(did: did, offset: teleprompterOffset)
             return
         }
         // SettingsUpdate type 7 is a native dial/settings event as well as an
@@ -905,8 +989,11 @@ extension CompanionDeviceFeatures {
                 guard code == 1 else { teleprompterFailed("眼镜未接受提词速度，请退出本轮后重试。"); return }
                 teleprompterControlPending = nil; teleprompterControlGeneration = UUID()
                 teleprompterStatus = "眼镜已确认匀速提词速度 \(teleprompterSpeed)"
-                runUniformAssist(teleprompterUniformAssist.tick(now: ProcessInfo.processInfo.systemUptime))
+                try pumpRotaryCorrection()
+                runUniformAssist(teleprompterUniformAssist.tick(now: ProcessInfo.processInfo.systemUptime,
+                                                              readyToResume: teleprompterCanResume))
                 scheduleUniformAssist()
+                driveUniformControls()
             }
             return
         }
@@ -922,9 +1009,7 @@ extension CompanionDeviceFeatures {
             switch event {
             case .progress(let p):
                 guard teleprompterStarted else { return }
-                teleprompterProgressQueue.manualAssist()
                 teleprompterInReader = true
-                if !teleprompterProgressQueue.awaitingAcknowledgement { teleprompterPositionBlocked = false }
                 guard
                       p.pageOffset >= 0, p.pageOffset <= 48_000,
                       p.highLightOffset >= 0, p.highLightOffset <= 48_000,
@@ -938,11 +1023,43 @@ extension CompanionDeviceFeatures {
                     onTeleprompterPositionUnavailable?()
                     return
                 }
+                teleprompterRotaryRawOffset = p.pageOffset
+                if isOwnedPositionEcho(p) {
+                    teleprompterLastPositionKind = "手机位置回响（含行首归一），未再次放大"
+                    return
+                }
                 let previousOffset = teleprompterOffset
                 teleprompterOffset = p.pageOffset
-                teleprompterStatus = "眼镜滑动辅助定位：UTF-8 偏移 \(p.pageOffset)"
-                onTeleprompterProgress?(p)
-                uniformRewind(from: previousOffset, to: p.pageOffset)
+                let wheelEligible = teleprompterScrollMode != 2 || p.pageOffset < previousOffset ||
+                    (teleprompterPaused && teleprompterControlPending != 5)
+                if wheelEligible {
+                    teleprompterProgressQueue.manualAssist()
+                    let multiplier = store?.prompterSettings.tuning.rotaryStepMultiplier ?? 3
+                    let target = teleprompterDocument?.rotaryTarget(previousOffset: Int(previousOffset),
+                        observedOffset: Int(p.pageOffset), logicalOffset: teleprompterPendingRotaryOffset,
+                        multiplier: multiplier) ?? Int(p.pageOffset)
+                    teleprompterRotaryAppliedOffset = Int64(target)
+                    if target != Int(p.pageOffset) {
+                        teleprompterPendingRotaryOffset = target
+                        teleprompterPositionBlocked = true
+                        teleprompterLastPositionKind = "旋钮辅助 \(multiplier.formatted())×，等待放大位置确认"
+                        teleprompterStatus = "正在应用旋钮滑动幅度；识别继续，等待眼镜确认新位置"
+                        onTeleprompterPositionUnavailable?()
+                        uniformRewind(from: previousOffset, to: p.pageOffset)
+                        try pumpRotaryCorrection()
+                    } else {
+                        if !teleprompterProgressQueue.awaitingAcknowledgement { teleprompterPositionBlocked = false }
+                        teleprompterLastPositionKind = "旋钮辅助原始位置"
+                        teleprompterStatus = "眼镜滑动辅助定位：UTF-8 偏移 \(p.pageOffset)"
+                        teleprompterProgressIsManual = true
+                        onTeleprompterProgress?(p)
+                        uniformRewind(from: previousOffset, to: p.pageOffset)
+                    }
+                } else {
+                    teleprompterLastPositionKind = "原生匀速前进进度，未放大"
+                    teleprompterProgressIsManual = false
+                    onTeleprompterProgress?(p)
+                }
             case .pause(let pause):
                 // Native linear playback may only report its current cursor
                 // in pause.offset. Use a validated byte boundary as the
@@ -979,6 +1096,7 @@ extension CompanionDeviceFeatures {
             guard code == 1 else {
                 if control == .progress {
                     teleprompterProgressQueue = .init(); teleprompterProgressGeneration = UUID()
+                    teleprompterPendingRotaryOffset = nil
                     teleprompterPositionBlocked = true
                     cancelUniformAssist()
                     teleprompterStatus = "眼镜未接受滚动位置 code=\(code ?? -1)；识别继续，请用旋钮辅助定位。"
@@ -990,21 +1108,34 @@ extension CompanionDeviceFeatures {
             }
             teleprompterStatus = "眼镜回应 type\(wire.type) code=1"
             if control == .progress {
-                teleprompterProgressGeneration = UUID(); teleprompterPositionBlocked = false
+                teleprompterProgressGeneration = UUID()
                 let next = teleprompterProgressQueue.acknowledge()
                 if let confirmed = teleprompterProgressQueue.confirmedPosition {
                     teleprompterOffset = Int64(confirmed.page)
+                    if teleprompterPendingRotaryOffset == confirmed.page {
+                        teleprompterPendingRotaryOffset = nil
+                        teleprompterPositionBlocked = false
+                        teleprompterLastPositionKind = "旋钮放大位置已确认"
+                        try notifyTeleprompterAnchor(did: did, offset: Int64(confirmed.page), manual: true)
+                        runUniformAssist(teleprompterUniformAssist.tick(now: ProcessInfo.processInfo.systemUptime,
+                                                                      readyToResume: teleprompterCanResume))
+                        scheduleUniformAssist()
+                    }
                 }
+                if teleprompterPendingRotaryOffset == nil { teleprompterPositionBlocked = false }
                 if let position = next {
                     if teleprompterInReader { try sendTeleprompterPosition(position, did: did) }
                 }
+                try pumpRotaryCorrection()
             } else {
                 guard teleprompterControlPending == wire.type else { return }
                 teleprompterControlPending = nil; teleprompterControlGeneration = UUID()
                 if control == .pause { teleprompterPaused = true; teleprompterProgressQueue.manualAssist() }
                 if control == .resume { teleprompterPaused = false }
                 if control == .pause {
-                    runUniformAssist(teleprompterUniformAssist.pauseAcknowledged(now: ProcessInfo.processInfo.systemUptime))
+                    try pumpRotaryCorrection()
+                    runUniformAssist(teleprompterUniformAssist.pauseAcknowledged(now: ProcessInfo.processInfo.systemUptime,
+                                                                               readyToResume: teleprompterCanResume))
                     scheduleUniformAssist()
                 }
                 if control == .resume {
@@ -1019,11 +1150,14 @@ extension CompanionDeviceFeatures {
                         if action == .none { teleprompterUniformAssistStatus = "匀速滚动已从旋钮辅助的位置继续" }
                     }
                 }
+                try pumpRotaryCorrection()
+                driveUniformControls()
             }
             if control != .progress { onTeleprompterControl?(wire.type) }
         }
         if control == .stop, action == 1 || code == 1 {
             cancelUniformAssist()
+            cancelUniformStartup(); resetRotaryState()
             if let task = teleprompterTransferTask { voice.cancelFile(task); teleprompterTransferTask = nil }
             discardTeleprompterFile()
             teleprompterID = nil; teleprompterPrepared = false; teleprompterStarted = false; teleprompterFile = nil

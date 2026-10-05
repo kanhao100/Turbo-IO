@@ -37,6 +37,7 @@ struct TeleprompterNativeDocument {
     let scrollMode: Int
     let initialOffset: Int
     let boundaries: Set<Int>
+    let graphemeBoundaries: [Int]
     let checksum: String
     let layout: TeleprompterNativeLayout
 
@@ -59,8 +60,11 @@ struct TeleprompterNativeDocument {
             throw DeviceFeatureError.invalidPacket
         }
         var boundaries: Set<Int> = [0]
+        var orderedBoundaries = [0]
         var offset = 0
-        for character in text { offset += String(character).utf8.count; boundaries.insert(offset) }
+        for character in text {
+            offset += String(character).utf8.count; boundaries.insert(offset); orderedBoundaries.append(offset)
+        }
         guard boundaries.contains(initialOffset) else { throw DeviceFeatureError.invalidPacket }
         let data = Data(text.utf8)
         var hash: UInt32 = 2_166_136_261
@@ -70,6 +74,7 @@ struct TeleprompterNativeDocument {
         self.scrollMode = scrollMode
         self.initialOffset = initialOffset
         self.boundaries = boundaries
+        graphemeBoundaries = orderedBoundaries
         self.layout = layout
         checksum = String(format: "%08x", hash)
     }
@@ -106,6 +111,63 @@ struct TeleprompterNativeDocument {
         body["pageOffset"] = offset; body["highLightOffset"] = offset
         return body
     }
+
+    /// Amplify a measured native wheel displacement in original graphemes.
+    /// This does not assume a firmware line width or alter native height gear.
+    func rotaryTarget(previousOffset: Int, observedOffset: Int, logicalOffset: Int? = nil,
+                      multiplier: Double) -> Int? {
+        guard multiplier.isFinite, (1...8).contains(multiplier),
+              let previous = boundaryIndex(previousOffset), let observed = boundaryIndex(observedOffset),
+              let anchor = boundaryIndex(logicalOffset ?? previousOffset) else { return nil }
+        let delta = Int((Double(observed - previous) * multiplier).rounded(.toNearestOrAwayFromZero))
+        let target = min(graphemeBoundaries.count - 1, max(0, anchor + delta))
+        return graphemeBoundaries[target]
+    }
+    private func boundaryIndex(_ offset: Int) -> Int? {
+        var lower = 0; var upper = graphemeBoundaries.count
+        while lower < upper {
+            let middle = (lower + upper) / 2
+            if graphemeBoundaries[middle] < offset { lower = middle + 1 } else { upper = middle }
+        }
+        return lower < graphemeBoundaries.count && graphemeBoundaries[lower] == offset ? lower : nil
+    }
+}
+
+/// The start intent belongs to the transport, independently of a SwiftUI
+/// disclosure or session view. Both transfer layers must complete first.
+struct TeleprompterUniformStartIntent {
+    private(set) var requested = false
+    mutating func request() { requested = true }
+    mutating func cancel() { requested = false }
+    mutating func consumeIfReady(documentReady: Bool, connected: Bool, controlIdle: Bool) -> Bool {
+        guard requested, documentReady, connected, controlIdle else { return false }
+        requested = false
+        return true
+    }
+}
+
+/// Type 8 may be echoed by firmware after accepting a phone position. Keep
+/// exact owned positions briefly so an echo cannot become another wheel step.
+struct TeleprompterPositionEchoFilter {
+    private var recent: [Int: TimeInterval] = [:]
+    mutating func record(_ position: TeleprompterNativeProgressQueue.Position, now: TimeInterval) {
+        guard now.isFinite else { return }
+        recent = recent.filter { now - $0.value <= 2 }
+        if recent.count >= 16, let oldest = recent.min(by: { $0.value < $1.value })?.key {
+            recent.removeValue(forKey: oldest)
+        }
+        recent[position.highlight] = now
+    }
+    func matches(page: Int, highlight: Int, expected: TeleprompterNativeProgressQueue.Position?,
+                 now: TimeInterval, echoWindowSeconds: Double = 0.3) -> Bool {
+        if let expected, expected.page == page, expected.highlight == highlight { return true }
+        // Firmware may normalize pageOffset to a line start while retaining
+        // the command's highlight endpoint. This is a bounded inference;
+        // zero disables the window when a firmware keeps highlight sticky.
+        guard echoWindowSeconds.isFinite, (0...2).contains(echoWindowSeconds), echoWindowSeconds > 0,
+              page <= highlight, let sentAt = recent[highlight] else { return false }
+        return now >= sentAt && now - sentAt <= echoWindowSeconds
+    }
 }
 
 /// Native position acknowledgements do not echo a request ID. Keep one type 8
@@ -117,6 +179,7 @@ struct TeleprompterNativeProgressQueue {
     private(set) var queued: Position?
     private(set) var confirmedPosition: Position?
     private var inFlight: Position?
+    var expectedPosition: Position? { inFlight }
     private var mayConfirmInFlight = false
     mutating func enqueue(_ position: Position) -> Position? {
         if awaitingAcknowledgement { queued = position; return nil }
@@ -174,10 +237,10 @@ struct TeleprompterUniformAssistPolicy {
         cancel()
         if wasRunning, now.isFinite { nativePauseAt = now }
     }
-    mutating func pauseAcknowledged(now: TimeInterval) -> Action {
+    mutating func pauseAcknowledged(now: TimeInterval, readyToResume: Bool = true) -> Action {
         guard phase == .awaitingPause else { return .none }
         phase = .holding
-        return tick(now: now)
+        return tick(now: now, readyToResume: readyToResume)
     }
     mutating func tick(now: TimeInterval, readyToResume: Bool = true) -> Action {
         guard phase == .holding, let resumeAt, now >= resumeAt, readyToResume else { return .none }

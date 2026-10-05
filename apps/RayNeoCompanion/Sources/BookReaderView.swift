@@ -119,6 +119,7 @@ struct UniformReadingText: UIViewRepresentable {
     @Binding var playing: Bool
     @Binding var progress: Double
     let jumpID: UUID, jumpProgress: Double
+    var allowsTrailingScroll = false
     func makeCoordinator() -> Coordinator { Coordinator(self) }
     func makeUIView(context: Context) -> UITextView {
         let view = UITextView(); view.isEditable = false; view.isSelectable = false
@@ -129,17 +130,19 @@ struct UniformReadingText: UIViewRepresentable {
     }
     func updateUIView(_ view: UITextView, context: Context) {
         let c = context.coordinator; c.owner = self
-        let changed = view.text != text || view.font?.pointSize != CGFloat(fontSize)
+        let changed = c.renderedText != text || c.renderedFontSize != fontSize
         if changed {
+            c.renderedText = text; c.renderedFontSize = fontSize
             let style = NSMutableParagraphStyle(); style.lineSpacing = 14
             view.attributedText = NSAttributedString(string: text, attributes: [.font: UIFont.systemFont(ofSize: fontSize, weight: .medium), .foregroundColor: UIColor(Palette.mint), .paragraphStyle: style])
         }
         if c.jumpID != jumpID || changed {
+            let requestedProgress = c.jumpID != jumpID ? jumpProgress : progress
             c.jumpID = jumpID
-            DispatchQueue.main.async { [weak c, weak view] in
-                guard let c, let view, c.jumpID == jumpID else { return }
-                view.layoutIfNeeded()
-                view.setContentOffset(CGPoint(x: 0, y: max(0, view.contentSize.height - view.bounds.height) * jumpProgress), animated: false)
+            c.pendingJumpProgress = requestedProgress
+            DispatchQueue.main.async { [weak c] in
+                guard let c, c.jumpID == jumpID else { return }
+                c.applyPendingJump()
             }
         }
         c.setPlaying(playing)
@@ -150,6 +153,9 @@ struct UniformReadingText: UIViewRepresentable {
         weak var view: UITextView?
         var link: CADisplayLink?
         var jumpID: UUID?
+        var pendingJumpProgress: Double?
+        var renderedText: String?
+        var renderedFontSize: Double?
         var last: CFTimeInterval?
         init(_ owner: UniformReadingText) { self.owner = owner }
         func setPlaying(_ value: Bool) {
@@ -159,8 +165,29 @@ struct UniformReadingText: UIViewRepresentable {
                 self.link = link; link.add(to: .main, forMode: .common)
             } else if !value { link?.invalidate(); link = nil; last = nil }
         }
+        func configureViewport() -> Bool {
+            guard let view, view.bounds.width > 1, view.bounds.height > 1 else { return false }
+            if owner.allowsTrailingScroll {
+                let bottom = max(80, view.bounds.height)
+                if abs(view.textContainerInset.bottom - bottom) > 0.5 {
+                    var inset = view.textContainerInset; inset.bottom = bottom
+                    view.textContainerInset = inset
+                }
+            }
+            view.layoutIfNeeded()
+            return view.contentSize.height > 1
+        }
+        func applyPendingJump() {
+            guard let progress = pendingJumpProgress, let view, configureViewport() else { return }
+            view.setContentOffset(CGPoint(x: 0, y: max(0, view.contentSize.height - view.bounds.height) * progress), animated: false)
+            pendingJumpProgress = nil
+        }
         @objc func tick(_ link: CADisplayLink) {
             guard let view else { setPlaying(false); return }
+            // The first frame can precede text/viewport layout. It must not
+            // mistake an unfinished layout for reaching the manuscript end.
+            guard configureViewport() else { last = link.timestamp; return }
+            applyPendingJump()
             let elapsed = last.map { link.timestamp - $0 } ?? 0; last = link.timestamp
             let maximum = max(0, view.contentSize.height - view.bounds.height)
             let y = ReadingMotion.next(offset: view.contentOffset.y, maximum: maximum, speed: owner.speed, elapsed: elapsed)

@@ -8,10 +8,11 @@ struct PrompterWorkspaceView: View {
     @EnvironmentObject private var library: ManuscriptLibrary
     @EnvironmentObject private var runtime: SpeechPrompterRuntime
     @EnvironmentObject private var features: CompanionDeviceFeatures
+    @EnvironmentObject private var tuning: PrompterSettingsStore
     @State private var search = ""
     @FocusState private var searchFocused: Bool
     @State private var editor: ManuscriptEditorRequest?
-    @State private var session: PrompterManuscript?
+    @State private var session: PrompterSessionRequest?
     @State private var importing = false
     @State private var deleting: PrompterManuscript?
     @State private var showDelete = false
@@ -24,7 +25,7 @@ struct PrompterWorkspaceView: View {
     var body: some View {
         Screen(title: "提词器", eyebrow: "以稿为主 · 语音跟随 · 滑动辅助") {
             Button { tuningPresented = true } label: {
-                Card { FeatureRow(icon: "slider.horizontal.3", title: "提词调试工作台", subtitle: "匹配宽容度 · 滚动速度 · 停顿 · 眼镜排版", status: "调节") }
+                Card { FeatureRow(icon: "slider.horizontal.3", title: "提词设置", subtitle: "提词方式 · 速度 · 旋钮 · 调试", status: "调节") }
             }.buttonStyle(.plain).accessibilityIdentifier("prompter-tuning-entry")
             if let document = library.selected {
                 selectedCard(document)
@@ -77,7 +78,7 @@ struct PrompterWorkspaceView: View {
         }
         .sheet(item: $editor) { ManuscriptEditorView(request: $0) }
         .sheet(isPresented: $tuningPresented) { PrompterSettingsView() }
-        .fullScreenCover(item: $session) { PrompterSessionView(document: $0) }
+        .fullScreenCover(item: $session) { PrompterSessionView(document: $0.document, initialMode: $0.mode) }
         .fileImporter(isPresented: $importing, allowedContentTypes: [.plainText, UTType(filenameExtension: "md") ?? .text]) { result in
             switch result {
             case .success(let url):
@@ -112,13 +113,24 @@ struct PrompterWorkspaceView: View {
                     .font(.caption).foregroundStyle(Palette.green)
             }
             PrimaryButton(title: runtime.active ? "返回演讲" : "打开提词", icon: "play.fill", enabled: !document.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) {
-                session = document
+                session = sessionRequest(document, mode: tuning.tuning.preferredMode)
             }.accessibilityIdentifier("prompter-open-session")
+            Button {
+                session = sessionRequest(document, mode: "uniform")
+            } label: {
+                Label(features.teleprompterIsUniformSession ? "返回匀速提词" : "打开匀速提词", systemImage: "timer")
+                    .font(.subheadline.weight(.semibold)).frame(maxWidth: .infinity, minHeight: 44)
+            }.disabled(runtime.active || document.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .accessibilityIdentifier("prompter-open-uniform")
             if !occupied {
                 Button("编辑当前稿件") { editor = ManuscriptEditorRequest(document: document) }
                     .font(.subheadline).accessibilityIdentifier("prompter-edit-current")
             }
         }
+    }
+    private func sessionRequest(_ document: PrompterManuscript, mode: String) -> PrompterSessionRequest {
+        let effective = runtime.active ? "speech" : (features.teleprompterIsUniformSession ? "uniform" : mode)
+        return PrompterSessionRequest(document: document, mode: effective)
     }
     private func manuscriptRow(_ document: PrompterManuscript) -> some View {
         Button {
@@ -148,6 +160,12 @@ struct PrompterWorkspaceView: View {
                 Button("删除", systemImage: "trash", role: .destructive) { deleting = document; showDelete = true }.disabled(occupied)
             }
     }
+}
+
+private struct PrompterSessionRequest: Identifiable {
+    var id: UUID { document.id }
+    let document: PrompterManuscript
+    let mode: String
 }
 
 private struct ManuscriptEditorRequest: Identifiable {
@@ -225,15 +243,18 @@ private struct PrompterSessionView: View {
     @AppStorage("companion.prompter.output.v1") private var storedOutput = "glasses"
     @AppStorage("companion.prompter.input.v1") private var storedInput = "glasses"
     @AppStorage("companion.prompter.font.v1") private var fontSize = 26.0
-    @State private var mode = "speech"
+    @State private var mode: String
     @State private var offset: Int
     @State private var playing = false
     @State private var uniformProgress: Double
     @State private var jumpProgress: Double
     @State private var jumpID = UUID()
     @State private var settings = false
-    init(document: PrompterManuscript) {
+    @State private var debugExpanded = false
+    @State private var lastUniformSaveAt: TimeInterval = -.infinity
+    init(document: PrompterManuscript, initialMode: String = "speech") {
         self.document = document
+        _mode = State(initialValue: initialMode)
         _offset = State(initialValue: document.readingUTF8Offset)
         let progress = Double(document.readingUTF8Offset) / Double(max(1, document.text.utf8.count))
         _uniformProgress = State(initialValue: progress)
@@ -244,29 +265,32 @@ private struct PrompterSessionView: View {
     private var script: String { runtime.active && runtime.documentID == document.id ? runtime.text : document.text }
     private var followingPaused: Bool { runtime.followState == .paused }
     private var position: Int { runtime.active && runtime.documentID == document.id ? runtime.displayedUTF8Offset : offset }
+    private var displayedDiagnostic: SpeechDiagnosticPosition? {
+        if runtime.active && runtime.documentID == document.id { return runtime.displayedPosition }
+        return SpeechDiagnosticTextMap(text: script).displayedPosition(atUTF8Offset: position)
+    }
+    private var matchedDiagnostic: SpeechDiagnosticPosition? {
+        runtime.active && runtime.documentID == document.id ? runtime.matchedPosition : nil
+    }
     var body: some View {
         NavigationStack {
             VStack(spacing: 12) {
                 Picker("提词方式", selection: $mode) {
-                    Text("语音跟随").tag("speech"); Text("匀速阅读").tag("uniform")
+                    Text("语音跟随").tag("speech"); Text("匀速滚动").tag("uniform")
                 }.pickerStyle(.segmented).disabled(runtime.active || features.teleprompterID != nil)
                     .accessibilityIdentifier("prompter-mode")
                 if mode == "speech" {
                     speechHeader
-                    SpeechPrompterReadingText(text: script, displayedOffset: position, fontSize: fontSize, assist: seek)
+                    if tuning.tuning.debugMode { debugPanel }
+                    SpeechPrompterReadingText(text: script, displayedOffset: position, fontSize: fontSize,
+                        debugMode: tuning.tuning.debugMode, matchedRange: matchedDiagnostic?.wordRangeUTF8,
+                        displayedRange: displayedDiagnostic?.utf8Range, assist: seek)
                         .frame(maxHeight: .infinity).accessibilityIdentifier("prompter-reader")
-                    speechControls
                 } else {
                     uniformReader
                 }
-                HStack {
-                    Text("手机字号").font(.caption)
-                    Slider(value: $fontSize, in: 18...38, step: 1)
-                    Text("\(Int(fontSize))").font(.caption.monospacedDigit())
-                }
-                Text(mode == "speech" ? "滑动或点选稿件只辅助定位，识别继续运行；只有“暂停跟随”会锁住自动推进。" : "拖动暂停匀速滚动；此模式不会开启语音识别。")
-                    .font(.caption2).foregroundStyle(Palette.muted).frame(maxWidth: .infinity, alignment: .leading)
-            }.padding(.horizontal, 18).padding(.bottom, 16).background(Palette.background)
+            }.padding(.horizontal, 18).padding(.bottom, 8).background(Palette.background)
+                .safeAreaInset(edge: .bottom) { sessionFooter }
                 .navigationTitle(document.title).navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) {
@@ -278,16 +302,50 @@ private struct PrompterSessionView: View {
                     }
                     ToolbarItem(placement: .primaryAction) {
                         Button { settings = true } label: { Image(systemName: "gearshape") }
-                            .accessibilityLabel("提词调试工作台").accessibilityIdentifier("prompter-session-settings")
+                            .accessibilityLabel("提词设置").accessibilityIdentifier("prompter-session-settings")
                     }
                 }
                 .interactiveDismissDisabled(runtime.active || features.teleprompterID != nil)
                 .sheet(isPresented: $settings) { PrompterSettingsView() }
-                .onChange(of: mode) { _ in playing = false; saveUniform() }
+                .onAppear {
+                    if runtime.active { mode = "speech" }
+                    else if features.teleprompterIsUniformSession { mode = "uniform"; storedOutput = "glasses" }
+                    tuning.update(\.preferredMode, mode)
+                }
+                .onChange(of: mode) { _ in playing = false; saveUniform(); tuning.update(\.preferredMode, mode) }
                 .onChange(of: playing) { value in if !value { saveUniform() } }
+                .onChange(of: features.teleprompterOffset) { _ in
+                    let now = ProcessInfo.processInfo.systemUptime
+                    if mode == "uniform", output == .glasses,
+                       features.teleprompterIsUniformSession, now - lastUniformSaveAt >= 2 {
+                        saveUniform(); lastUniformSaveAt = now
+                    }
+                }
                 .onChange(of: scenePhase) { value in if value != .active { playing = false; saveUniform() } }
                 .onDisappear { playing = false; saveUniform() }
         }
+    }
+    private var sessionFooter: some View {
+        VStack(spacing: 8) {
+            if mode == "speech" { speechControls }
+            else if output == .glasses {
+                GlassesPrompterControls(text: script, title: document.title, initialOffset: position, compact: true)
+            } else {
+                PrimaryButton(title: playing ? "暂停匀速滚动" : "开始手机匀速滚动", icon: playing ? "pause.fill" : "play.fill") {
+                    if uniformProgress >= 0.999 { uniformProgress = 0; jumpProgress = 0; jumpID = UUID() }
+                    playing.toggle()
+                }.accessibilityIdentifier("prompter-phone-uniform-start")
+            }
+            if mode != "uniform" || output == .phone {
+                HStack {
+                    Text("手机字号").font(.caption)
+                    Slider(value: $fontSize, in: 18...38, step: 1)
+                    Text("\(Int(fontSize))").font(.caption.monospacedDigit())
+                }
+            }
+            Text(mode == "speech" ? "滑动辅助定位，识别继续运行。" : (output == .glasses ? "眼镜按固定速度滚动，无需语音识别。" : "拖动可暂停；匀速模式无需语音识别。"))
+                .font(.caption2).foregroundStyle(Palette.muted).frame(maxWidth: .infinity, alignment: .leading)
+        }.padding(.horizontal, 18).padding(.vertical, 10).background(Palette.background)
     }
     private var speechHeader: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -339,6 +397,56 @@ private struct PrompterSessionView: View {
         case .finished: return "已识别到稿件结尾"
         }
     }
+    private var debugPanel: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack {
+                Label("跟随调试", systemImage: "waveform.path").font(.caption.weight(.semibold))
+                Spacer()
+                Text(String(format: "RMS %.3f · 匹配 %.2f", runtime.audioRMS, runtime.similarity)).font(.caption2.monospacedDigit())
+                    .accessibilityIdentifier("prompter-debug-level")
+                Button { debugExpanded.toggle() } label: { Image(systemName: debugExpanded ? "chevron.up" : "chevron.down") }
+                    .accessibilityLabel(debugExpanded ? "收起调试信息" : "展开调试信息")
+            }
+            Text("识别原文\(runtime.lastRecognitionIsFinal ? "（最终）" : "（实时）")：\(runtime.recognitionText.isEmpty ? "等待语音识别" : runtime.recognitionText)")
+                .font(.caption).lineLimit(debugExpanded ? 5 : 2).accessibilityIdentifier("prompter-debug-recognition")
+            HStack(alignment: .top) {
+                diagnosticLabel("最近匹配", position: matchedDiagnostic, fallback: "等待匹配")
+                    .accessibilityIdentifier("prompter-debug-matched")
+                Spacer()
+                diagnosticLabel("屏幕位置", position: displayedDiagnostic, fallback: "暂无正文")
+                    .accessibilityIdentifier("prompter-debug-displayed")
+            }.font(.caption2)
+            if let marker = matchedDiagnostic ?? displayedDiagnostic {
+                (Text(marker.before).foregroundColor(Palette.muted)
+                    + Text(marker.highlight).foregroundColor(Palette.green).bold()
+                    + Text(marker.after).foregroundColor(Palette.muted))
+                    .font(.caption).lineLimit(2).accessibilityIdentifier("prompter-debug-context")
+            }
+            if debugExpanded {
+                if runtime.followState == .uncertain {
+                diagnosticLabel("待确认位置", position: runtime.candidatePosition, fallback: "无候选位置").font(.caption2)
+                }
+                Text("匹配确认 \(runtime.confirmedUTF8Offset) 字节 · 显示 \(position) 字节")
+                    .font(.caption2.monospacedDigit())
+                Text("黄色为最近匹配词，橙色为屏幕阅读位置；识别匹配表示内容的大致末尾。")
+                    .font(.caption2).foregroundStyle(Palette.muted)
+                if output == .glasses { rotaryDebugDetails }
+            }
+        }.padding(10).background(.white, in: RoundedRectangle(cornerRadius: 12))
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("prompter-debug-panel")
+    }
+    private func diagnosticLabel(_ title: String, position: SpeechDiagnosticPosition?, fallback: String) -> Text {
+        guard let position else { return Text("\(title)：\(fallback)") }
+        return Text("\(title)：第 \(position.characterIndex + 1) 字 · \(position.word)")
+    }
+    private var rotaryDebugDetails: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text("旋钮原始 \(features.teleprompterRotaryRawOffset.map(String.init) ?? "—") → 应用 \(features.teleprompterRotaryAppliedOffset.map(String.init) ?? "—") 字节")
+                .font(.caption2.monospacedDigit())
+            Text(features.teleprompterLastPositionKind).font(.caption2).foregroundStyle(Palette.muted)
+        }.accessibilityIdentifier("prompter-debug-rotary")
+    }
     private var readingProgressLabel: String {
         let total = Double(max(1, script.utf8.count))
         let percent = Int(Double(position) * 100 / total)
@@ -368,22 +476,24 @@ private struct PrompterSessionView: View {
                 ForEach(SpeechPrompterRuntime.Output.allCases, id: \.rawValue) { Text($0.name).tag($0.rawValue) }
             }.pickerStyle(.segmented).disabled(features.teleprompterID != nil)
                 .accessibilityIdentifier("prompter-uniform-output")
+            HStack {
+                Text(output == .glasses ? "眼镜匀速速度" : "手机匀速速度")
+                Slider(value: Binding(get: { output == .glasses ? Double(tuning.tuning.fixedSpeed) : tuning.tuning.phoneSpeed }, set: {
+                    if output == .glasses { tuning.update(\.fixedSpeed, Int($0)) }
+                    else { tuning.update(\.phoneSpeed, $0) }
+                }), in: output == .glasses ? 60...240 : 8...80, step: output == .glasses ? 10 : 2)
+                Text(output == .glasses ? "\(tuning.tuning.fixedSpeed)" : "\(Int(tuning.tuning.phoneSpeed)) 点/秒").monospacedDigit()
+            }.font(.caption)
+            HStack {
+                Text(output == .glasses ? "眼镜匀速提词" : (playing ? "正在匀速滚动" : "等待开始"))
+                Spacer()
+                Text(output == .glasses ? "\(Int(Double(features.teleprompterOffset) / Double(max(1, script.utf8.count)) * 100))%" : "\(Int(uniformProgress * 100))%")
+                    .monospacedDigit().accessibilityIdentifier("prompter-uniform-progress")
+            }.font(.subheadline).foregroundStyle(Palette.green)
+            if tuning.tuning.debugMode && output == .glasses { rotaryDebugDetails }
             UniformReadingText(text: script, fontSize: fontSize, speed: tuning.tuning.phoneSpeed, playing: $playing,
-                progress: $uniformProgress, jumpID: jumpID, jumpProgress: jumpProgress)
+                progress: $uniformProgress, jumpID: jumpID, jumpProgress: jumpProgress, allowsTrailingScroll: true)
                 .clipShape(RoundedRectangle(cornerRadius: 18)).frame(maxHeight: .infinity)
-            if output == .glasses {
-                GlassesPrompterControls(text: script, title: document.title, initialOffset: position).font(.subheadline)
-            } else {
-                PrimaryButton(title: playing ? "暂停滚动" : "开始手机匀速滚动", icon: playing ? "pause.fill" : "play.fill") {
-                    if uniformProgress >= 0.999 { uniformProgress = 0; jumpProgress = 0; jumpID = UUID() }
-                    playing.toggle()
-                }.accessibilityIdentifier("prompter-phone-uniform-start")
-                HStack {
-                    Text("手机速度")
-                    Slider(value: Binding(get: { tuning.tuning.phoneSpeed }, set: { tuning.update(\.phoneSpeed, $0) }), in: 8...80, step: 2)
-                    Text("\(Int(tuning.tuning.phoneSpeed)) 点/秒").monospacedDigit()
-                }.font(.caption)
-            }
         }
         .onChange(of: storedOutput) { _ in playing = false }
     }
@@ -400,7 +510,13 @@ private struct PrompterSessionView: View {
     }
     private func saveUniform() {
         guard mode == "uniform", !runtime.active else { return }
-        let target = validOffset(Int(uniformProgress * Double(document.text.utf8.count)), in: document.text)
+        let target: Int
+        if output == .glasses {
+            guard features.teleprompterIsUniformSession else { return }
+            target = validOffset(Int(features.teleprompterOffset), in: script)
+        } else {
+            target = validOffset(Int(uniformProgress * Double(document.text.utf8.count)), in: document.text)
+        }
         _ = library.savePosition(id: document.id, utf8Offset: target)
     }
     private func validOffset(_ target: Int, in text: String) -> Int {
@@ -439,6 +555,8 @@ private struct PrompterReadingRow: Identifiable {
 /// reading cursor with pixel interpolation instead of replacing whole chunks.
 private struct SpeechPrompterReadingText: UIViewRepresentable {
     let text: String, displayedOffset: Int, fontSize: Double
+    let debugMode: Bool
+    let matchedRange: Range<Int>?, displayedRange: Range<Int>?
     let assist: (Int) -> Void
     func makeCoordinator() -> Coordinator { Coordinator(self) }
     func makeUIView(context: Context) -> UITextView {
@@ -461,6 +579,7 @@ private struct SpeechPrompterReadingText: UIViewRepresentable {
                 .font: UIFont.systemFont(ofSize: fontSize, weight: .medium),
                 .foregroundColor: UIColor(Palette.mint), .paragraphStyle: style])
         }
+        c.applyHighlights(force: changed)
         guard !view.isDragging && !view.isDecelerating else { return }
         DispatchQueue.main.async { [weak c, weak view] in
             guard let c, let view, !view.isDragging, !view.isDecelerating else { return }
@@ -479,6 +598,8 @@ private struct SpeechPrompterReadingText: UIViewRepresentable {
         var initialized = false
         var link: CADisplayLink?
         var last: CFTimeInterval?
+        var highlightedMatchedRange: Range<Int>?, highlightedDisplayedRange: Range<Int>?
+        var highlightedDebugMode = false
         init(_ owner: SpeechPrompterReadingText) { self.owner = owner }
         func rebuildIndex() {
             var byte = 0, utf16 = 0; boundaries = [(0, 0)]
@@ -490,6 +611,34 @@ private struct SpeechPrompterReadingText: UIViewRepresentable {
         }
         func utf16(forByte byte: Int) -> Int { boundaries.last(where: { $0.byte <= byte })?.utf16 ?? 0 }
         func byte(forUTF16 utf16: Int) -> Int { boundaries.last(where: { $0.utf16 <= utf16 })?.byte ?? 0 }
+        func applyHighlights(force: Bool) {
+            let matched = owner.debugMode ? owner.matchedRange : nil
+            let displayed = owner.debugMode ? owner.displayedRange : nil
+            guard let view, force || highlightedDebugMode != owner.debugMode || highlightedMatchedRange != matched || highlightedDisplayedRange != displayed else { return }
+            highlightedDebugMode = owner.debugMode
+            highlightedMatchedRange = matched; highlightedDisplayedRange = displayed
+            let all = NSRange(location: 0, length: view.textStorage.length)
+            view.textStorage.beginEditing()
+            view.textStorage.removeAttribute(.backgroundColor, range: all)
+            view.textStorage.addAttribute(.foregroundColor, value: UIColor(Palette.mint), range: all)
+            if owner.debugMode {
+                highlight(owner.matchedRange, color: UIColor.systemYellow.withAlphaComponent(0.40), in: view)
+                highlight(owner.displayedRange, color: UIColor.systemOrange.withAlphaComponent(0.75), in: view)
+                let displayText: String
+                if let displayed, displayed.lowerBound >= 0, displayed.upperBound <= owner.text.utf8.count {
+                    displayText = String(decoding: Array(owner.text.utf8)[displayed], as: UTF8.self)
+                } else { displayText = "无" }
+                view.accessibilityValue = "调试高亮：屏幕位置 \(displayText)"
+            } else { view.accessibilityValue = nil }
+            view.textStorage.endEditing()
+        }
+        private func highlight(_ bytes: Range<Int>?, color: UIColor, in view: UITextView) {
+            guard let bytes, bytes.lowerBound >= 0, bytes.upperBound <= owner.text.utf8.count else { return }
+            let start = utf16(forByte: bytes.lowerBound), end = utf16(forByte: bytes.upperBound)
+            guard end > start, end <= view.textStorage.length else { return }
+            let range = NSRange(location: start, length: end - start)
+            view.textStorage.addAttributes([.backgroundColor: color, .foregroundColor: UIColor(Palette.ink)], range: range)
+        }
         func updateTarget(immediate: Bool) {
             guard let view, !owner.text.isEmpty, view.layoutManager.numberOfGlyphs > 0 else { return }
             let index = min(max(0, utf16(forByte: owner.displayedOffset)), view.textStorage.length - 1)

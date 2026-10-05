@@ -10,6 +10,48 @@ struct PrompterSettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
+                Section("提词方式") {
+                    Picker("默认方式", selection: Binding(get: { tuning.tuning.preferredMode }, set: { tuning.update(\.preferredMode, $0) })) {
+                        Text("语音跟随").tag("speech")
+                        Text("匀速滚动").tag("uniform")
+                    }.accessibilityIdentifier("prompter-tuning-mode")
+                    Text("匀速滚动直接按设定速度前进，无需配置语音识别。")
+                        .font(.caption).foregroundStyle(Palette.muted)
+                }
+                Section("滚动速度") {
+                    integer("眼镜匀速速度", keyPath: \.fixedSpeed, range: 60...240, step: 10, suffix: "", id: "prompter-tuning-fixed-speed")
+                    number("手机匀速速度", keyPath: \.phoneSpeed, range: 8...80, step: 2, suffix: " 点/秒", id: "prompter-tuning-phone-speed")
+                    number("最高语音跟随速度", keyPath: \.scrollUnitsPerSecond, range: 2...40, step: 1, suffix: " 单位/秒", id: "prompter-tuning-scroll-speed")
+                }
+                Section("旋钮辅助") {
+                    number("旋钮滑动倍率", keyPath: \.rotaryStepMultiplier, range: 1...8, step: 0.5, suffix: " 倍", decimals: 1, id: "prompter-tuning-rotary-multiplier")
+                    Toggle("匀速模式辅助后继续", isOn: Binding(get: { tuning.tuning.uniformAssistEnabled }, set: { tuning.update(\.uniformAssistEnabled, $0) }))
+                        .accessibilityIdentifier("prompter-tuning-uniform-assist")
+                }
+                Section("调试") {
+                    Toggle("显示跟随调试信息", isOn: Binding(get: { tuning.tuning.debugMode }, set: { tuning.update(\.debugMode, $0) }))
+                        .accessibilityIdentifier("prompter-tuning-debug-mode")
+                    Text("在手机演讲页显示识别原文、稿件匹配位置和音量，并标出正在显示的位置。")
+                        .font(.caption).foregroundStyle(Palette.muted)
+                    NavigationLink { advancedSettings } label: { Label("高级设置", systemImage: "slider.horizontal.3") }
+                        .accessibilityIdentifier("prompter-tuning-advanced")
+                    Button("识别服务与语言设置") { recognitionSettings = true }
+                        .disabled(runtime.active).accessibilityIdentifier("prompter-recognition-settings")
+                }
+            }
+            .navigationTitle("提词设置").navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() }.accessibilityIdentifier("prompter-tuning-done") } }
+        }
+        .sheet(isPresented: $recognitionSettings) { SubtitleSettingsView() }
+        .onChange(of: tuning.tuning) { value in
+            runtime.reloadTuning()
+            if !value.uniformAssistEnabled, features.teleprompterUniformAssistHolding {
+                features.teleprompterHoldUniformScrolling()
+            }
+        }
+    }
+    private var advancedSettings: some View {
+        Form {
                 Section {
                     Text("默认采用宽容匹配、连续小步滚动。识别到的内容只提供前进依据，滚动速度限制每次推进；停顿、插话或证据过期时停住。")
                         .font(.subheadline)
@@ -17,10 +59,12 @@ struct PrompterSettingsView: View {
                         .font(.caption).foregroundStyle(Palette.muted)
                 }
                 Section("滚动控制") {
-                    number("最高跟随速度", keyPath: \.scrollUnitsPerSecond, range: 2...40, step: 1, suffix: " 单位/秒", id: "prompter-tuning-scroll-speed")
                     number("滚动更新间隔", keyPath: \.scrollUpdateIntervalSeconds, range: 0.10...1, step: 0.05, suffix: " 秒", decimals: 2, id: "prompter-tuning-scroll-interval")
                     number("手动辅助后等待", keyPath: \.manualAssistHoldSeconds, range: 0...5, step: 0.1, suffix: " 秒", decimals: 1, id: "prompter-tuning-manual-hold")
                     Text("旋钮或手指滑动后，让自动滚动稍等，语音识别继续运行。")
+                        .font(.caption).foregroundStyle(Palette.muted)
+                    number("手机滚动回报过滤时间", keyPath: \.rotaryEchoWindowSeconds, range: 0...2, step: 0.1, suffix: " 秒", decimals: 1, id: "prompter-tuning-rotary-echo-window")
+                    Text("如果固件回报反复触发旋钮放大，可提高；如果旋钮动作被过滤，可减小或设为 0 关闭近期过滤。")
                         .font(.caption).foregroundStyle(Palette.muted)
                     number("停顿后暂停滚动", keyPath: \.silenceHoldSeconds, range: 0.3...6, step: 0.1, suffix: " 秒", decimals: 1, id: "prompter-tuning-silence-hold")
                     number("匹配有效期", keyPath: \.recognitionEvidenceSeconds, range: 0.5...8, step: 0.1, suffix: " 秒", decimals: 1, id: "prompter-tuning-evidence-hold")
@@ -41,9 +85,6 @@ struct PrompterSettingsView: View {
                         .font(.caption).foregroundStyle(Palette.muted)
                 }
                 Section("匀速提词") {
-                    integer("眼镜固定速度", keyPath: \.fixedSpeed, range: 60...240, step: 10, suffix: "", id: "prompter-tuning-fixed-speed")
-                    Toggle("旋钮辅助后自动继续", isOn: Binding(get: { tuning.tuning.uniformAssistEnabled }, set: { tuning.update(\.uniformAssistEnabled, $0) }))
-                        .accessibilityIdentifier("prompter-tuning-uniform-assist")
                     number("旋钮辅助停留时间", keyPath: \.uniformAssistHoldSeconds, range: 0...5, step: 0.1, suffix: " 秒", decimals: 1, id: "prompter-tuning-uniform-hold")
                     number("暂停与旋钮事件关联窗口", keyPath: \.uniformPauseAssociationSeconds, range: 0...2, step: 0.1, suffix: " 秒", decimals: 1, id: "prompter-tuning-uniform-pause-window")
                     Text("部分固件先报暂停、再报回滚。只有在此窗口内收到回滚才作为旋钮辅助继续；单独暂停不会自动恢复。设为 0 可关闭关联判断。")
@@ -51,7 +92,6 @@ struct PrompterSettingsView: View {
                         .disabled(!tuning.tuning.uniformAssistEnabled)
                     Text("匀速前进时，旋钮可回看或调整位置；停留后从新位置继续前进。主动按“暂停滚动”会保持暂停。")
                         .font(.caption).foregroundStyle(Palette.muted)
-                    number("手机固定速度", keyPath: \.phoneSpeed, range: 8...80, step: 2, suffix: " 点/秒", id: "prompter-tuning-phone-speed")
                 }
                 Section("眼镜排版") {
                     Picker("眼镜字号", selection: Binding(get: { tuning.tuning.nativeFontSize }, set: { tuning.update(\.nativeFontSize, $0) })) {
@@ -76,24 +116,17 @@ struct PrompterSettingsView: View {
                     LabeledContent("眼镜界面", value: features.teleprompterInReader ? "稿件阅读页" : "文稿列表或待进入")
                     LabeledContent("眼镜自动推进", value: features.teleprompterPositionBlocked ? "已保持，等待重新辅助定位" : "可继续")
                     LabeledContent("匀速旋钮辅助", value: features.teleprompterUniformAssistStatus)
+                    LabeledContent("旋钮原始位置", value: features.teleprompterRotaryRawOffset.map(String.init) ?? "暂无")
+                    LabeledContent("旋钮应用位置", value: features.teleprompterRotaryAppliedOffset.map(String.init) ?? "暂无")
+                    Text(features.teleprompterLastPositionKind).font(.caption)
                 }
                 Section {
-                    Button("识别服务与语言设置") { recognitionSettings = true }
-                        .disabled(runtime.active).accessibilityIdentifier("prompter-recognition-settings")
                     Button("恢复推荐参数") { tuning.reset() }
                         .accessibilityIdentifier("prompter-tuning-reset")
                 }
             }
-            .navigationTitle("提词调试工作台").navigationBarTitleDisplayMode(.inline)
+            .navigationTitle("高级提词设置").navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() }.accessibilityIdentifier("prompter-tuning-done") } }
-            .sheet(isPresented: $recognitionSettings) { SubtitleSettingsView() }
-            .onChange(of: tuning.tuning) { value in
-                runtime.reloadTuning()
-                if !value.uniformAssistEnabled, features.teleprompterUniformAssistHolding {
-                    features.teleprompterHoldUniformScrolling()
-                }
-            }
-        }
     }
     private func number(_ title: String, keyPath: WritableKeyPath<PrompterTuning, Double>,
                         range: ClosedRange<Double>, step: Double, suffix: String,

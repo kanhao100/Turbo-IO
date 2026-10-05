@@ -6,6 +6,11 @@ final class PrompterUITests: XCTestCase {
     func testDeveloperWorkbenchIsAvailableWithoutManuscriptAndPersistsTuning() {
         let app = launch()
         app.buttons["prompter-tuning-entry"].tap()
+        let uniformAssistance = app.switches["prompter-tuning-uniform-assist"]
+        reveal(uniformAssistance, in: app)
+        XCTAssertTrue(uniformAssistance.exists)
+        let advanced = app.buttons["prompter-tuning-advanced"]
+        reveal(advanced, in: app); advanced.tap()
         let similarity = app.sliders["prompter-tuning-similarity"]
         reveal(similarity, in: app)
         XCTAssertTrue(similarity.exists)
@@ -16,12 +21,11 @@ final class PrompterUITests: XCTestCase {
         app.terminate(); app.launch()
         XCTAssertTrue(app.buttons["prompter-tuning-entry"].waitForExistence(timeout: 5))
         app.buttons["prompter-tuning-entry"].tap()
+        reveal(advanced, in: app); advanced.tap()
         reveal(similarity, in: app)
         XCTAssertEqual(similarity.value as? String, value)
-        let uniformAssistance = app.switches["prompter-tuning-uniform-assist"]
-        reveal(uniformAssistance, in: app)
-        XCTAssertTrue(uniformAssistance.exists)
-        XCTAssertTrue(app.sliders["prompter-tuning-uniform-hold"].exists)
+        let hold = app.sliders["prompter-tuning-uniform-hold"]
+        reveal(hold, in: app); XCTAssertTrue(hold.exists)
         let nativeWidth = app.steppers["prompter-tuning-native-width"]
         reveal(nativeWidth, in: app)
         XCTAssertTrue(nativeWidth.exists)
@@ -31,6 +35,53 @@ final class PrompterUITests: XCTestCase {
         reveal(similarity, in: app)
         XCTAssertNotEqual(similarity.value as? String, value)
         app.buttons["prompter-tuning-done"].tap()
+    }
+
+    func testUniformPhoneStartIsVisibleWithoutSpeechRecognitionSetup() {
+        let app = launch()
+        let script = (1...18).map { "Line \($0). This speech continues at a fixed pace." }.joined(separator: "\n")
+        create("Fixed pace speech", text: script, in: app)
+        let uniform = app.buttons["prompter-open-uniform"]
+        reveal(uniform, in: app); uniform.tap()
+        let output = app.segmentedControls["prompter-uniform-output"]
+        XCTAssertTrue(output.waitForExistence(timeout: 5))
+        output.buttons["手机提词"].tap()
+        let start = app.buttons["prompter-phone-uniform-start"]
+        XCTAssertTrue(start.isHittable)
+        XCTAssertTrue(start.isEnabled, "Fixed pace reading has no ASR credential requirement")
+        XCTAssertFalse(app.buttons["prompter-start-follow"].exists)
+        start.tap()
+        XCTAssertTrue(start.label.contains("暂停匀速滚动"))
+        let progress = app.staticTexts["prompter-uniform-progress"]
+        let moved = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label != %@", "0%"), object: progress)
+        XCTAssertEqual(XCTWaiter.wait(for: [moved], timeout: 6), .completed)
+        capture(app, "prompter-uniform-phone-running")
+        start.tap()
+        XCTAssertTrue(start.label.contains("开始手机匀速滚动"))
+        app.buttons["prompter-end-session"].tap()
+    }
+
+    func testDebugModeShowsOriginalCursorWithoutStartingMicrophone() {
+        let app = launch()
+        create("Debug speech", text: "Welcome everyone to our meeting.\nToday we introduce our project.\nThe next part explains the plan.\nThank you for listening.", in: app)
+        let entry = app.buttons["prompter-tuning-entry"]
+        reveal(entry, in: app); entry.tap()
+        let debug = app.switches["prompter-tuning-debug-mode"]
+        reveal(debug, in: app); debug.tap()
+        app.buttons["prompter-tuning-done"].tap()
+        let open = app.buttons["prompter-open-session"]
+        reveal(open, in: app); open.tap()
+        XCTAssertTrue(app.otherElements["prompter-debug-panel"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["prompter-debug-recognition"].label.contains("等待语音识别"))
+        XCTAssertFalse(app.buttons["prompter-start-follow"].isEnabled)
+        let displayed = app.staticTexts["prompter-debug-displayed"]
+        let before = displayed.label
+        app.buttons["辅助向后"].tap()
+        XCTAssertNotEqual(displayed.label, before)
+        let reader = app.textViews["prompter-reader"]
+        XCTAssertTrue((reader.value as? String)?.contains("调试高亮") == true)
+        capture(app, "prompter-debug-original-cursor")
+        app.buttons["prompter-end-session"].tap()
     }
 
     func testMultipleManuscriptsSelectionAndPositionSurviveRelaunch() {

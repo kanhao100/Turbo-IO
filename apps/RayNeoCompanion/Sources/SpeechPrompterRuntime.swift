@@ -12,6 +12,7 @@ import RayNeoDisplay
     var errorMessage: String? { get }
     var preparationStatus: String { get }
     var positionAvailable: Bool { get }
+    var progressIsManual: Bool { get }
     var onProgress: ((Int, Int) -> Void)? { get set }
     var onControl: ((UInt32) -> Void)? { get set }
     var onAudio: ((Data, Int?) -> Void)? { get set }
@@ -26,6 +27,7 @@ import RayNeoDisplay
 extension SpeechPrompterTransport {
     var preparationStatus: String { "" }
     var positionAvailable: Bool { true }
+    var progressIsManual: Bool { false }
 }
 
 @MainActor protocol SpeechPrompterMicrophone: AnyObject {
@@ -46,6 +48,7 @@ extension SpeechPrompterTransport {
     var errorMessage: String? { features.error }
     var preparationStatus: String { features.teleprompterStatus }
     var positionAvailable: Bool { features.teleprompterInReader && !features.teleprompterPositionBlocked }
+    var progressIsManual: Bool { features.teleprompterProgressIsManual }
     var onProgress: ((Int, Int) -> Void)?
     var onControl: ((UInt32) -> Void)?
     var onAudio: ((Data, Int?) -> Void)?
@@ -132,6 +135,9 @@ extension SpeechPrompterTransport {
     @Published private(set) var followState: SpeechFollowState = .waiting
     @Published private(set) var microphoneRoute: String?
     @Published private(set) var recognitionText = ""
+    @Published private(set) var lastRecognitionIsFinal = false
+    @Published private(set) var similarity = 0.0
+    @Published private(set) var lastMatchedUTF8Offset: Int?
     @Published private(set) var audioLevel = 0.0
     @Published private(set) var audioRMS = 0.0
     @Published private(set) var documentID: UUID?
@@ -139,6 +145,19 @@ extension SpeechPrompterTransport {
     var onPosition: ((UUID, Int) -> Void)?
     var active: Bool { phase != .idle }
     var canStart: Bool { !active && available() && transport.sessionID == nil }
+    var matchedPosition: SpeechDiagnosticPosition? {
+        lastMatchedUTF8Offset.flatMap { diagnosticMap?.matchedPosition(endingAtUTF8Offset: $0) }
+    }
+    var displayedPosition: SpeechDiagnosticPosition? {
+        diagnosticMap?.displayedPosition(atUTF8Offset: displayedUTF8Offset)
+    }
+    var candidatePosition: SpeechDiagnosticPosition? {
+        candidateUTF8Offset.flatMap { diagnosticMap?.matchedPosition(endingAtUTF8Offset: $0) }
+    }
+    var matchedCharacterIndex: Int? { matchedPosition?.characterIndex }
+    var displayedCharacterIndex: Int? { displayedPosition?.characterIndex }
+    var candidateCharacterIndex: Int? { candidatePosition?.characterIndex }
+    private var diagnosticMap: SpeechDiagnosticTextMap?
     private let settings: SubtitleSettingsStore
     private let defaults: UserDefaults
     private var tuning = PrompterTuning()
@@ -237,6 +256,8 @@ extension SpeechPrompterTransport {
         generation = UUID(); let token = generation
         phase = .preparing; error = nil; status = "正在准备稿件和识别服务"
         documentID = document.id; text = document.text; recognitionText = ""
+        diagnosticMap = SpeechDiagnosticTextMap(text: text)
+        lastRecognitionIsFinal = false; similarity = 0; lastMatchedUTF8Offset = nil
         lastPersistedAt = now; lastPersistedOffset = document.readingUTF8Offset
         tuning = PrompterSettingsStore.load(defaults: defaults)
         follower = SpeechScriptFollower(text: text, configuration: matchingConfiguration)
@@ -384,7 +405,14 @@ extension SpeechPrompterTransport {
             guard let self, self.generation == token, self.recognitionGeneration == recognitionToken,
                   self.phase == .listening, !self.audioGapOpen, recognized.utf8.count <= 32_768 else { return }
             self.retry.recognized(); self.recognitionText = recognized
-            if let update = self.follower?.recognize(recognized, final: final) { self.apply(update) }
+            self.lastRecognitionIsFinal = final
+            // A matcher that is already finished returns its previous snapshot.
+            // Keep live ASR visible, but do not present that old endpoint as a
+            // new match of whatever the speaker says after the manuscript.
+            let canMatch = self.followState != .finished && self.followState != .paused
+            if let update = self.follower?.recognize(recognized, final: final) {
+                self.apply(update, fromRecognition: canMatch)
+            }
         }
         provider?.onEndpoint = nil
         provider?.onFailure = { [weak self] failure in
@@ -458,10 +486,18 @@ extension SpeechPrompterTransport {
         apply(update, sendPosition: false)
         status = "继续聆听 · 等待附近稿件重新匹配"
     }
-    private func apply(_ update: SpeechFollowUpdate, sendPosition: Bool = true) {
+    private func apply(_ update: SpeechFollowUpdate, sendPosition: Bool = true, fromRecognition: Bool = false) {
         confirmedUTF8Offset = update.confirmedUTF8Offset
         candidateUTF8Offset = update.candidateUTF8Offset
         followState = update.state
+        if fromRecognition {
+            similarity = update.similarity
+            lastMatchedUTF8Offset = update.similarity > 0 ? update.candidateUTF8Offset : nil
+        } else if update.similarity == 0 {
+            // Manual assistance, explicit pause and a recognition reset remove
+            // the old match marker; listening text remains available separately.
+            similarity = 0; lastMatchedUTF8Offset = nil
+        }
         if phase == .listening {
             switch update.state {
             case .waiting: status = "正在聆听 · 等待匹配当前稿件"
@@ -517,7 +553,8 @@ extension SpeechPrompterTransport {
     }
     private func eyePosition(page: Int, highlight: Int) {
         guard page >= 0, page <= text.utf8.count, highlight >= 0, highlight <= text.utf8.count else { return }
-        if sendingPosition.map({ $0.page == page && $0.highlight == highlight }) == true ||
+        if !transport.progressIsManual,
+           sendingPosition.map({ $0.page == page && $0.highlight == highlight }) == true ||
             recentSentPositions.contains(where: { $0.page == page && $0.highlight == highlight && now - $0.at <= max(0.3, tuning.scrollUpdateIntervalSeconds * 2) }) {
             return // A programmatic seek echo must not reset recognition evidence.
         }
@@ -591,16 +628,20 @@ extension SpeechPrompterTransport {
     func reloadTuning() {
         let latest = PrompterSettingsStore.load(defaults: defaults)
         guard latest != tuning else { return }
+        let matchingChanged = latest.followConfiguration != tuning.followConfiguration
+        let motionChanged = latest.scrollConfiguration != tuning.scrollConfiguration
         tuning = latest
-        guard active else { return }
+        // Debug visibility, native layout, rotary assistance and uniform speed
+        // must not discard the current speech match or its pending smooth motion.
+        guard active, matchingChanged || motionChanged else { return }
         let paused = followState == .paused
-        follower = SpeechScriptFollower(text: text, configuration: matchingConfiguration)
-        _ = follower?.assist(toUTF8Offset: displayedUTF8Offset)
-        if paused { _ = follower?.pause() }
+        let update = matchingChanged
+            ? follower?.reconfigure(matchingConfiguration, atUTF8Offset: displayedUTF8Offset)
+            : follower?.assist(toUTF8Offset: displayedUTF8Offset)
         scrollController = SpeechScrollController(text: text, configuration: scrollingConfiguration)
         scrollController?.reset(toUTF8Offset: displayedUTF8Offset, now: now)
         pendingPosition = nil
-        if let update = follower?.resetRecognitionEvidence() { apply(update, sendPosition: false) }
+        if let update { apply(update, sendPosition: false) }
         status = paused ? "参数已应用 · 跟随暂停，识别继续" : "参数已应用 · 继续聆听附近稿件"
     }
     private func installTimer() {

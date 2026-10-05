@@ -3,6 +3,66 @@ import RayNeoProtocol
 @testable import RayNeoCompanion
 
 final class TeleprompterNativeTests: XCTestCase {
+    func testFeatureOwnedUniformStartIntentWaitsForTransferAndIsConsumedOnce() {
+        var intent = TeleprompterUniformStartIntent()
+        intent.request()
+        XCTAssertFalse(intent.consumeIfReady(documentReady: false, connected: true, controlIdle: true))
+        XCTAssertFalse(intent.consumeIfReady(documentReady: true, connected: false, controlIdle: true))
+        XCTAssertFalse(intent.consumeIfReady(documentReady: true, connected: true, controlIdle: false))
+        XCTAssertTrue(intent.requested)
+        XCTAssertTrue(intent.consumeIfReady(documentReady: true, connected: true, controlIdle: true))
+        XCTAssertFalse(intent.consumeIfReady(documentReady: true, connected: true, controlIdle: true))
+        intent.request(); intent.cancel()
+        XCTAssertFalse(intent.consumeIfReady(documentReady: true, connected: true, controlIdle: true))
+    }
+
+    func testRotaryGainUsesOriginalGraphemesAcrossChineseEmojiAndCombiningLetters() throws {
+        let family = "👨‍👩‍👧‍👦"
+        let text = "A中" + family + "Be\u{301}文Z"
+        let document = try TeleprompterNativeDocument(text: text, speed: 120, scrollMode: 3, initialOffset: 0)
+        let afterA = "A".utf8.count
+        let afterChinese = "A中".utf8.count
+        let afterB = ("A中" + family + "B").utf8.count
+        let afterAccent = ("A中" + family + "Be\u{301}").utf8.count
+        XCTAssertEqual(document.rotaryTarget(previousOffset: afterA, observedOffset: afterChinese, multiplier: 3), afterB)
+        XCTAssertEqual(document.rotaryTarget(previousOffset: afterAccent, observedOffset: afterB, multiplier: 3), afterChinese)
+        XCTAssertEqual(document.rotaryTarget(previousOffset: afterA, observedOffset: afterChinese, multiplier: 1), afterChinese)
+        XCTAssertNil(document.rotaryTarget(previousOffset: afterChinese + 1, observedOffset: afterB, multiplier: 3))
+        XCTAssertNil(document.rotaryTarget(previousOffset: afterA, observedOffset: afterChinese, multiplier: .nan))
+    }
+
+    func testRotaryBurstAccumulatesLatestLogicalTargetAndClampsAtDocumentEnds() throws {
+        let document = try TeleprompterNativeDocument(text: "abcdefgh", speed: 120, scrollMode: 1, initialOffset: 0)
+        let first = try XCTUnwrap(document.rotaryTarget(previousOffset: 0, observedOffset: 1, multiplier: 3))
+        XCTAssertEqual(first, 3)
+        XCTAssertEqual(document.rotaryTarget(previousOffset: 1, observedOffset: 2, logicalOffset: first, multiplier: 3), 6)
+        XCTAssertEqual(document.rotaryTarget(previousOffset: 2, observedOffset: 3, logicalOffset: 6, multiplier: 3), 8)
+        XCTAssertEqual(document.rotaryTarget(previousOffset: 6, observedOffset: 5, logicalOffset: 1, multiplier: 3), 0)
+    }
+
+    func testRotaryEchoFilterIgnoresOwnInFlightAndRecentCorrectionsWithoutSuppressingNewDelta() {
+        var filter = TeleprompterPositionEchoFilter()
+        let position = TeleprompterNativeProgressQueue.Position(page: 12, highlight: 12)
+        filter.record(position, now: 100)
+        XCTAssertTrue(filter.matches(page: 12, highlight: 12, expected: nil, now: 100.1))
+        XCTAssertFalse(filter.matches(page: 13, highlight: 13, expected: position, now: 100.5))
+        XCTAssertFalse(filter.matches(page: 12, highlight: 15, expected: nil, now: 100.5))
+        XCTAssertFalse(filter.matches(page: 12, highlight: 12, expected: nil, now: 102))
+        XCTAssertTrue(filter.matches(page: 12, highlight: 12, expected: position, now: 102))
+    }
+
+    func testNormalizedProgrammaticEchoDoesNotBecomeAnotherRotaryDisplacement() {
+        var filter = TeleprompterPositionEchoFilter()
+        let position = TeleprompterNativeProgressQueue.Position(page: 15, highlight: 15)
+        filter.record(position, now: 200)
+        XCTAssertTrue(filter.matches(page: 12, highlight: 15, expected: position, now: 200.1))
+        XCTAssertFalse(filter.matches(page: 12, highlight: 14, expected: position, now: 200.1))
+        XCTAssertFalse(filter.matches(page: 16, highlight: 15, expected: position, now: 200.1))
+        XCTAssertFalse(filter.matches(page: 12, highlight: 15, expected: position, now: 200.5))
+        XCTAssertFalse(filter.matches(page: 12, highlight: 15, expected: position, now: 200.1, echoWindowSeconds: 0))
+        XCTAssertTrue(filter.matches(page: 12, highlight: 15, expected: position, now: 200.5, echoWindowSeconds: 1))
+    }
+
     func testFileTransportBasenameIsExactlyDocumentIDWithoutExtension() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("TeleprompterOutboxV1")
         let did = "19beee14-4062-486b-b27b-3c48576cbfad"

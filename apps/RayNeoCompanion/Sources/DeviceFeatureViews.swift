@@ -72,67 +72,61 @@ struct GlassesPrompterControls: View {
     let text: String
     var title: String? = nil
     var initialOffset: Int = 0
-    @State private var startWhenReady = false
+    var compact = false
     var body: some View {
         VStack(alignment:.leading,spacing:12) {
-            Text("眼镜提词 · 匀速模式").font(.headline)
-            Text(features.teleprompterStatus).font(.caption).foregroundStyle(Palette.muted)
+            if !compact { Text("眼镜提词 · 匀速模式").font(.headline) }
+            Text(features.teleprompterStatus).font(.caption).foregroundStyle(Palette.muted).lineLimit(compact ? 2 : nil)
             if features.teleprompterUniformAssistHolding {
                 Text(features.teleprompterUniformAssistStatus).font(.caption).foregroundStyle(Palette.green)
                     .accessibilityIdentifier("prompter-glasses-uniform-assist-status")
             }
-            HStack { Text("眼镜固定速度"); Spacer(); Text("\(tuning.tuning.fixedSpeed)").monospacedDigit() }.font(.caption)
-            Slider(value: Binding(get: { Double(tuning.tuning.fixedSpeed) }, set: { tuning.update(\.fixedSpeed, Int($0)) }), in:60...240,step:10)
-                .accessibilityIdentifier("prompter-glasses-fixed-speed")
+            if !compact {
+                HStack { Text("眼镜固定速度"); Spacer(); Text("\(tuning.tuning.fixedSpeed)").monospacedDigit() }.font(.caption)
+                Slider(value: Binding(get: { Double(tuning.tuning.fixedSpeed) }, set: { tuning.update(\.fixedSpeed, Int($0)) }), in:60...240,step:10)
+                    .accessibilityIdentifier("prompter-glasses-fixed-speed")
+            }
             if features.teleprompterID == nil {
-                Button("准备并开始眼镜匀速滚动") {
-                    startWhenReady = true
-                    features.prepareTeleprompter(text, speed: tuning.tuning.fixedSpeed, scrollMode: 2,
+                PrimaryButton(title: "开始眼镜匀速滚动", icon: "play.fill", enabled: voice.ready && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) {
+                    features.prepareAndStartUniformTeleprompter(text, speed: tuning.tuning.fixedSpeed,
                         initialOffset: initialOffset, title: title, layout: tuning.tuning.nativeLayout)
-                    if features.teleprompterID == nil { startWhenReady = false }
-                }.disabled(!voice.ready || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    .accessibilityIdentifier("prompter-glasses-uniform-start")
+                }.accessibilityIdentifier("prompter-glasses-uniform-start")
             } else {
-                HStack {
-                    if !features.teleprompterStarted {
-                        Button(startWhenReady ? "收到稿件后自动开始" : "开始滚动") { features.teleprompterControl(3) }
-                            .disabled(!features.teleprompterCanStart)
-                    } else if features.teleprompterUniformAssistHolding {
-                        Button("保持暂停") { features.teleprompterHoldUniformScrolling() }.disabled(!voice.ready)
+                if !features.teleprompterStarted {
+                    PrimaryButton(title: features.teleprompterAutoStartPending ? "正在传稿 · 完成后开始" : "开始匀速滚动", icon: "play.fill",
+                                  enabled: !features.teleprompterAutoStartPending && features.teleprompterCanStart) { features.teleprompterControl(3) }
+                        .accessibilityIdentifier("prompter-glasses-uniform-start")
+                } else if features.teleprompterUniformAssistHolding {
+                    HStack {
+                        PrimaryButton(title: "保持暂停", icon: "pause.fill", enabled: voice.ready) { features.teleprompterHoldUniformScrolling() }
                             .accessibilityIdentifier("prompter-glasses-uniform-hold")
                         Button("立即继续") { features.teleprompterControl(5) }.disabled(!features.teleprompterCanResume)
-                    } else if features.teleprompterPaused {
-                        Button("继续滚动") { features.teleprompterControl(5) }.disabled(!features.teleprompterCanResume)
-                    } else {
-                        Button("暂停滚动") { features.teleprompterControl(4) }.disabled(!features.teleprompterCanPause)
                     }
-                    Button("退出眼镜提词") { startWhenReady = false; features.teleprompterControl(6) }.disabled(!voice.ready)
+                } else if features.teleprompterPaused {
+                    PrimaryButton(title: "继续匀速滚动", icon: "play.fill", enabled: features.teleprompterCanResume) { features.teleprompterControl(5) }
+                } else {
+                    PrimaryButton(title: "暂停匀速滚动", icon: "pause.fill", enabled: features.teleprompterCanPause) { features.teleprompterControl(4) }
                 }
-                if let _ = features.teleprompterControlPending {
+                if !compact {
+                    Button("退出眼镜提词") { features.teleprompterControl(6) }.disabled(!voice.ready)
+                }
+                if !compact, let _ = features.teleprompterControlPending {
                     Text("等待眼镜确认操作…").font(.caption).foregroundStyle(Palette.muted)
                 }
             }
-            Text(tuning.tuning.uniformAssistEnabled
-                ? "传输完成后自动开始。转动旋钮调整位置，短暂停留后从新位置继续前进；主动暂停会停住。固定速度可实时调整。此模式不使用语音识别，传稿会暂停 AI 待命。"
-                : "传输完成后自动开始。旋钮辅助后的自动继续已关闭。固定速度可实时调整。此模式不使用语音识别，传稿会暂停 AI 待命。")
-                .font(.caption2).foregroundStyle(Palette.muted)
-            if let error = features.teleprompterTransferError { Text(error).font(.caption).foregroundStyle(Palette.amber) }
-        }.padding(16).background(.white,in:RoundedRectangle(cornerRadius:16))
+            if !voice.ready && features.teleprompterID == nil {
+                Text("请先连接眼镜，或切换为手机匀速滚动。") .font(.caption).foregroundStyle(Palette.muted)
+            }
+            if !compact {
+                Text(tuning.tuning.uniformAssistEnabled
+                    ? "转动旋钮调整位置，短暂停留后从新位置继续前进；主动暂停会停住。传稿会暂停 AI 待命。"
+                    : "旋钮辅助后的自动继续已关闭。传稿会暂停 AI 待命。")
+                    .font(.caption2).foregroundStyle(Palette.muted)
+            }
+            if let error = features.teleprompterTransferError { Text(error).font(.caption).foregroundStyle(Palette.amber).lineLimit(compact ? 2 : nil) }
+        }.padding(compact ? 0 : 16).background(compact ? Color.clear : .white, in: RoundedRectangle(cornerRadius:16))
         .onAppear { features.prepare() }
-        .onChange(of: features.teleprompterPrepared) { prepared in
-            if prepared { applySpeedAndStart() }
-        }
-        .onChange(of: features.teleprompterControlPending) { pending in if pending == nil { applySpeedAndStart() } }
-        .onChange(of: features.teleprompterID) { id in if id == nil { startWhenReady = false } }
-        .onChange(of: features.teleprompterTransferError) { error in if error != nil { startWhenReady = false } }
-        .onChange(of: tuning.tuning.fixedSpeed) { _ in applySpeedAndStart() }
-    }
-    private func applySpeedAndStart() {
-        if features.teleprompterCanAdjustSpeed && features.teleprompterSpeed != tuning.tuning.fixedSpeed {
-            features.teleprompterControl(7, speed: tuning.tuning.fixedSpeed)
-        } else if startWhenReady, features.teleprompterCanStart {
-            startWhenReady = false; features.teleprompterControl(3)
-        }
+        .onChange(of: tuning.tuning.fixedSpeed) { value in features.teleprompterApplyUniformSpeed(value) }
     }
 }
 

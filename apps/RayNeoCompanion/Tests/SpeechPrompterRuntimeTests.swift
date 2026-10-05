@@ -4,6 +4,124 @@ import RayNeoCaptions
 @testable import RayNeoCompanion
 
 final class SpeechPrompterRuntimeTests: XCTestCase {
+    @MainActor func testLiveDiagnosticsSeparateApproximateMatchFromActualDisplayCursor() async throws {
+        let f = fixture()
+        defer { f.runtime.stop() }
+        try await XCTUnwrap(f.runtime.start(document: f.document, output: .phone, input: .iPhone)).value
+        XCTAssertNil(f.runtime.matchedPosition)
+        XCTAssertEqual(f.runtime.displayedPosition?.character, "今")
+        f.provider.onText?("今天我们介绍", false)
+        XCTAssertEqual(f.runtime.recognitionText, "今天我们介绍")
+        XCTAssertFalse(f.runtime.lastRecognitionIsFinal)
+        XCTAssertEqual(f.runtime.similarity, 1, accuracy: 0.000_001)
+        XCTAssertEqual(f.runtime.followState, .uncertain)
+        XCTAssertEqual(f.runtime.matchedCharacterIndex, 5)
+        XCTAssertEqual(f.runtime.matchedPosition?.character, "绍")
+        XCTAssertEqual(f.runtime.candidatePosition?.utf8Range, 15..<18)
+        XCTAssertEqual(f.runtime.displayedCharacterIndex, 0)
+        f.provider.onText?(f.firstSentence, true)
+        XCTAssertTrue(f.runtime.lastRecognitionIsFinal)
+        XCTAssertEqual(f.runtime.matchedPosition?.character, "理")
+        XCTAssertEqual(f.runtime.matchedCharacterIndex, f.firstSentence.count - 1)
+        f.clock.now += 0.2; f.runtime.tick()
+        XCTAssertGreaterThan(f.runtime.displayedCharacterIndex ?? 0, 0)
+        XCTAssertLessThan(f.runtime.displayedCharacterIndex ?? 0, f.runtime.matchedCharacterIndex ?? 0)
+        f.runtime.assist(toUTF8Offset: f.secondStart)
+        XCTAssertNil(f.runtime.matchedPosition)
+        XCTAssertNil(f.runtime.candidatePosition)
+        XCTAssertEqual(f.runtime.similarity, 0)
+        XCTAssertEqual(f.runtime.displayedPosition?.character, "随")
+        XCTAssertEqual(f.runtime.recognitionText, f.firstSentence)
+        XCTAssertEqual(f.provider.starts, 1)
+        XCTAssertEqual(f.microphone.stops, 0)
+    }
+
+    @MainActor func testUnrelatedSpeechAndPauseUpdateRawDebugTextWithoutInventingAMatch() async throws {
+        let f = fixture()
+        defer { f.runtime.stop() }
+        try await XCTUnwrap(f.runtime.start(document: f.document, output: .phone, input: .iPhone)).value
+        f.provider.onText?(f.firstSentence, true)
+        XCTAssertNotNil(f.runtime.matchedPosition)
+        f.provider.onText?("请问这个设备大概多少钱", true)
+        XCTAssertNil(f.runtime.matchedPosition)
+        XCTAssertEqual(f.runtime.similarity, 0)
+        f.runtime.pauseFollowing()
+        f.provider.onText?(f.secondSentence, false)
+        XCTAssertEqual(f.runtime.recognitionText, f.secondSentence)
+        XCTAssertFalse(f.runtime.lastRecognitionIsFinal)
+        XCTAssertEqual(f.runtime.followState, .paused)
+        XCTAssertNil(f.runtime.matchedPosition)
+        XCTAssertEqual(f.provider.stops, 0)
+        XCTAssertEqual(f.microphone.stops, 0)
+    }
+
+    @MainActor func testSpeechAfterManuscriptEndIsVisibleWithoutReattributingPreviousMatch() async throws {
+        let f = fixture()
+        defer { f.runtime.stop() }
+        try await XCTUnwrap(f.runtime.start(document: f.document, output: .phone, input: .iPhone)).value
+        f.provider.onText?(f.firstSentence, true)
+        f.provider.onText?(f.secondSentence, true)
+        XCTAssertEqual(f.runtime.followState, .finished)
+        let lastMatch = f.runtime.matchedPosition
+        f.provider.onText?("演讲结束谢谢大家", false)
+        XCTAssertEqual(f.runtime.recognitionText, "演讲结束谢谢大家")
+        XCTAssertFalse(f.runtime.lastRecognitionIsFinal)
+        XCTAssertEqual(f.runtime.matchedPosition, lastMatch)
+        XCTAssertEqual(f.runtime.phase, .listening)
+        XCTAssertEqual(f.provider.starts, 1)
+    }
+
+    @MainActor func testNativeAndDebugOnlyTuningKeepRecognitionEvidenceAndPendingMotion() async throws {
+        let f = fixture()
+        defer { f.runtime.stop() }
+        try await XCTUnwrap(f.runtime.start(document: f.document, output: .phone, input: .iPhone)).value
+        f.provider.onText?(f.firstSentence, true)
+        let confirmed = f.runtime.confirmedUTF8Offset, match = f.runtime.matchedPosition
+        let settings = PrompterSettingsStore(defaults: f.defaults)
+        settings.update(\.debugMode, true)
+        settings.update(\.rotaryStepMultiplier, 5)
+        settings.update(\.nativeFontSize, 24)
+        settings.update(\.fixedSpeed, 180)
+        f.runtime.reloadTuning()
+        XCTAssertEqual(f.runtime.confirmedUTF8Offset, confirmed)
+        XCTAssertEqual(f.runtime.matchedPosition, match)
+        XCTAssertEqual(f.runtime.followState, .following)
+        f.clock.now += 0.2; f.runtime.tick()
+        XCTAssertGreaterThan(f.runtime.displayedUTF8Offset, 0)
+        XCTAssertLessThan(f.runtime.displayedUTF8Offset, confirmed)
+        let shown = f.runtime.displayedUTF8Offset
+        settings.update(\.debugMode, false)
+        f.runtime.reloadTuning()
+        XCTAssertEqual(f.runtime.displayedUTF8Offset, shown)
+        XCTAssertEqual(f.runtime.confirmedUTF8Offset, confirmed)
+        XCTAssertEqual(f.runtime.matchedPosition, match)
+        XCTAssertEqual(f.runtime.followState, .following)
+        f.clock.now += 0.2; f.runtime.tick()
+        XCTAssertGreaterThan(f.runtime.displayedUTF8Offset, shown)
+        XCTAssertEqual(f.provider.starts, 1)
+        XCTAssertEqual(f.provider.stops, 0)
+        XCTAssertEqual(f.microphone.starts, 1)
+        XCTAssertEqual(f.microphone.stops, 0)
+    }
+
+    @MainActor func testChangingMatcherTuningDuringPauseRetainsQueuedSpeechBarrier() async throws {
+        let f = fixture()
+        defer { f.runtime.stop() }
+        try await XCTUnwrap(f.runtime.start(document: f.document, output: .phone, input: .iPhone)).value
+        f.runtime.pauseFollowing()
+        f.provider.onText?(f.firstSentence, true)
+        PrompterSettingsStore(defaults: f.defaults).update(\.minimumSimilarity, 0.65)
+        f.runtime.reloadTuning()
+        XCTAssertEqual(f.runtime.followState, .paused)
+        f.runtime.resumeFollowing()
+        f.provider.onText?(f.firstSentence, true)
+        XCTAssertEqual(f.runtime.confirmedUTF8Offset, 0)
+        f.provider.onText?(f.firstSentence + "随后", true)
+        XCTAssertGreaterThan(f.runtime.confirmedUTF8Offset, 0)
+        XCTAssertEqual(f.provider.starts, 1)
+        XCTAssertEqual(f.microphone.stops, 0)
+    }
+
     @MainActor func testRecognitionCreatesGradualScrollInsteadOfJumpingToSentenceEnd() async throws {
         let f = fixture()
         defer { f.runtime.stop() }
@@ -231,6 +349,34 @@ final class SpeechPrompterRuntimeTests: XCTestCase {
         XCTAssertGreaterThan(f.runtime.confirmedUTF8Offset, confirmed)
         XCTAssertEqual(f.microphone.starts, 1)
         XCTAssertEqual(f.provider.starts, 1)
+    }
+
+    @MainActor func testGenuineWheelReturnToRecentAutomaticPositionStillAssistsWithoutRestartingASR() async throws {
+        let f = fixture()
+        defer { f.runtime.stop() }
+        try await XCTUnwrap(f.runtime.start(document: f.document, output: .glasses, input: .iPhone)).value
+        f.provider.onText?(f.firstSentence, true)
+        f.clock.now += 0.2; f.runtime.tick()
+        let earlier = try XCTUnwrap(f.transport.seeks.last)
+        f.clock.now += 0.2; f.runtime.tick()
+        XCTAssertGreaterThan(f.runtime.displayedUTF8Offset, earlier.page)
+        let seekCount = f.transport.seeks.count
+        // The native adapter distinguishes a wheel correction acknowledgment
+        // from an application seek echo, even at an identical recent offset.
+        f.transport.progressIsManual = true
+        f.transport.onProgress?(earlier.page, earlier.highlight)
+        f.transport.progressIsManual = false
+        XCTAssertEqual(f.runtime.displayedUTF8Offset, earlier.page)
+        XCTAssertEqual(f.runtime.confirmedUTF8Offset, earlier.page)
+        XCTAssertEqual(f.runtime.followState, .waiting)
+        XCTAssertNil(f.runtime.matchedPosition)
+        XCTAssertEqual(f.transport.seeks.count, seekCount)
+        f.microphone.onPCM?(Data(repeating: 1, count: 640))
+        XCTAssertEqual(f.provider.audio.count, 1)
+        XCTAssertEqual(f.provider.starts, 1)
+        XCTAssertEqual(f.provider.stops, 0)
+        XCTAssertEqual(f.microphone.starts, 1)
+        XCTAssertEqual(f.microphone.stops, 0)
     }
 
     @MainActor func testStopRejectsLateProviderMicrophoneAndEyeCallbacks() async throws {
@@ -549,6 +695,7 @@ final class SpeechPrompterRuntimeTests: XCTestCase {
         var deviceID: String? = "synthetic-glasses", ready = true, sessionID: String?
         var prepared = false, started = false, errorMessage: String?
         var preparationStatus = ""
+        var progressIsManual = false
         var onProgress: ((Int, Int) -> Void)?, onControl: ((UInt32) -> Void)?
         var onAudio: ((Data, Int?) -> Void)?, onFailure: ((String) -> Void)?
         var onPositionUnavailable: (() -> Void)?

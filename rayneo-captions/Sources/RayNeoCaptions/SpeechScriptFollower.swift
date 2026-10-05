@@ -57,7 +57,7 @@ public struct SpeechFollowUpdate: Equatable, Sendable {
 /// session; this API can reject identical queued callbacks, not infer their age.
 public struct SpeechScriptFollower: Sendable {
     public let text: String
-    public let configuration: SpeechFollowConfiguration
+    public private(set) var configuration: SpeechFollowConfiguration
     public private(set) var confirmedUTF8Offset: Int = 0
     public private(set) var state: SpeechFollowState
 
@@ -203,6 +203,16 @@ public struct SpeechScriptFollower: Sendable {
         clearEvidence()
         state = wasPaused ? .paused : (confirmedUnit == source.count ? .finished : .waiting)
         return snapshot(shouldMove: previous != confirmedUTF8Offset)
+    }
+
+    /// Live tuning keeps the recognizer and the recent-input fingerprints.
+    /// Rebuilding the matcher would forget speech received while paused and
+    /// could treat an already queued callback as fresh evidence after resuming.
+    @discardableResult
+    public mutating func reconfigure(_ configuration: SpeechFollowConfiguration,
+                                    atUTF8Offset offset: Int) -> SpeechFollowUpdate {
+        self.configuration = configuration.normalized
+        return assist(toUTF8Offset: offset)
     }
 
     @discardableResult

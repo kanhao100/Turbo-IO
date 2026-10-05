@@ -280,6 +280,24 @@ final class SpeechScriptFollowerTests: XCTestCase {
         XCTAssertEqual(follower.resetRecognitionEvidence().state, .paused)
     }
 
+    func testLiveReconfigurationPreservesPauseAndQueuedRecognitionFingerprints() {
+        let first = "今天我们介绍产品的工作原理"
+        let next = "随后讨论具体应用以及实施方法"
+        var follower = SpeechScriptFollower(text: first + "。" + next + "。")
+        follower.pause()
+        XCTAssertFalse(follower.recognize(first, final: true).shouldMove)
+        var configuration = follower.configuration
+        configuration.minimumSimilarity = 0.6
+        configuration.requiredStableUpdates = 1
+        let tuned = follower.reconfigure(configuration, atUTF8Offset: 0)
+        XCTAssertEqual(tuned.state, .paused)
+        XCTAssertEqual(follower.configuration.minimumSimilarity, 0.6)
+        follower.resume()
+        XCTAssertFalse(follower.recognize(first, final: true).shouldMove)
+        XCTAssertEqual(follower.confirmedUTF8Offset, 0)
+        XCTAssertTrue(follower.recognize(first + "随后", final: true).shouldMove)
+    }
+
     func testSourceUnicodeOffsetsStayOnOriginalGraphemeBoundaries() {
         let prefix = "👨‍👩‍👧‍👦 Ｃａｆé e\u{301} "
         let script = prefix + "介绍新的产品工作原理。"

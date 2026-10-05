@@ -4,6 +4,10 @@ import RayNeoCaptions
 
 /// Product tuning is independent of recognition-provider credentials and the manuscript.
 struct PrompterTuning: Codable, Equatable {
+    var preferredMode = "speech"
+    var debugMode = false
+    var rotaryStepMultiplier = 3.0
+    var rotaryEchoWindowSeconds = 0.3
     var minimumSimilarity = 0.60
     var minMatchedUnits = 4
     var requiredStableUpdates = 1
@@ -44,6 +48,9 @@ struct PrompterTuning: Codable, Equatable {
     }
     var normalized: Self {
         var result = self
+        result.preferredMode = ["speech", "uniform"].contains(preferredMode) ? preferredMode : "speech"
+        result.rotaryStepMultiplier = finite(rotaryStepMultiplier, range: 1...8, fallback: 3)
+        result.rotaryEchoWindowSeconds = finite(rotaryEchoWindowSeconds, range: 0...2, fallback: 0.3)
         let follow = followConfiguration.normalized
         result.minimumSimilarity = follow.minimumSimilarity
         result.minMatchedUnits = follow.minMatchedUnits
