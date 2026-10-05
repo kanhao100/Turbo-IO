@@ -3,6 +3,17 @@ import RayNeoProtocol
 @testable import RayNeoCompanion
 
 final class TeleprompterNativeTests: XCTestCase {
+    func testFileTransportBasenameIsExactlyDocumentIDWithoutExtension() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("TeleprompterOutboxV1")
+        let did = "19beee14-4062-486b-b27b-3c48576cbfad"
+        let file = try TeleprompterNativeDocument.fileURL(directory: directory, did: did)
+        XCTAssertEqual(file.lastPathComponent, did)
+        XCTAssertTrue(file.pathExtension.isEmpty)
+        XCTAssertEqual(file.deletingLastPathComponent().path, directory.path)
+        for invalid in ["", "../稿件", "id.txt", "id/name", "id\\name"] {
+            XCTAssertThrowsError(try TeleprompterNativeDocument.fileURL(directory: directory, did: invalid))
+        }
+    }
     func testPrepareAndStartPreserveSpeechModeBytesAndInitialPosition() throws {
         let text = "第一段。\nSecond paragraph."
         let offset = "第一段。\n".utf8.count

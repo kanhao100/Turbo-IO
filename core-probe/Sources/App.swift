@@ -32,6 +32,7 @@ final class ProbeController: UIViewController, CBCentralManagerDelegate, StreamD
     private var renderPending = false
     private var modelCatalog: [String: Any]?
     private var messageReceiver: CoreMessageReceiver?
+    private var fileShareReceiver: CoreFileShareReceiver?
     private let voiceProbe = VoiceHandshakeProbe()
     private var standbyTimer: Timer?
     private var standbyButton: UIButton?
@@ -61,6 +62,7 @@ final class ProbeController: UIViewController, CBCentralManagerDelegate, StreamD
     var companionSubtitleLoss: (() -> Void)?
     var companionSubtitleSendError: ((String, Data, Int, String) -> Void)?
     var companionTeleprompterSendError: ((String, Data, Int, String) -> Void)?
+    var companionFileShareEvent: ((String, String, Int, Int?, String?, String?) -> Void)?
     private(set) var companionSubtitleOwnsDisplay = false
     func companionOwnDisplayForSubtitles(_ owns: Bool) {
         if owns { companionStop(); voiceProbe.stopDisplayTest() }
@@ -436,6 +438,15 @@ final class ProbeController: UIViewController, CBCentralManagerDelegate, StreamD
         guard RNProbeMessageImageMatches() else { log("SDK 版本不匹配，拒绝加载"); return }
         log("SDK version: \(coreVersion() ?? "nil")")
         core = coreShared()
+        if fileShareReceiver == nil {
+            let receiver = CoreFileShareReceiver()
+            #if COMPANION_DEVICE
+            receiver.onEvent = { [weak self] in self?.companionFileShareEvent?($0, $1, $2, $3, $4, $5) }
+            #endif
+            fileShareReceiver = receiver
+            core?.addFileShareDelegate(receiver)
+            log("本 App 原生文件传输回调已注册（不记录稿件、文件路径或原始错误）")
+        }
         if messageReceiver == nil {
             let receiver = CoreMessageReceiver()
             receiver.onMetadata = { [weak self] in self?.log($0) }

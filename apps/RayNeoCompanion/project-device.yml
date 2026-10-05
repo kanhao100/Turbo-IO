@@ -57,7 +57,7 @@ targets:
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
         TARGETED_DEVICE_FAMILY: "1,2"
         MARKETING_VERSION: "0.4.0"
-        CURRENT_PROJECT_VERSION: "24"
+        CURRENT_PROJECT_VERSION: "25"
     info:
       path: Generated/Companion-Info.plist
       properties:
@@ -65,14 +65,14 @@ targets:
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         NSRemindersUsageDescription: 读取你选择的系统提醒事项并复制为Turbo IO本机待办。不会修改或删除系统提醒事项。
         NSRemindersFullAccessUsageDescription: 读取你选择的系统提醒事项并复制为Turbo IO本机待办。虽然系统授权为完全访问，Turbo IO仅执行读取。
-        NSMicrophoneUsageDescription: 在你选择 iPhone 或系统麦克风时采集语音并生成实时字幕。
+        NSMicrophoneUsageDescription: 采集你选择的麦克风声音，用于实时字幕和演讲中的语音跟随。
         CFBundleDocumentTypes:
           - CFBundleTypeName: EPUB and Text Books
             CFBundleTypeRole: Viewer
             LSHandlerRank: Alternate
             LSItemContentTypes: [org.idpf.epub-container, public.plain-text]
         LSSupportsOpeningDocumentsInPlace: true
-        NSLocalNetworkUsageDescription: 连接你指定的电脑Codex桥接服务，发送任务并获取结果。
+        NSLocalNetworkUsageDescription: 连接眼镜并传输提词稿，或连接你指定的电脑桥接服务。
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
   RayNeoCompanionUITests:
@@ -147,17 +147,17 @@ targets:
         LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/Frameworks"
         TARGETED_DEVICE_FAMILY: "1"
         MARKETING_VERSION: "0.4.0"
-        CURRENT_PROJECT_VERSION: "24"
+        CURRENT_PROJECT_VERSION: "25"
     info:
       path: Generated/CompanionDevice-Info.plist
       properties:
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         CFBundleDisplayName: Turbo IO
-        NSLocalNetworkUsageDescription: 连接你指定的电脑Codex桥接服务，发送任务并获取结果。
+        NSLocalNetworkUsageDescription: 连接眼镜并传输提词稿，或连接你指定的电脑桥接服务。
         NSRemindersUsageDescription: 读取你选择的系统提醒事项并复制为Turbo IO本机待办。不会修改或删除系统提醒事项。
         NSRemindersFullAccessUsageDescription: 读取你选择的系统提醒事项并复制为Turbo IO本机待办。虽然系统授权为完全访问，Turbo IO仅执行读取。
-        NSMicrophoneUsageDescription: 在你选择 iPhone 或系统麦克风时采集语音并生成实时字幕。
+        NSMicrophoneUsageDescription: 采集你选择的麦克风声音，用于实时字幕和演讲中的语音跟随。
         UILaunchScreen: {}
         NSBluetoothAlwaysUsageDescription: 连接你自己的眼镜，接收唤醒和语音并发送回答。
         NSBluetoothPeripheralUsageDescription: 连接你自己的 RayNeo 眼镜。

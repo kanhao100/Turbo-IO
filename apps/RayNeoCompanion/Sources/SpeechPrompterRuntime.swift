@@ -10,6 +10,7 @@ import RayNeoDisplay
     var prepared: Bool { get }
     var started: Bool { get }
     var errorMessage: String? { get }
+    var preparationStatus: String { get }
     var onProgress: ((Int, Int) -> Void)? { get set }
     var onControl: ((UInt32) -> Void)? { get set }
     var onAudio: ((Data, Int?) -> Void)? { get set }
@@ -19,6 +20,10 @@ import RayNeoDisplay
     func start() -> Bool
     func seek(page: Int, highlight: Int) -> Bool
     func stop()
+}
+
+extension SpeechPrompterTransport {
+    var preparationStatus: String { "" }
 }
 
 @MainActor protocol SpeechPrompterMicrophone: AnyObject {
@@ -36,6 +41,7 @@ import RayNeoDisplay
     var prepared: Bool { features.teleprompterPrepared }
     var started: Bool { features.teleprompterStarted }
     var errorMessage: String? { features.error }
+    var preparationStatus: String { features.teleprompterStatus }
     var onProgress: ((Int, Int) -> Void)?
     var onControl: ((UInt32) -> Void)?
     var onAudio: ((Data, Int?) -> Void)?
@@ -235,7 +241,7 @@ import RayNeoDisplay
                         throw PrompterError.message(self.transport.errorMessage ?? "稿件发送失败。")
                     }
                     self.ownedSession = self.transport.sessionID
-                    guard await self.waitFor(token: token, seconds: 45, condition: { self.transport.prepared }) else { return }
+                    guard await self.waitFor(token: token, seconds: 150, condition: { self.transport.prepared }) else { return }
                 }
                 #if COMPANION_DEVICE
                 if self.sessionOptions.service == .appleLocal {
@@ -286,6 +292,9 @@ import RayNeoDisplay
     private func waitFor(token: UUID, seconds: TimeInterval, condition: () -> Bool) async -> Bool {
         let deadline = now + seconds
         while generation == token, active, !condition(), now < deadline, !Task.isCancelled {
+            if output == .glasses, !transport.prepared, !transport.preparationStatus.isEmpty {
+                status = transport.preparationStatus
+            }
             if let retryAt, now >= retryAt { self.retryAt = nil; startRecognizer(token: token) }
             do { try await Task.sleep(nanoseconds: 100_000_000) } catch { break }
         }

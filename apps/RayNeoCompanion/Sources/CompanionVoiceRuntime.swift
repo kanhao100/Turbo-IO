@@ -23,6 +23,7 @@ import Combine
     var onSubtitleLoss: (() -> Void)?
     var onSubtitleSendError: ((String, Data, Int, String) -> Void)?
     var onTeleprompterSendError: ((String, Data, Int, String) -> Void)?
+    var onFileShareEvent: ((String, String, Int, Int?, String?, String?) -> Void)?
     @Published private(set) var subtitleOwnsDisplay = false
     var voiceEnabled: Bool { enabled }
     func ownDisplayForSubtitles(_ owns: Bool) {
@@ -113,6 +114,7 @@ import Combine
         controller.companionSubtitleLoss = { [weak self] in self?.onSubtitleLoss?() }
         controller.companionSubtitleSendError = { [weak self] in self?.onSubtitleSendError?($0, $1, $2, $3) }
         controller.companionTeleprompterSendError = { [weak self] in self?.onTeleprompterSendError?($0, $1, $2, $3) }
+        controller.companionFileShareEvent = { [weak self] in self?.onFileShareEvent?($0, $1, $2, $3, $4, $5) }
         controller.companionLog = { [weak self] line in self?.latestEvent = String(line.prefix(200)) }
         controller.companionTranscript = { [weak self] id, text, final in
             guard let self, !text.isEmpty else { return }

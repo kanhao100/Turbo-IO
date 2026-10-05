@@ -26,6 +26,7 @@ run('xcodebuild', [
   '-only-testing:RayNeoCompanionTests/SpeechPrompterRuntimeTests',
   '-only-testing:RayNeoCompanionTests/LocalBoundaryTests',
   '-only-testing:RayNeoCompanionTests/TeleprompterNativeTests',
+  '-only-testing:RayNeoCompanionTests/TeleprompterTransferPolicyTests',
   '-only-testing:RayNeoCompanionUITests/PrompterUITests',
   '-parallel-testing-enabled', 'NO',
   '-derivedDataPath', 'apps/RayNeoCompanion/build-subtitle-rolling',

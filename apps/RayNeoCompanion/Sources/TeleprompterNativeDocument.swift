@@ -16,6 +16,17 @@ struct TeleprompterNativeDocument {
     let boundaries: Set<Int>
     let checksum: String
 
+    /// The file transport exposes the basename to firmware. It must be the
+    /// document ID itself, as in the verified official-addon transfer path.
+    static func fileURL(directory: URL, did: String) throws -> URL {
+        guard !did.isEmpty, did.utf8.count <= 128,
+              did.utf8.allSatisfy({ (48...57).contains($0) || (65...90).contains($0) ||
+                  (97...122).contains($0) || $0 == 45 || $0 == 95 }) else {
+            throw DeviceFeatureError.invalidPacket
+        }
+        return directory.appendingPathComponent(did, isDirectory: false)
+    }
+
     init(text: String, speed: Int, scrollMode: Int, initialOffset: Int) throws {
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               text.count <= 12_000, text.utf8.count <= 48_000,

@@ -52,6 +52,10 @@ import CryptoKit
         voice.onTeleprompterSendError = { [weak self] device, packet, code, _ in
             self?.teleprompterTransportFailed(device: device, packet: packet, code: code)
         }
+        voice.onFileShareEvent = { [weak self] device, task, stage, progress, name, failure in
+            self?.teleprompterFileEvent(device: device, task: task, stage: stage,
+                                       progress: progress, fileName: name, failure: failure)
+        }
         voice.onSubtitleEnvelope = { [weak self] in self?.store?.realtimeSubtitles.receive(device: $0, packet: $1, arrival: $2) }
         // One automatic weather owner. Legacy Weatherstack stays manual to avoid overwrites.
         voice.onRuntimeRefresh = { [weak self] in self?.store?.qweather.tick() }
@@ -67,6 +71,8 @@ import CryptoKit
             self.crownReadAt = .distantPast
             if self.recordingID != nil { self.recordingStatus = device == self.captureDevice ? "连接恢复；等待同一录音状态/数据，不自动宣布补传完成" : "连接中断；原始录音保留，等待同一眼镜恢复" }
             if self.teleprompterID != nil, device != self.teleprompterDevice {
+                self.teleprompterTransfer.cancel(); self.teleprompterTransferGeneration = UUID()
+                self.teleprompterTransferTask = nil
                 self.teleprompterPrepared = false
                 self.teleprompterStarted = false
                 self.teleprompterStatus = "提词连接中断；停止自动操作，请恢复连接后退出并重新准备"
@@ -470,6 +476,8 @@ import CryptoKit
     @Published private(set) var teleprompterID: String?
     @Published private(set) var teleprompterOffset: Int64 = 0
     @Published private(set) var teleprompterStarted = false
+    @Published private(set) var teleprompterTransferProgress: Int?
+    @Published private(set) var teleprompterTransferError: String?
     var onTeleprompterProgress: ((TeleprompterPositionObserved) -> Void)?
     var onTeleprompterPositionUnavailable: (() -> Void)?
     var onTeleprompterControl: ((UInt32) -> Void)?
@@ -483,6 +491,8 @@ import CryptoKit
     private var teleprompterScrollMode = 2
     private var teleprompterBoundaries = Set<Int>()
     private var teleprompterDocument: TeleprompterNativeDocument?
+    private var teleprompterTransfer = TeleprompterTransferPolicy()
+    private var teleprompterTransferGeneration = UUID()
 }
 
 extension CompanionDeviceFeatures {
@@ -493,15 +503,18 @@ extension CompanionDeviceFeatures {
             let document = try TeleprompterNativeDocument(text: text, speed: speed,
                                                         scrollMode: scrollMode, initialOffset: initialOffset)
             if voice.enabled { voice.stop() }
-            let did = UUID().uuidString
+            let did = UUID().uuidString.lowercased()
             let dir = inbox.root.deletingLastPathComponent().appendingPathComponent("TeleprompterOutboxV1")
             try FileManager.default.createDirectory(at:dir,withIntermediateDirectories:true)
             guard try FileManager.default.contentsOfDirectory(atPath:dir.path).count < 100 else { throw DeviceFeatureError.storageLimit }
-            let url = dir.appendingPathComponent(did + ".txt")
+            let url = try TeleprompterNativeDocument.fileURL(directory: dir, did: did)
             try document.data.write(to:url,options:[.withoutOverwriting,.completeFileProtectionUntilFirstUserAuthentication])
             teleprompterID = did; teleprompterDevice = device; teleprompterFile = url
             teleprompterOffset = Int64(initialOffset); teleprompterPrepared = false; teleprompterSentFile = false
             teleprompterStarted = false; teleprompterScrollMode = scrollMode
+            teleprompterTransfer = TeleprompterTransferPolicy(); teleprompterTransferProgress = nil
+            teleprompterTransferError = nil
+            teleprompterTransferGeneration = UUID(); let transferGeneration = teleprompterTransferGeneration
             teleprompterBoundaries = document.boundaries; teleprompterDocument = document
             // Optional layout fields intentionally omitted: never guess pixel/gear defaults.
             do {
@@ -513,9 +526,10 @@ extension CompanionDeviceFeatures {
             }
             teleprompterStatus = "已请求准备稿件，等待眼镜收稿回应"
             DispatchQueue.main.asyncAfter(deadline:.now()+30) { [weak self] in
-                guard let self, self.teleprompterID == did, !self.teleprompterPrepared else { return }
-                self.teleprompterStatus = "准备超时；未确认收稿，不会自动开始滚动。可点退出取消本轮。"
-                self.onTeleprompterFailure?(self.teleprompterStatus)
+                guard let self, self.teleprompterID == did,
+                      self.teleprompterTransferGeneration == transferGeneration,
+                      !self.teleprompterTransfer.fileRequestedBool else { return }
+                self.teleprompterFailed("眼镜未在 30 秒内允许传稿，请退出本轮后重试。")
             }
         }
     }
@@ -532,7 +546,10 @@ extension CompanionDeviceFeatures {
             if type == 4 { body["offset"] = teleprompterOffset; body["code"] = 1; body["isCompleted"] = false }
             if type == 7 { guard (60...240).contains(speed) else { throw DeviceFeatureError.invalidPacket }; body["scroll"] = teleprompterScrollMode; body["speed"] = speed }
             try send(20,type,body)
-            if type == 6, let task = teleprompterTransferTask { voice.cancelFile(task); teleprompterTransferTask = nil }
+            if type == 6 {
+                teleprompterTransfer.cancel(); teleprompterTransferGeneration = UUID()
+                if let task = teleprompterTransferTask { voice.cancelFile(task); teleprompterTransferTask = nil }
+            }
             teleprompterStatus = "控制 type\(type) 已提交，等待眼镜回应"
         }
     }
@@ -558,10 +575,65 @@ extension CompanionDeviceFeatures {
         }
     }
     private func teleprompterFailed(_ message: String) {
+        teleprompterTransfer.cancel(); teleprompterTransferGeneration = UUID()
+        if let task = teleprompterTransferTask, teleprompterDevice == voice.deviceID { voice.cancelFile(task) }
+        teleprompterTransferTask = nil
+        teleprompterPrepared = false
         teleprompterStarted = false
         teleprompterStatus = message
+        teleprompterTransferError = message
         error = message
         onTeleprompterFailure?(message)
+    }
+    private func applyTeleprompterTransfer(_ decision: TeleprompterTransferPolicy.Decision) {
+        switch decision {
+        case .ready:
+            guard !teleprompterPrepared else { return }
+            teleprompterPrepared = true; teleprompterTransferProgress = 100
+            teleprompterStatus = "文件传输和眼镜收稿均已确认，可以开始提词"
+        case .wait:
+            guard !teleprompterPrepared, !teleprompterStarted else { return }
+            if teleprompterTransfer.fileCompleteBool {
+                teleprompterStatus = "文件传输已完成，等待眼镜确认稿件"
+            } else if teleprompterTransfer.businessCompleteBool {
+                teleprompterStatus = "眼镜已确认稿件，等待文件传输完成回应"
+            }
+        case .reject: teleprompterFailed("提词稿传输或收稿确认失败，请退出本轮后重试。")
+        case .startFile: break
+        }
+    }
+    func teleprompterFileEvent(device: String, task: String, stage: Int, progress: Int?,
+                              fileName: String?, failure: String?) {
+        guard device == voice.deviceID, device == teleprompterDevice,
+              task == teleprompterTransferTask, let did = teleprompterID,
+              teleprompterTransfer.fileRequestedBool, !teleprompterTransfer.isTerminal else { return }
+        if stage <= 1, teleprompterTransfer.fileCompleteBool { return }
+        switch stage {
+        case 0: teleprompterStatus = "正在向眼镜传输提词稿"
+        case 1:
+            if let progress, (0...100).contains(progress) {
+                teleprompterTransferProgress = progress
+                teleprompterStatus = "提词稿传输 \(progress)% · 等待完整收稿确认"
+            }
+        case 2:
+            guard fileName == did else {
+                teleprompterFailed("传输完成的文件名与当前稿件不一致，未开始提词。")
+                return
+            }
+            applyTeleprompterTransfer(teleprompterTransfer.fileCompleted(success: true))
+            teleprompterTransferTask = nil
+        case 3:
+            _ = teleprompterTransfer.fileCompleted(success: false)
+            let message: String
+            switch failure {
+            case "localNetworkUnauthorized": message = "提词稿传输缺少本地网络权限，请在 iPhone 设置中允许 Turbo IO 的本地网络访问。"
+            case "bleUnavailable": message = "眼镜蓝牙文件通道不可用，请确认连接后重试。"
+            case "apUnavailable": message = "眼镜无线文件通道不可用，请检查眼镜连接后重试。"
+            default: message = "提词稿文件传输失败，请退出本轮后重试。"
+            }
+            teleprompterFailed(message)
+        default: break
+        }
     }
     /// Removes only this session's generated regular file after transfer has
     /// stopped. Manuscripts are separately stored in the manuscript library.
@@ -570,8 +642,8 @@ extension CompanionDeviceFeatures {
         let directory = inbox.root.deletingLastPathComponent()
             .appendingPathComponent("TeleprompterOutboxV1").standardizedFileURL
         let target = file.standardizedFileURL
-        guard target.deletingLastPathComponent() == directory,
-              target.lastPathComponent == did + ".txt",
+        guard target.deletingLastPathComponent().path == directory.path,
+              target.lastPathComponent == did,
               let attributes = try? FileManager.default.attributesOfItem(atPath: target.path),
               attributes[.type] as? FileAttributeType == .typeRegular else { return }
         try? FileManager.default.removeItem(at: target)
@@ -591,13 +663,29 @@ extension CompanionDeviceFeatures {
         guard let did = DeviceBusinessWire.identifier(wire.json,"did"), did == teleprompterID, teleprompterDevice == device else { return }
         let action = DeviceBusinessWire.integer(wire.json,"action"), code = DeviceBusinessWire.integer(wire.json,"code")
         if wire.type == 2, action == 2 {
-            guard code == 1 || code == 7 else { teleprompterFailed("准备被拒绝 code=\(code ?? -1)，请结束本轮后重试"); return }
-            if !teleprompterSentFile {
-                guard let file = teleprompterFile else { throw DeviceFeatureError.noSession }
-                teleprompterTransferTask = try voice.sendFile(file,id:did)
-                teleprompterSentFile = true
-                teleprompterStatus = "专用文件通道已提交，等待业务收稿确认；尚未开始播放"
-            } else { teleprompterPrepared = true; teleprompterStatus = "文件提交后收到业务成功回应，可测试开始；尚无独立文件校验/镜片证明" }
+            guard !teleprompterTransfer.isTerminal else { return }
+            let decision = teleprompterTransfer.prepareReply(code: Int(code ?? -1))
+            if decision == .startFile {
+                guard let file = teleprompterFile, file.lastPathComponent == did else { throw DeviceFeatureError.noSession }
+                do {
+                    teleprompterTransferTask = try voice.sendFile(file,id:did)
+                    teleprompterSentFile = true
+                    applyTeleprompterTransfer(teleprompterTransfer.fileSubmissionSucceeded())
+                    teleprompterStatus = "文件传输已开始，等待传输完成和眼镜收稿"
+                } catch {
+                    teleprompterFailed("提词稿文件未能提交到眼镜，请退出本轮后重试。")
+                    return
+                }
+                let transferGeneration = teleprompterTransferGeneration
+                DispatchQueue.main.asyncAfter(deadline: .now() + 120) { [weak self] in
+                    guard let self, self.teleprompterID == did,
+                          self.teleprompterTransferGeneration == transferGeneration,
+                          !self.teleprompterPrepared else { return }
+                    self.teleprompterFailed(self.teleprompterTransfer.fileCompleteBool
+                        ? "文件已送达，但眼镜未确认文稿，已保持手机原稿，请退出后重试。"
+                        : "两分钟内未完成提词稿传输，请检查连接和本地网络权限。")
+                }
+            } else { applyTeleprompterTransfer(decision) }
             return
         }
         if wire.type == 3, action == 2 {
@@ -659,6 +747,7 @@ extension CompanionDeviceFeatures {
             teleprompterID = nil; teleprompterPrepared = false; teleprompterStarted = false; teleprompterFile = nil
             teleprompterBoundaries.removeAll()
             teleprompterDocument = nil
+            teleprompterTransfer.cancel(); teleprompterTransferGeneration = UUID()
         }
     }
 }

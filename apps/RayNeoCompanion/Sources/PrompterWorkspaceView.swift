@@ -43,6 +43,19 @@ struct PrompterWorkspaceView: View {
                 Text("没有找到匹配的稿件").font(.subheadline).foregroundStyle(Palette.muted)
             }
             ForEach(visible) { document in manuscriptRow(document) }
+            if features.teleprompterID != nil || features.teleprompterTransferError != nil {
+                Card {
+                    Label("眼镜文稿传输", systemImage: "arrow.up.doc").font(.headline)
+                    Text(features.teleprompterStatus).font(.subheadline).foregroundStyle(Palette.muted)
+                    if let error = features.teleprompterTransferError {
+                        Text(error).font(.subheadline).foregroundStyle(Palette.amber)
+                    }
+                    if features.teleprompterID != nil, !runtime.active {
+                        Button("结束本轮眼镜提词") { features.teleprompterControl(6) }
+                            .disabled(!features.voice.ready)
+                    }
+                }
+            }
             if !library.manuscripts.isEmpty {
                 Text("点选稿件切换；长按可编辑、复制、导出或删除。")
                     .font(.caption).foregroundStyle(Palette.muted)

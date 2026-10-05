@@ -271,6 +271,54 @@ final class SpeechPrompterRuntimeTests: XCTestCase {
         XCTAssertEqual(f.runtime.phase, .listening)
     }
 
+    @MainActor func testPendingFileTransferPublishesItsStatusBeforeStartingRecognitionOrCapture() async throws {
+        let f = fixture()
+        defer { f.runtime.stop() }
+        f.transport.autoPrepared = false
+        f.transport.preparationStatus = "提词稿传输 42% · 等待完整收稿确认"
+        let prepareRequested = expectation(description: "Manuscript transfer requested")
+        f.transport.onPrepare = { prepareRequested.fulfill() }
+        let task = try XCTUnwrap(f.runtime.start(document: f.document, output: .glasses, input: .iPhone))
+        await fulfillment(of: [prepareRequested], timeout: 2)
+
+        XCTAssertEqual(f.runtime.phase, .preparing)
+        XCTAssertEqual(f.runtime.status, f.transport.preparationStatus)
+        XCTAssertNil(f.runtime.error)
+        XCTAssertEqual(f.provider.starts, 0)
+        XCTAssertEqual(f.microphone.starts, 0)
+        XCTAssertEqual(f.transport.starts, 0)
+
+        f.transport.prepared = true
+        await task.value
+        XCTAssertEqual(f.runtime.phase, .listening)
+        XCTAssertEqual(f.provider.starts, 1)
+        XCTAssertEqual(f.microphone.starts, 1)
+        XCTAssertEqual(f.transport.starts, 1)
+    }
+
+    @MainActor func testLateFilePreparationAfterStopCannotStartRecognitionOrCapture() async throws {
+        let f = fixture()
+        f.transport.autoPrepared = false
+        f.transport.preparationStatus = "正在向眼镜传输提词稿"
+        let prepareRequested = expectation(description: "Pending manuscript transfer requested")
+        f.transport.onPrepare = { prepareRequested.fulfill() }
+        let task = try XCTUnwrap(f.runtime.start(document: f.document, output: .glasses, input: .iPhone))
+        await fulfillment(of: [prepareRequested], timeout: 2)
+        XCTAssertEqual(f.runtime.phase, .preparing)
+        XCTAssertEqual(f.provider.starts, 0)
+
+        f.runtime.stop()
+        f.transport.prepared = true // Completion of the transfer that was just stopped.
+        await task.value
+
+        XCTAssertEqual(f.runtime.phase, .idle)
+        XCTAssertEqual(f.provider.starts, 0)
+        XCTAssertEqual(f.microphone.starts, 0)
+        XCTAssertEqual(f.transport.starts, 0)
+        XCTAssertEqual(f.transport.stops, 1)
+        XCTAssertNil(f.runtime.error)
+    }
+
     @MainActor func testEyeMicrophoneIgnoresAudioBeforeDecoderAndOpeningAreReady() async throws {
         let f = fixture()
         defer { f.runtime.stop() }
@@ -389,15 +437,16 @@ final class SpeechPrompterRuntimeTests: XCTestCase {
     @MainActor private final class Transport: SpeechPrompterTransport {
         var deviceID: String? = "synthetic-glasses", ready = true, sessionID: String?
         var prepared = false, started = false, errorMessage: String?
+        var preparationStatus = ""
         var onProgress: ((Int, Int) -> Void)?, onControl: ((UInt32) -> Void)?
         var onAudio: ((Data, Int?) -> Void)?, onFailure: ((String) -> Void)?
         var onPositionUnavailable: (() -> Void)?
         var prepares = 0, starts = 0, stops = 0, scrollModes: [Int] = []
         var seeks: [(page: Int, highlight: Int)] = []
-        var autoStarted = true, echoSeekSynchronously = false
+        var autoPrepared = true, autoStarted = true, echoSeekSynchronously = false
         var onStart: (() -> Void)?, onPrepare: (() -> Void)?
         func prepare(text: String, scrollMode: Int, initialOffset: Int) -> Bool {
-            prepares += 1; sessionID = UUID().uuidString; prepared = true
+            prepares += 1; sessionID = UUID().uuidString; prepared = autoPrepared
             scrollModes.append(scrollMode); onPrepare?(); return true
         }
         func start() -> Bool { starts += 1; started = autoStarted; onStart?(); return true }
