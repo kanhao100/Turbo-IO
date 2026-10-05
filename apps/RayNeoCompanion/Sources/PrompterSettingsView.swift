@@ -60,7 +60,7 @@ struct PrompterSettingsView: View {
                     Text(runtime.status).accessibilityIdentifier("prompter-tuning-status")
                     LabeledContent("显示位置", value: "\(runtime.displayedUTF8Offset) 字节")
                     LabeledContent("已匹配位置", value: "\(runtime.confirmedUTF8Offset) 字节")
-                    LabeledContent("输入音量", value: String(format: "%.3f", runtime.audioLevel))
+                    LabeledContent("输入音量 RMS", value: String(format: "%.3f", runtime.audioRMS))
                     Text(runtime.recognitionText.isEmpty ? "暂无识别文字" : runtime.recognitionText)
                         .font(.caption).textSelection(.enabled)
                     LabeledContent("最近眼镜操作", value: features.teleprompterLastEyeCommand)

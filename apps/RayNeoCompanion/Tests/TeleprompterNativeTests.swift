@@ -76,8 +76,10 @@ final class TeleprompterNativeTests: XCTestCase {
         XCTAssertNil(queue.enqueue(.init(page: 6, highlight: 6)))
         XCTAssertNil(queue.enqueue(latest))
         XCTAssertEqual(queue.acknowledge(), latest)
+        XCTAssertEqual(queue.confirmedPosition, first)
         XCTAssertTrue(queue.awaitingAcknowledgement)
         XCTAssertNil(queue.acknowledge())
+        XCTAssertEqual(queue.confirmedPosition, latest)
         XCTAssertFalse(queue.awaitingAcknowledgement)
     }
 
@@ -89,8 +91,24 @@ final class TeleprompterNativeTests: XCTestCase {
         XCTAssertTrue(queue.awaitingAcknowledgement)
         XCTAssertNil(queue.queued)
         XCTAssertNil(queue.acknowledge())
+        XCTAssertNil(queue.confirmedPosition)
         XCTAssertFalse(queue.awaitingAcknowledgement)
         XCTAssertNotNil(queue.enqueue(.init(page: 30, highlight: 30)))
+    }
+
+    func testAcknowledgedOffsetIsPublishedBeforeNextQueuedPosition() {
+        var queue = TeleprompterNativeProgressQueue()
+        let acknowledged = TeleprompterNativeProgressQueue.Position(page: 9, highlight: 9)
+        let next = TeleprompterNativeProgressQueue.Position(page: 15, highlight: 15)
+        XCTAssertEqual(queue.enqueue(acknowledged), acknowledged)
+        XCTAssertNil(queue.enqueue(next))
+        XCTAssertEqual(queue.acknowledge(), next)
+        // The pause/return anchor is the acknowledged viewport, never the
+        // next queued target whose delivery is still outstanding.
+        XCTAssertEqual(queue.confirmedPosition, acknowledged)
+        queue.manualAssist()
+        XCTAssertNil(queue.acknowledge())
+        XCTAssertNil(queue.confirmedPosition)
     }
 
     func testChecksumKnownFNV1aVectorAndOriginalWhitespace() throws {

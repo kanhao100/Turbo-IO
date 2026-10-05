@@ -791,12 +791,19 @@ extension CompanionDeviceFeatures {
         if wire.type == 3, action == 1 {
             guard teleprompterPrepared, teleprompterControlPending != 6,
                   let document = teleprompterDocument else { return }
+            teleprompterProgressQueue.manualAssist()
             try send(20, 3, document.startResponse(did: did, offset: Int(teleprompterOffset), speed: teleprompterSpeed))
             teleprompterStarted = true; teleprompterPaused = false
             teleprompterInReader = true
+            if !teleprompterProgressQueue.awaitingAcknowledgement { teleprompterPositionBlocked = false }
             teleprompterControlPending = nil; teleprompterControlGeneration = UUID()
             teleprompterStatus = "眼镜请求开始当前稿件，已按原稿模式回应"
             onTeleprompterControl?(3)
+            let anchor = try TeleprompterJSONCodec().encodeAppRequest(.progress(did: did,
+                pageOffset: teleprompterOffset, highLightOffset: teleprompterOffset, autoSync: false))
+            if case .progress(let position) = try TeleprompterJSONCodec().decodeGlassesRequest(type: 8, payload: anchor.payload) {
+                onTeleprompterProgress?(position)
+            }
             return
         }
         // SettingsUpdate type 7 is a native dial/settings event as well as an
@@ -875,7 +882,11 @@ extension CompanionDeviceFeatures {
             teleprompterStatus = "眼镜回应 type\(wire.type) code=1"
             if control == .progress {
                 teleprompterProgressGeneration = UUID(); teleprompterPositionBlocked = false
-                if let position = teleprompterProgressQueue.acknowledge() {
+                let next = teleprompterProgressQueue.acknowledge()
+                if let confirmed = teleprompterProgressQueue.confirmedPosition {
+                    teleprompterOffset = Int64(confirmed.page)
+                }
+                if let position = next {
                     if teleprompterInReader { try sendTeleprompterPosition(position, did: did) }
                 }
             } else {

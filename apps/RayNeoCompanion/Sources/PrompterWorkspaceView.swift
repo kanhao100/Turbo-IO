@@ -334,7 +334,7 @@ private struct PrompterSessionView: View {
         case .following: return "跟随中"
         case .uncertain: return "暂时对不上 · 保持原位"
         case .paused: return "暂停跟随 · 仍在监听"
-        case .finished: return "稿件已读完"
+        case .finished: return "已识别到稿件结尾"
         }
     }
     private var readingProgressLabel: String {

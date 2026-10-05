@@ -115,16 +115,27 @@ struct TeleprompterNativeProgressQueue {
     struct Position: Equatable { var page: Int; var highlight: Int }
     private(set) var awaitingAcknowledgement = false
     private(set) var queued: Position?
+    private(set) var confirmedPosition: Position?
+    private var inFlight: Position?
+    private var mayConfirmInFlight = false
     mutating func enqueue(_ position: Position) -> Position? {
         if awaitingAcknowledgement { queued = position; return nil }
         awaitingAcknowledgement = true
+        inFlight = position; mayConfirmInFlight = true
         return position
     }
     mutating func acknowledge() -> Position? {
         guard awaitingAcknowledgement else { return nil }
+        confirmedPosition = mayConfirmInFlight ? inFlight : nil
+        inFlight = nil; mayConfirmInFlight = false
         awaitingAcknowledgement = false
         let position = queued; queued = nil
         return position.flatMap { enqueue($0) }
     }
-    mutating func manualAssist() { queued = nil }
+    mutating func manualAssist() {
+        queued = nil; confirmedPosition = nil
+        // Keep the acknowledgement barrier, but a late automatic receipt
+        // cannot replace a newer position chosen on the glasses.
+        mayConfirmInFlight = false
+    }
 }

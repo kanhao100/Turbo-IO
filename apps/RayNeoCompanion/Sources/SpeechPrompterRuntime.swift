@@ -11,6 +11,7 @@ import RayNeoDisplay
     var started: Bool { get }
     var errorMessage: String? { get }
     var preparationStatus: String { get }
+    var positionAvailable: Bool { get }
     var onProgress: ((Int, Int) -> Void)? { get set }
     var onControl: ((UInt32) -> Void)? { get set }
     var onAudio: ((Data, Int?) -> Void)? { get set }
@@ -24,6 +25,7 @@ import RayNeoDisplay
 
 extension SpeechPrompterTransport {
     var preparationStatus: String { "" }
+    var positionAvailable: Bool { true }
 }
 
 @MainActor protocol SpeechPrompterMicrophone: AnyObject {
@@ -43,6 +45,7 @@ extension SpeechPrompterTransport {
     var started: Bool { features.teleprompterStarted }
     var errorMessage: String? { features.error }
     var preparationStatus: String { features.teleprompterStatus }
+    var positionAvailable: Bool { features.teleprompterInReader && !features.teleprompterPositionBlocked }
     var onProgress: ((Int, Int) -> Void)?
     var onControl: ((UInt32) -> Void)?
     var onAudio: ((Data, Int?) -> Void)?
@@ -130,6 +133,7 @@ extension SpeechPrompterTransport {
     @Published private(set) var microphoneRoute: String?
     @Published private(set) var recognitionText = ""
     @Published private(set) var audioLevel = 0.0
+    @Published private(set) var audioRMS = 0.0
     @Published private(set) var documentID: UUID?
     @Published private(set) var text = ""
     var onPosition: ((UUID, Int) -> Void)?
@@ -163,6 +167,7 @@ extension SpeechPrompterTransport {
     private var lastAudioAt: TimeInterval = 0
     private var lastVoiceAt: TimeInterval = 0
     private var audioGapOpen = false
+    private var awaitingEyeAnchor = false
     private var lastAudioSequence: Int?
     private var lastSentAt: TimeInterval = -.infinity
     private var pendingPosition: (page: Int, highlight: Int)?
@@ -239,11 +244,12 @@ extension SpeechPrompterTransport {
         scrollController?.reset(toUTF8Offset: document.readingUTF8Offset, now: now)
         displayedUTF8Offset = scrollController?.displayedUTF8Offset ?? 0
         apply(follower!.assist(toUTF8Offset: document.readingUTF8Offset), sendPosition: false)
-        candidateUTF8Offset = nil; microphoneRoute = nil; audioLevel = 0
+        candidateUTF8Offset = nil; microphoneRoute = nil; audioLevel = 0; audioRMS = 0
         deviceAtStart = output == .glasses ? transport.deviceID : nil
         ownedSession = nil; pendingPosition = nil; recentSentPositions = []
         lastSentAt = -.infinity; lastAudioAt = now; lastVoiceAt = now
         lastAudioSequence = nil; audioGapOpen = false
+        awaitingEyeAnchor = false
         lastPersistedAt = now; lastPersistedOffset = displayedUTF8Offset
         retry = CaptionRetryBudget(); retryAt = nil; bufferedPCM = Data()
         sessionOptions = configuration.options; sessionKey = configuration.key
@@ -332,7 +338,8 @@ extension SpeechPrompterTransport {
         }
         transport.onControl = { [weak self] type in
             guard let self, self.generation == token, self.active, self.output == .glasses else { return }
-            if type == 4 { self.pauseFollowing() }
+            if type == 3 { self.awaitingEyeAnchor = false }
+            else if type == 4 { self.pauseFollowing() }
             else if type == 5 { self.resumeFollowing() }
             else if type == 6 { self.stop(notifyGlasses: false) }
         }
@@ -357,6 +364,7 @@ extension SpeechPrompterTransport {
         transport.onPositionUnavailable = { [weak self] in
             guard let self, self.generation == token, self.active else { return }
             self.pendingPosition = nil
+            self.awaitingEyeAnchor = true
             self.scrollController?.hold(now: self.now)
             if let update = self.follower?.resetRecognitionEvidence() { self.apply(update, sendPosition: false) }
             self.status = "滑动位置暂未确认，识别继续；可在手机辅助定位"
@@ -395,6 +403,7 @@ extension SpeechPrompterTransport {
         }
         let samples = pcm.withUnsafeBytes { Array($0.bindMemory(to: Int16.self)) }
         let rms = sqrt(samples.reduce(0) { $0 + pow(Double($1) / 32768, 2) } / Double(samples.count))
+        audioRMS = rms
         audioLevel = min(1, rms * 5)
         if rms >= tuning.audioActivityThreshold {
             if now - lastVoiceAt >= tuning.silenceHoldSeconds {
@@ -428,6 +437,7 @@ extension SpeechPrompterTransport {
     func assist(toUTF8Offset offset: Int) {
         guard active, let update = follower?.assist(toUTF8Offset: offset) else { return }
         pendingPosition = nil; apply(update, sendPosition: false)
+        awaitingEyeAnchor = false
         scrollController?.reset(toUTF8Offset: update.confirmedUTF8Offset, now: now, manual: true)
         displayedUTF8Offset = scrollController?.displayedUTF8Offset ?? update.confirmedUTF8Offset
         queuePosition(manual: true); persistPosition(force: true)
@@ -461,7 +471,11 @@ extension SpeechPrompterTransport {
             case .finished: status = "已到稿件末尾 · 识别继续，可滑动回读"
             }
         }
-        if sendPosition, update.shouldMove {
+        // A fresh nearby match is also speech evidence for quiet microphones;
+        // absolute RMS alone must not hold intelligible, low-volume speech.
+        if sendPosition, update.shouldMove { lastVoiceAt = now }
+        if sendPosition, update.shouldMove, !awaitingEyeAnchor,
+           output != .glasses || transport.positionAvailable {
             scrollController?.observe(targetUTF8Offset: update.confirmedUTF8Offset, now: now)
         }
         if update.state == .uncertain || update.state == .paused {
@@ -508,6 +522,7 @@ extension SpeechPrompterTransport {
             return // A programmatic seek echo must not reset recognition evidence.
         }
         pendingPosition = nil
+        awaitingEyeAnchor = false
         guard let update = follower?.assist(toUTF8Offset: page) else { return }
         scrollController?.reset(toUTF8Offset: update.confirmedUTF8Offset, now: now, manual: true)
         displayedUTF8Offset = scrollController?.displayedUTF8Offset ?? update.confirmedUTF8Offset
@@ -534,7 +549,7 @@ extension SpeechPrompterTransport {
         if notifyGlasses, output == .glasses, let ownedSession, transport.sessionID == ownedSession { transport.stop() }
         ownedSession = nil; retryAt = nil; bufferedPCM = Data(); pendingPosition = nil
         scrollController?.hold(now: now)
-        sessionKey = ""; asrReady = false; audioLevel = 0
+        sessionKey = ""; asrReady = false; audioLevel = 0; audioRMS = 0
         status = error == nil ? "演讲已结束，阅读位置已保存" : "跟随已停止，稿件和阅读位置已保留"
     }
     private func fail(_ message: String) { error = message; stop() }
@@ -543,7 +558,7 @@ extension SpeechPrompterTransport {
         reloadTuning()
         if output == .glasses, transport.deviceID != deviceAtStart { fail("眼镜连接中断；已保持阅读位置。"); return }
         if now - lastAudioAt >= 15, !audioGapOpen {
-            audioGapOpen = true; pendingPosition = nil; audioLevel = 0
+            audioGapOpen = true; pendingPosition = nil; audioLevel = 0; audioRMS = 0
             scrollController?.hold(now: now)
             if let update = follower?.resetRecognitionEvidence() { apply(update, sendPosition: false) }
             status = "暂未收到音频，位置保持；监听继续，请检查所选麦克风"
@@ -554,7 +569,11 @@ extension SpeechPrompterTransport {
             scrollController?.hold(now: now)
             if !pendingPositionIsManual { pendingPosition = nil }
         }
-        if followState != .paused, !audioGapOpen {
+        if output == .glasses, awaitingEyeAnchor || !transport.positionAvailable {
+            scrollController?.hold(now: now)
+            if !pendingPositionIsManual { pendingPosition = nil }
+            status = "眼镜显示位置待确认 · 滚动保持，识别继续"
+        } else if followState != .paused, !audioGapOpen {
             let offset = scrollController?.advance(now: now) ?? displayedUTF8Offset
             if offset != displayedUTF8Offset {
                 displayedUTF8Offset = offset

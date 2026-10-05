@@ -76,6 +76,21 @@ final class SpeechPrompterRuntimeTests: XCTestCase {
         XCTAssertEqual(f.provider.stops, 0)
         XCTAssertEqual(f.microphone.stops, 0)
     }
+
+    @MainActor func testFreshRecognizedSpeechCanScrollWithQuietMicrophoneInput() async throws {
+        let f = fixture()
+        defer { f.runtime.stop() }
+        try await XCTUnwrap(f.runtime.start(document: f.document, output: .phone, input: .iPhone)).value
+        f.clock.now += 2.1
+        f.microphone.onPCM?(Data(repeating: 1, count: 640))
+        XCTAssertLessThan(f.runtime.audioRMS, 0.025)
+        f.runtime.tick()
+        f.provider.onText?(f.firstSentence, true)
+        f.clock.now += 0.2; f.runtime.tick()
+        XCTAssertGreaterThan(f.runtime.displayedUTF8Offset, 0)
+        XCTAssertEqual(f.provider.starts, 1)
+        XCTAssertEqual(f.microphone.stops, 0)
+    }
     @MainActor func testLongAudioGapHoldsWithoutClosingRecognitionAndFreshAudioCanResume() async throws {
         let f = fixture()
         defer { f.runtime.stop() }
@@ -104,8 +119,10 @@ final class SpeechPrompterRuntimeTests: XCTestCase {
         let anchor = f.runtime.confirmedUTF8Offset
         let seeks = f.transport.seeks.count
         f.transport.onPositionUnavailable?()
+        f.provider.onText?(f.firstSentence, true)
         f.clock.now += 1; f.runtime.tick()
-        XCTAssertEqual(f.runtime.confirmedUTF8Offset, anchor)
+        XCTAssertGreaterThanOrEqual(f.runtime.confirmedUTF8Offset, anchor)
+        XCTAssertEqual(f.runtime.displayedUTF8Offset, 0)
         XCTAssertEqual(f.transport.seeks.count, seeks)
         XCTAssertEqual(f.runtime.phase, .listening)
         XCTAssertEqual(f.provider.stops, 0)
